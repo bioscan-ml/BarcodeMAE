@@ -48,6 +48,6 @@ If you find BarcodeMAE useful in your research please consider citing:
   eprint={2502.18405},
   archivePrefix={arXiv},
   primaryClass={cs.LG},
-  doi={10.48550/arxiv.2311.02401},
+  doi={10.48550/arXiv.2502.18405},
 }
 ```
