@@ -32,7 +32,7 @@ python data_split.py BIOSCAN-5M_Dataset_metadata.tsv
 3. Pretrain BarcodeMAE
 
 ```shell
-
+python barcodebert/pretraining.py --dataset=BIOSCAN-5M --k_mer=6 --n_layers=6 --n_heads=6 --decoder-n-layers=6 --decoder-n-heads=6 --data_dir=data/ --checkpoint=model_checkpoints/BIOSCAN-5M/6-6-6/model_checkpoint.pt
 ```
 
 
