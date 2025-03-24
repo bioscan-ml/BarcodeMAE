@@ -16,17 +16,24 @@ To be completed...
 
 ### Reproducing the results from the paper
 
-0. Clone this repository and install the required libraries by running
+0. Clone this repository and install the required libraries by running.
 
 ```shell
 pip install -e .
 ```
 
-1. Download the [BIOSCAN-5M dataet from the git repo](https://github.com/bioscan-ml/BIOSCAN-5M)
+1. Download the [metadata file](https://drive.google.com/drive/u/0/folders/1TLVw0P4MT_5lPrgjMCMREiP8KW-V4nTb) and copy it into the data folder
+2. Split the metadata file into smaller files according to the different partitions as presented in the [BIOSCAN-5M paper](https://arxiv.org/abs/2406.12723)
 
-2. Pretrain BarcodeMAE
+```shell
+cd data/
+python data_split.py BIOSCAN-5M_Dataset_metadata.tsv
+```
+3. Pretrain BarcodeMAE
 
-To be completed...
+```shell
+
+```
 
 
 ## Citation
