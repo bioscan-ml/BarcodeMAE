@@ -1,4 +1,4 @@
-# BarcodeBERT
+# BarcodeMAE
 
 A pre-trained transformer model for inference on insect DNA barcoding data.
 
