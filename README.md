@@ -3,7 +3,7 @@
 A pre-trained transformer model for inference on insect DNA barcoding data.
 
 <p align="center">
-  <img src ="Figures/Arch_MAE.png" alt="drawing" width="500"/>
+  <img src ="Figures/Arch_mae.png" alt="drawing" width="500"/>
 </p>
 
 * Check out our [paper](https://arxiv.org/pdf/2502.18405)
