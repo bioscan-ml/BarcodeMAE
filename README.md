@@ -10,11 +10,21 @@ A PyTorch implementation of BarcodeMAE, a model for enhancing DNA foundation mod
 
 #### Model checkpoint is available here: [BarcodeMAE](https://drive.google.com/file/d/18TqKC_gLYYDZEFfkMBRvWTHTT8Vb74Wv/view?usp=drive_link)
 
-### Using the model
+### Reproducing the results
+0. Download the checkpoint and copy it to the model_checkpoints directory
+2. Run KNN evaluation
+   
+```shell
+python barcodebert/knn_probing.py \
+  --run-name knn_evaluation \
+  --data-dir ./data/ \
+  --pretrained-checkpoint "/model_checkpoints/best_pretraining.pt"\
+  --log-wandb\
+  --dataset BIOSCAN-5M\
+```
 
-To be completed...
 
-### Reproducing the results from the paper
+### Pretraining from scratch
 
 0. Clone this repository and install the required libraries by running.
 
