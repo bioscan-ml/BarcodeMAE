@@ -37,7 +37,7 @@ def split_df(filename):
     label_cols = ["phylum", "class", "order", "family", "subfamily", "genus", "species", "dna_bin"]
     df_usecols = ["chunk", "dna_barcode", "split"] + label_cols
 
-    bioscan_5M = pd.read_csv(filename, dtype=df_dtypes, usecols=df_usecols, sep='\t')
+    bioscan_5M = pd.read_csv(filename, dtype=df_dtypes, usecols=df_usecols, sep="\t")
 
     # Convert categorical columns to int codes which we can use as training targets
     for c in label_cols:
