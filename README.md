@@ -12,6 +12,7 @@ A PyTorch implementation of BarcodeMAE, a model for enhancing DNA foundation mod
 
 ### Setup
 
+
 0. Clone this repository 
 1. Install the required libraries
 
@@ -32,6 +33,7 @@ python data_split.py BIOSCAN-5M_Dataset_metadata.tsv
 
 ### Reproducing the results
 
+
 1. Download the checkpoint and copy it to the model_checkpoints directory
 2. Run KNN evaluation
 
@@ -45,6 +47,7 @@ python barcodebert/knn_probing.py \
 ```
 
 ### Pretraining from scratch
+
 
 1. Run pretraining 
 
