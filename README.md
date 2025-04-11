@@ -67,7 +67,7 @@ If you find BarcodeMAE useful in your research please consider citing:
     and Angel X. Chang
     and Graham W. Taylor
   },
-  journal={arXiv preprint arXiv:2502.18405}
+  journal={arXiv preprint arXiv:2502.18405},
   year={2025},
   eprint={2502.18405},
   archivePrefix={arXiv},
