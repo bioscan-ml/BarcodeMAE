@@ -13,7 +13,7 @@ A PyTorch implementation of BarcodeMAE, a model for enhancing DNA foundation mod
 ### Setup
 
 
-0. Clone this repository 
+0. Clone this repository
 1. Install the required libraries
 
 ```shell
@@ -43,13 +43,13 @@ python barcodebert/knn_probing.py \
   --data-dir ./data/ \
   --pretrained-checkpoint "./model_checkpoints/best_pretraining.pt"\
   --log-wandb \
-  --dataset BIOSCAN-5M 
+  --dataset BIOSCAN-5M
 ```
 
 ### Pretraining from scratch
 
 
-1. Run pretraining 
+1. Run pretraining
 
 ```shell
 python barcodebert/pretraining.py \
