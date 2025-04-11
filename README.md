@@ -10,27 +10,17 @@ A PyTorch implementation of BarcodeMAE, a model for enhancing DNA foundation mod
 
 #### Model checkpoint is available here: [BarcodeMAE](https://drive.google.com/file/d/18TqKC_gLYYDZEFfkMBRvWTHTT8Vb74Wv/view?usp=drive_link)
 
-### Reproducing the results
+### Setup
 
-0. Download the checkpoint and copy it to the model_checkpoints directory
-1. Run KNN evaluation
-
-```shell
-python barcodebert/knn_probing.py \
-  --run-name knn_evaluation \
-  --data-dir ./data/ \
-  --pretrained-checkpoint "./model_checkpoints/best_pretraining.pt"\
-  --log-wandb \
-  --dataset BIOSCAN-5M \
-```
-
-### Pretraining from scratch
-
-0. Clone this repository and install the required libraries by running.
+0. Clone this repository 
+1. Install the required libraries
 
 ```shell
+pip install -r requirements.txt
 pip install -e .
 ```
+
+### Preparing the data
 
 1. Download the [metadata file](https://drive.google.com/drive/u/0/folders/1TLVw0P4MT_5lPrgjMCMREiP8KW-V4nTb) and copy it into the data folder
 2. Split the metadata file into smaller files according to the different partitions as presented in the [BIOSCAN-5M paper](https://arxiv.org/abs/2406.12723)
@@ -39,7 +29,24 @@ pip install -e .
 cd data/
 python data_split.py BIOSCAN-5M_Dataset_metadata.tsv
 ```
-3. Pretrain BarcodeMAE
+
+### Reproducing the results
+
+1. Download the checkpoint and copy it to the model_checkpoints directory
+2. Run KNN evaluation
+
+```shell
+python barcodebert/knn_probing.py \
+  --run-name knn_evaluation \
+  --data-dir ./data/ \
+  --pretrained-checkpoint "./model_checkpoints/best_pretraining.pt"\
+  --log-wandb \
+  --dataset BIOSCAN-5M 
+```
+
+### Pretraining from scratch
+
+1. Run pretraining 
 
 ```shell
 python barcodebert/pretraining.py \

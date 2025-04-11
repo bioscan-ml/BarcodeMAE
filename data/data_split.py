@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-
 import warnings
 
 import pandas as pd
