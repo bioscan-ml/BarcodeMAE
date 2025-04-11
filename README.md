@@ -10,8 +10,11 @@ A PyTorch implementation of BarcodeMAE, a model for enhancing DNA foundation mod
 
 #### Model checkpoint is available here: [BarcodeMAE](https://drive.google.com/file/d/18TqKC_gLYYDZEFfkMBRvWTHTT8Vb74Wv/view?usp=drive_link)
 
-### Setup
+### Quick start
 
+Use this jupyter notebook for quick start: [Quick start](https://colab.research.google.com/drive/17fXgva89PzC29cgegjqsuKPZ6KGXpguc?usp=sharing)
+
+### Setup
 
 0. Clone this repository
 1. Install the required libraries
