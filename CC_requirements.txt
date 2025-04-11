@@ -17,4 +17,5 @@ torch==2.1.1+computecanada
 torchtext==0.16.1+computecanada
 transformers==4.29.2+computecanada
 umap-learn==0.5.6+computecanada
+torchdata==0.7.0+computecanada
 wandb
