@@ -11,6 +11,8 @@ import torch
 from torch.utils.data import Dataset, IterableDataset
 from torchtext.vocab import vocab as build_vocab_from_dict
 from transformers import AutoTokenizer
+import torch.distributed as dist
+from torch.utils.data import get_worker_info
 
 
 class KmerTokenizer(object):
@@ -151,14 +153,44 @@ class LazyDNADataset(IterableDataset):
         tokens, att_mask = self.tokenizer(dna_seq, offset=offset)
         return tokens, torch.tensor(int(label), dtype=torch.int64), att_mask
 
+    def __len__(self):
+        # count lines once at startup (cheap) so val‑throughput logging doesn't crash
+        if not hasattr(self, "_n_samples"):
+            with open(self.file_path, "r") as f:
+                # subtract header if CSV has one; adjust accordingly
+                self._n_samples = sum(1 for _ in f) - 1
+        return self._n_samples
+
+
     def __iter__(self):
+        # Determine global rank & world size
+        if dist.is_available() and dist.is_initialized():
+            rank = dist.get_rank()
+            world_size = dist.get_world_size()
+        else:
+            rank, world_size = 0, 1
+
+        # If we're also using multiple DataLoader workers (num_workers > 1),
+        # further subdivide per-worker:
+        worker_info = get_worker_info()
+        if worker_info is not None:
+            # each worker in the same process gets a unique ID
+            worker_id = worker_info.id
+            total_workers = worker_info.num_workers
+            # flatten ranks+workers into a single shard index
+            rank = rank * total_workers + worker_id
+            world_size = world_size * total_workers
+
+        # Now stream the file, and only yield rows where idx % world_size == rank
         df_iter = pd.read_csv(
             self.file_path,
             sep="\t" if self.file_path.endswith(".tsv") else ",",
             chunksize=1,
             keep_default_na=False,
         )
-        for chunk in df_iter:
+        for idx, chunk in enumerate(df_iter):
+            if idx % world_size != rank:
+                continue
             yield self.parse_row(chunk.iloc[0])
 
 

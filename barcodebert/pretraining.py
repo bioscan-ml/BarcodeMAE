@@ -181,46 +181,48 @@ def run(config):
 
     eval_set = "Val"
 
-    # Dataloader --------------------------------------------------------------
-    dl_train_kwargs = {
-        "batch_size": config.batch_size_per_gpu,
-        "drop_last": True,
-        "sampler": None,
-        "shuffle": True,
-        "worker_init_fn": utils.worker_seed_fn,
-    }
-    dl_val_kwargs = {
-        "batch_size": config.batch_size_per_gpu,
-        "drop_last": False,
-        "sampler": None,
-        "shuffle": False,
-        "worker_init_fn": utils.worker_seed_fn,
-    }
-    if config.cpu_workers is None:
-        config.cpu_workers = utils.get_num_cpu_available()
-    if use_cuda:
-        cuda_kwargs = {"num_workers": config.cpu_workers, "pin_memory": True}
-        dl_train_kwargs.update(cuda_kwargs)
-        dl_val_kwargs.update(cuda_kwargs)
-
-    if config.distributed:
-        # The DistributedSampler breaks up the dataset across the GPUs
-        dl_train_kwargs["sampler"] = DistributedSampler(
-            dataset_train,
-            shuffle=True,
-            seed=config.seed if config.seed is not None else 0,
-            drop_last=False,
-        )
-        dl_train_kwargs["shuffle"] = None
-        dl_val_kwargs["sampler"] = DistributedSampler(
-            dataset_val,
-            shuffle=False,
-            drop_last=False,
-        )
-        dl_val_kwargs["shuffle"] = None
-
-    dataloader_train = torch.utils.data.DataLoader(dataset_train, **dl_train_kwargs)
-    dataloader_val = torch.utils.data.DataLoader(dataset_val, **dl_val_kwargs)
+    # Dataloaders -------------------------------------------------------------
+    if config.lazy_load:
+        # streaming IterableDataset → no sampler, no shuffle
+        stream_kwargs = {
+            "batch_size": config.batch_size_per_gpu,
+            "drop_last": True,
+            "num_workers": config.cpu_workers,
+            "pin_memory": use_cuda,
+            "worker_init_fn": utils.worker_seed_fn,
+        }
+        dataloader_train = torch.utils.data.DataLoader(dataset_train, **stream_kwargs)
+        dataloader_val = torch.utils.data.DataLoader(dataset_val, **stream_kwargs)
+    else:
+        # map‑style Dataset → use DistributedSampler in dist. mode
+        map_train_kwargs = {
+            "batch_size": config.batch_size_per_gpu,
+            "drop_last": True,
+            "shuffle": True,
+            "num_workers": config.cpu_workers,
+            "pin_memory": use_cuda,
+            "worker_init_fn": utils.worker_seed_fn,
+        }
+        map_val_kwargs = {
+            "batch_size": config.batch_size_per_gpu,
+            "drop_last": False,
+            "shuffle": False,
+            "num_workers": config.cpu_workers,
+            "pin_memory": use_cuda,
+            "worker_init_fn": utils.worker_seed_fn,
+        }
+        if config.distributed:
+            map_train_kwargs["shuffle"] = False
+            map_train_kwargs["sampler"] = DistributedSampler(
+                dataset_train, shuffle=True,
+                seed=(config.seed or 0),
+                drop_last=False,
+            )
+            map_val_kwargs["sampler"] = DistributedSampler(
+                dataset_val, shuffle=False, drop_last=False
+            )
+        dataloader_train = torch.utils.data.DataLoader(dataset_train, **map_train_kwargs)
+        dataloader_val = torch.utils.data.DataLoader(dataset_val, **map_val_kwargs)
 
     # MODEL ===================================================================
     base_pairs = "ACGT"
