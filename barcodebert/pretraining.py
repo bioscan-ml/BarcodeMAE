@@ -17,7 +17,7 @@ from torch.utils.data.distributed import DistributedSampler
 from transformers import BertConfig, BertForTokenClassification
 
 from barcodebert import levenshtein, utils
-from barcodebert.datasets import DNADataset
+from barcodebert.datasets import DNADataset, LazyDNADataset
 from barcodebert.io import safe_save_model
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../..")))
@@ -138,7 +138,7 @@ def run(config):
 
     # DATASET =================================================================
 
-    if config.dataset_name not in ["CANADA-1.5M", "BIOSCAN-5M"]:
+    if config.dataset_name not in ["CANADA-1.5M", "BIOSCAN-5M", "DNABERT-2"]:
         raise NotImplementedError(f"Dataset {config.dataset_name} not supported.")
 
     # Handle default stride dynamically set to equal k-mer size
@@ -155,16 +155,30 @@ def run(config):
         "dataset_format": config.dataset_name,
     }
 
-    dataset_train = DNADataset(
-        file_path=os.path.join(config.data_dir, "pre_training.csv"),
-        randomize_offset=True,
-        **dataset_args,
-    )
-    dataset_val = DNADataset(
-        file_path=os.path.join(config.data_dir, "supervised_train.csv"),
-        randomize_offset=False,
-        **dataset_args,
-    )
+    if config.lazy_load:
+        dataset_train = LazyDNADataset(
+            file_path=os.path.join(config.data_dir, "pre_training.csv"),
+            randomize_offset=True,
+            **dataset_args,
+        )
+        dataset_val = LazyDNADataset(
+            file_path=os.path.join(config.data_dir, "supervised_train.csv"),
+            randomize_offset=False,
+            **dataset_args,
+        )
+
+    else:
+        dataset_train = DNADataset(
+            file_path=os.path.join(config.data_dir, "pre_training.csv"),
+            randomize_offset=True,
+            **dataset_args,
+        )
+        dataset_val = DNADataset(
+            file_path=os.path.join(config.data_dir, "supervised_train.csv"),
+            randomize_offset=False,
+            **dataset_args,
+        )
+
     eval_set = "Val"
 
     # Dataloader --------------------------------------------------------------
@@ -214,7 +228,13 @@ def run(config):
         base_pairs += "N"
 
     if config.tokenizer == "kmer":
-        max_position_embeddings = max(512, math.ceil(1536 / config.stride))
+        if config.dataset_name == "DNABERT-2":
+            # DNABERT-2 uses a fixed 512-length sequence
+            max_position_embeddings = max(512, math.ceil(1000 / config.stride))
+        else:
+            # for barcodes
+            max_position_embeddings = max(512, math.ceil(1536 / config.stride))
+
         n_output_tokens = len(base_pairs) ** config.k_mer
         n_special_tokens = len(dataset_train.special_tokens)
         n_all_tokens = n_output_tokens + n_special_tokens
@@ -781,7 +801,7 @@ def train_one_epoch(
         # Perform the forward pass through the model
         print(config.arch)
         if config.arch == "maelm":
-            print("MAELM is implemented")
+            # print("MAELM is implemented")
             out = model(masked_input, att_mask, masked_unseen_tokens, config.maelm_version)
         elif config.arch == "transformer":
             out = model(masked_input, attention_mask=att_mask)

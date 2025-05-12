@@ -11,6 +11,7 @@ import torch
 from torch.utils.data import Dataset
 from torchtext.vocab import vocab as build_vocab_from_dict
 from transformers import AutoTokenizer
+from torch.utils.data import IterableDataset
 
 
 class KmerTokenizer(object):
@@ -85,6 +86,83 @@ class BPETokenizer(object):
         return tokens, att_mask
 
 
+class LazyDNADataset(IterableDataset):
+    def __init__(
+        self,
+        file_path,
+        k_mer=4,
+        stride=None,
+        max_len=256,
+        randomize_offset=False,
+        tokenizer="kmer",
+        bpe_path=None,
+        tokenize_n_nucleotide=False,
+        dataset_format="CANADA-1.5M",
+    ):
+        self.file_path = file_path
+        self.k_mer = k_mer
+        self.stride = k_mer if stride is None else stride
+        self.max_len = max_len
+        self.randomize_offset = randomize_offset
+        self.dataset_format = dataset_format
+
+        if dataset_format not in ["CANADA-1.5M", "BIOSCAN-5M", "DNABERT-2"]:
+            raise NotImplementedError(f"Dataset {dataset_format} not supported.")
+
+        if tokenizer == "kmer":
+            base_pairs = "ACGT"
+            self.special_tokens = ["[MASK]", "[UNK]"]
+            UNK_TOKEN = "[UNK]"
+
+            if tokenize_n_nucleotide:
+                base_pairs += "N"
+            kmers = ["".join(kmer) for kmer in product(base_pairs, repeat=self.k_mer)]
+
+            if tokenize_n_nucleotide:
+                prediction_kmers = [k for k in kmers if "N" not in k]
+                other_kmers = [k for k in kmers if "N" in k]
+                kmers = prediction_kmers + other_kmers
+
+            kmer_dict = dict.fromkeys(kmers, 1)
+            self.vocab = build_vocab_from_dict(kmer_dict, specials=self.special_tokens)
+            self.vocab.set_default_index(self.vocab[UNK_TOKEN])
+            self.vocab_size = len(self.vocab)
+
+            self.tokenizer = KmerTokenizer(
+                self.k_mer, self.vocab, stride=self.stride, padding=True, max_len=self.max_len
+            )
+        elif tokenizer == "bpe":
+            self.tokenizer = BPETokenizer(padding=True, max_tokenized_len=self.max_len, bpe_path=bpe_path)
+            self.vocab_size = self.tokenizer.bpe.vocab_size
+        else:
+            raise ValueError(f'Tokenizer "{tokenizer}" not recognized.')
+
+    def parse_row(self, row):
+        dna_seq = row["nucleotides"]
+        if self.dataset_format == "CANADA-1.5M":
+            label = row["species_name"]
+        elif self.dataset_format == "BIOSCAN-5M":
+            label = row["species_index"]
+        elif self.dataset_format == "DNABERT-2":
+            label = 0  # dummy label
+        else:
+            raise NotImplementedError
+
+        offset = torch.randint(self.k_mer, (1,)).item() if self.randomize_offset else 0
+        tokens, att_mask = self.tokenizer(dna_seq, offset=offset)
+        return tokens, torch.tensor(int(label), dtype=torch.int64), att_mask
+
+    def __iter__(self):
+        df_iter = pd.read_csv(
+            self.file_path,
+            sep="\t" if self.file_path.endswith(".tsv") else ",",
+            chunksize=1,
+            keep_default_na=False,
+        )
+        for chunk in df_iter:
+            yield self.parse_row(chunk.iloc[0])
+
+
 class DNADataset(Dataset):
     def __init__(
         self,
@@ -104,7 +182,7 @@ class DNADataset(Dataset):
         self.randomize_offset = randomize_offset
 
         # Check that the dataframe contains a valid format
-        if dataset_format not in ["CANADA-1.5M", "BIOSCAN-5M"]:
+        if dataset_format not in ["CANADA-1.5M", "BIOSCAN-5M", "DNABERT-2"]:
             raise NotImplementedError(f"Dataset {dataset_format} not supported.")
 
         if tokenizer == "kmer":
@@ -148,10 +226,14 @@ class DNADataset(Dataset):
         if dataset_format == "CANADA-1.5M":
             self.labels, self.label_set = pd.factorize(df["species_name"], sort=True)
             self.num_labels = len(self.label_set)
-        else:
+        elif dataset_format == "BIOSCAN-5M":
             self.label_names = df["species_name"].to_list()
             self.labels = df["species_index"].to_list()
             self.num_labels = 22_622
+        elif dataset_format == "DNABERT-2":
+            # this is just dummy labels for the DNABERT-S_2M dataset
+            self.labels = np.zeros(len(self.barcodes), dtype=np.int64)
+            self.num_labels = 1
 
     def __len__(self):
         return len(self.barcodes)
