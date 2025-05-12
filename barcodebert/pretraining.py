@@ -1447,6 +1447,12 @@ def get_parser():
         default=660,
         help="Maximum length of input sequences. Default: %(default)s",
     )
+    group.add_argument(
+        "--lazy_load",
+        "--lazy-load",
+        action="store_true",
+        help="Use lazy loading for the dataset. Default: False",
+    )
     # Architecture args -------------------------------------------------------
     group = parser.add_argument_group("Architecture")
     group.add_argument(
