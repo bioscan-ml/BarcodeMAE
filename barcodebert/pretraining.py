@@ -166,6 +166,8 @@ def run(config):
             randomize_offset=False,
             **dataset_args,
         )
+        dataset_train._batch_size_per_gpu = config.batch_size_per_gpu
+        dataset_val._batch_size_per_gpu = config.batch_size_per_gpu
 
     else:
         dataset_train = DNADataset(
