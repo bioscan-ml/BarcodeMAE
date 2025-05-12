@@ -804,7 +804,6 @@ def train_one_epoch(
         ct_forward = torch.cuda.Event(enable_timing=True)
         ct_forward.record()
         # Perform the forward pass through the model
-        print(config.arch)
         if config.arch == "maelm":
             # print("MAELM is implemented")
             out = model(masked_input, att_mask, masked_unseen_tokens, config.maelm_version)
