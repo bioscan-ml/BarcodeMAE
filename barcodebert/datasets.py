@@ -8,10 +8,9 @@ from itertools import product
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, IterableDataset
 from torchtext.vocab import vocab as build_vocab_from_dict
 from transformers import AutoTokenizer
-from torch.utils.data import IterableDataset
 
 
 class KmerTokenizer(object):
