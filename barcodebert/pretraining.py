@@ -156,18 +156,24 @@ def run(config):
     }
 
     if config.lazy_load:
+        # Create the datasets with batch size included
         dataset_train = LazyDNADataset(
             file_path=os.path.join(config.data_dir, "pre_training.csv"),
             randomize_offset=True,
+            batch_size=config.batch_size_per_gpu,
+            drop_last=True,
+            seed=config.seed,
             **dataset_args,
         )
+
         dataset_val = LazyDNADataset(
             file_path=os.path.join(config.data_dir, "supervised_train.csv"),
             randomize_offset=False,
+            batch_size=config.batch_size_per_gpu,
+            drop_last=False,
+            seed=config.seed,
             **dataset_args,
         )
-        dataset_train._batch_size_per_gpu = config.batch_size_per_gpu
-        dataset_val._batch_size_per_gpu = config.batch_size_per_gpu
 
     else:
         dataset_train = DNADataset(
@@ -186,9 +192,10 @@ def run(config):
     # Dataloaders -------------------------------------------------------------
     if config.cpu_workers is None:
         config.cpu_workers = utils.get_num_cpu_available()
+        print(f"Using {config.cpu_workers} CPU workers for dataloaders.", flush=True)
 
     if config.lazy_load:
-        # streaming IterableDataset → no sampler, no shuffle
+
         stream_kwargs = {
             "batch_size": config.batch_size_per_gpu,
             "drop_last": True,
@@ -197,7 +204,9 @@ def run(config):
             "worker_init_fn": utils.worker_seed_fn,
         }
         dataloader_train = torch.utils.data.DataLoader(dataset_train, **stream_kwargs)
+        print(len(dataloader_train.dataset), flush=True)
         dataloader_val = torch.utils.data.DataLoader(dataset_val, **stream_kwargs)
+
     else:
         # map‑style Dataset → use DistributedSampler in dist. mode
         map_train_kwargs = {
@@ -450,6 +459,7 @@ def run(config):
     timing_stats = {}
     t_end_epoch = time.time()
     for epoch in range(start_epoch, config.epochs + 1):
+        dataset_train.set_epoch(epoch)
         t_start_epoch = time.time()
         if config.seed is not None:
             # If the job is resumed from preemption, our RNG state is currently set the

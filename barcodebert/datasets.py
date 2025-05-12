@@ -14,6 +14,7 @@ from transformers import AutoTokenizer
 import torch.distributed as dist
 from torch.utils.data import get_worker_info
 import math
+import random
 
 
 class KmerTokenizer(object):
@@ -90,16 +91,20 @@ class BPETokenizer(object):
 
 class LazyDNADataset(IterableDataset):
     def __init__(
-        self,
-        file_path,
-        k_mer=4,
-        stride=None,
-        max_len=256,
-        randomize_offset=False,
-        tokenizer="kmer",
-        bpe_path=None,
-        tokenize_n_nucleotide=False,
-        dataset_format="CANADA-1.5M",
+            self,
+            file_path,
+            k_mer=4,
+            stride=None,
+            max_len=256,
+            randomize_offset=False,
+            tokenizer="kmer",
+            bpe_path=None,
+            tokenize_n_nucleotide=False,
+            dataset_format="CANADA-1.5M",
+            batch_size=None,
+            drop_last=True,
+            seed=None,
+            buffer_size=10000,  # Size of buffer for shuffling
     ):
         self.file_path = file_path
         self.k_mer = k_mer
@@ -107,6 +112,12 @@ class LazyDNADataset(IterableDataset):
         self.max_len = max_len
         self.randomize_offset = randomize_offset
         self.dataset_format = dataset_format
+        self._batch_size_per_gpu = batch_size
+        self.drop_last = drop_last
+        self.seed = seed
+        self.epoch = 0  # Track current epoch for shuffling
+        self.buffer_size = buffer_size
+        self._total_lines = None
 
         if dataset_format not in ["CANADA-1.5M", "BIOSCAN-5M", "DNABERT-2"]:
             raise NotImplementedError(f"Dataset {dataset_format} not supported.")
@@ -139,7 +150,82 @@ class LazyDNADataset(IterableDataset):
         else:
             raise ValueError(f'Tokenizer "{tokenizer}" not recognized.')
 
+    def get_total_lines(self):
+        """Count the number of lines in the file"""
+        if self._total_lines is not None:
+            return self._total_lines
+
+        # First check if we have a cached line count file
+        cache_path = f"{self.file_path}.linecount"
+        if os.path.exists(cache_path):
+            with open(cache_path, 'r') as f:
+                self._total_lines = int(f.read().strip())
+        else:
+            # Use wc command for faster line counting
+            try:
+                import subprocess
+                result = subprocess.run(['wc', '-l', self.file_path],
+                                        capture_output=True, text=True)
+                self._total_lines = int(result.stdout.split()[0])
+
+                # Subtract header if csv/tsv
+                if self.file_path.endswith(('.csv', '.tsv')):
+                    self._total_lines -= 1
+
+                # Cache the result
+                with open(cache_path, 'w') as f:
+                    f.write(str(self._total_lines))
+
+            except (subprocess.SubprocessError, ValueError):
+                # Fallback to manual counting
+                print("Fallback to manual line counting (slow)...")
+                with open(self.file_path, 'r') as f:
+                    self._total_lines = sum(1 for _ in f)
+                if self.file_path.endswith(('.csv', '.tsv')):
+                    self._total_lines -= 1
+
+                # Cache the result
+                with open(cache_path, 'w') as f:
+                    f.write(str(self._total_lines))
+
+        return self._total_lines
+
+    def set_epoch(self, epoch):
+        """Set the epoch to enable proper shuffling between epochs"""
+        self.epoch = epoch
+
+    def __len__(self):
+        """Returns the number of batches this dataset will produce per epoch"""
+        if self._batch_size_per_gpu is None:
+            raise ValueError("batch_size_per_gpu must be set before calling __len__")
+
+        # Calculate total samples
+        total_lines = self.get_total_lines()
+
+        # Calculate samples per GPU
+        world_size = dist.get_world_size() if dist.is_available() and dist.is_initialized() else 1
+        samples_per_gpu = total_lines // world_size
+
+        # Calculate batches per GPU
+        if self.drop_last:
+            num_batches = samples_per_gpu // self._batch_size_per_gpu
+        else:
+            num_batches = math.ceil(samples_per_gpu / self._batch_size_per_gpu)
+
+        # Debug info (only print from rank 0)
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            print(f"LazyDNADataset stats:")
+            print(f"  File: {self.file_path}")
+            print(f"  Total samples: {total_lines}")
+            print(f"  World size: {world_size}")
+            print(f"  Samples per GPU: {samples_per_gpu}")
+            print(f"  Batch size per GPU: {self._batch_size_per_gpu}")
+            print(f"  Batches per GPU: {num_batches}")
+
+        return num_batches
+
     def parse_row(self, row):
+        """Parse a row from the dataframe"""
         dna_seq = row["nucleotides"]
         if self.dataset_format == "CANADA-1.5M":
             label = row["species_name"]
@@ -154,44 +240,90 @@ class LazyDNADataset(IterableDataset):
         tokens, att_mask = self.tokenizer(dna_seq, offset=offset)
         return tokens, torch.tensor(int(label), dtype=torch.int64), att_mask
 
-    def __len__(self):
-        total_lines = 32387833 - 1  # count them once
-        # don’t subtract header unless there is one!
-        world_size = dist.get_world_size()
-        local_n = total_lines // world_size
-        return math.ceil(local_n / self._batch_size_per_gpu)
-
-
     def __iter__(self):
-        # Determine global rank & world size
+        """Iterate through the dataset, shuffling and distributing data appropriately"""
+        # Determine global rank & world size for distributed training
         if dist.is_available() and dist.is_initialized():
             rank = dist.get_rank()
             world_size = dist.get_world_size()
         else:
             rank, world_size = 0, 1
 
-        # If we're also using multiple DataLoader workers (num_workers > 1),
-        # further subdivide per-worker:
+        # Handle DataLoader workers
         worker_info = get_worker_info()
         if worker_info is not None:
-            # each worker in the same process gets a unique ID
             worker_id = worker_info.id
             total_workers = worker_info.num_workers
             # flatten ranks+workers into a single shard index
-            rank = rank * total_workers + worker_id
-            world_size = world_size * total_workers
+            worker_rank = rank * total_workers + worker_id
+            worker_world_size = world_size * total_workers
+        else:
+            worker_rank = rank
+            worker_world_size = world_size
 
-        # Now stream the file, and only yield rows where idx % world_size == rank
+        # Create a deterministic shuffle seed that changes per epoch
+        shuffle_seed = None
+        if self.seed is not None:
+            # Different seed for each epoch, rank, and worker
+            shuffle_seed = self.seed + self.epoch * 10000 + worker_rank
+            torch.manual_seed(shuffle_seed)
+
+        # Efficient chunked reading with a shuffle buffer
+        chunk_size = min(self.buffer_size, 5000)  # Reasonable chunk size
+        buffer = []
+
+        # For debugging
+        samples_yielded = 0
+
+        # Read in chunks for efficiency
         df_iter = pd.read_csv(
             self.file_path,
             sep="\t" if self.file_path.endswith(".tsv") else ",",
-            chunksize=1,
+            chunksize=chunk_size,
             keep_default_na=False,
         )
-        for idx, chunk in enumerate(df_iter):
-            if idx % world_size != rank:
-                continue
-            yield self.parse_row(chunk.iloc[0])
+
+        file_position = 0  # Track position in file
+        for chunk in df_iter:
+            # Find rows that belong to this worker
+            chunk_rows = []
+            for i, row in chunk.iterrows():
+                row_idx = file_position + i - chunk.index[0]
+                if row_idx % worker_world_size == worker_rank:
+                    chunk_rows.append(row)
+
+            # Add to buffer
+            for row in chunk_rows:
+                buffer.append(row)
+
+                # When buffer reaches target size, shuffle and yield
+                if len(buffer) >= self.buffer_size:
+                    # Shuffle buffer if seed is set
+                    if shuffle_seed is not None:
+                        random.shuffle(buffer)
+
+                    # Process and yield samples
+                    for item in buffer:
+                        yield self.parse_row(item)
+                        samples_yielded += 1
+
+                    # Clear buffer
+                    buffer = []
+
+            # Update file position
+            file_position += len(chunk)
+
+        # Process any remaining items in buffer
+        if buffer:
+            if shuffle_seed is not None:
+                random.shuffle(buffer)
+
+            for item in buffer:
+                yield self.parse_row(item)
+                samples_yielded += 1
+
+        # Debug info
+        print(f"Worker {worker_rank}/{worker_world_size}: Yielded {samples_yielded} samples")
 
 
 class DNADataset(Dataset):
