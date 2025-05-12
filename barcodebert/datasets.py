@@ -155,31 +155,10 @@ class LazyDNADataset(IterableDataset):
         return tokens, torch.tensor(int(label), dtype=torch.int64), att_mask
 
     def __len__(self):
-        # 1) count total lines in file (once)
-        if not hasattr(self, "_n_total"):
-            with open(self.file_path, "r") as f:
-                # subtract 1 if there’s a header row
-                self._n_total = sum(1 for _ in f) - 1
-
-        # 2) figure out how many each *process* + *worker* should see
-        if dist.is_available() and dist.is_initialized():
-            rank = dist.get_rank()
-            world_size = dist.get_world_size()
-        else:
-            rank, world_size = 0, 1
-
-        worker_info = get_worker_info()
-        if worker_info is not None:
-            # subdivide further across DataLoader workers
-            total_workers = worker_info.num_workers
-            rank = rank * total_workers + worker_info.id
-            world_size = world_size * total_workers
-
-        # 3) even‐split the total lines, giving the first (rem) ranks one extra
-        base, rem = divmod(self._n_total, world_size)
-        local_n = base + (1 if rank < rem else 0)
-
-        # 4) batches per epoch for *this* process
+        total_lines = 32387833 - 1  # count them once
+        # don’t subtract header unless there is one!
+        world_size = dist.get_world_size()
+        local_n = total_lines // world_size
         return math.ceil(local_n / self._batch_size_per_gpu)
 
 
