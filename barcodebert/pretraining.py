@@ -182,6 +182,9 @@ def run(config):
     eval_set = "Val"
 
     # Dataloaders -------------------------------------------------------------
+    if config.cpu_workers is None:
+        config.cpu_workers = utils.get_num_cpu_available()
+
     if config.lazy_load:
         # streaming IterableDataset → no sampler, no shuffle
         stream_kwargs = {
