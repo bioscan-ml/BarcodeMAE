@@ -89,7 +89,7 @@ class BPETokenizer(object):
         return tokens, att_mask
 
 
-class StreamingDNADataset(Dataset):
+class DNAIterableDataset(IterableDataset):
     def __init__(
             self,
             file_path,
@@ -101,7 +101,8 @@ class StreamingDNADataset(Dataset):
             bpe_path=None,
             tokenize_n_nucleotide=False,
             dataset_format="CANADA-1.5M",
-            chunk_size=10000,  # Number of rows to load at once
+            chunk_size=50000,  # Larger chunk size by default
+            shuffle_buffer=10000,  # Size of shuffle buffer (0 for no shuffle)
     ):
         self.file_path = file_path
         self.k_mer = k_mer
@@ -109,13 +110,17 @@ class StreamingDNADataset(Dataset):
         self.max_len = max_len
         self.randomize_offset = randomize_offset
         self.chunk_size = chunk_size
-
-        # Check that the dataframe format is valid
-        if dataset_format not in ["CANADA-1.5M", "BIOSCAN-5M", "DNABERT-2"]:
-            raise NotImplementedError(f"Dataset {dataset_format} not supported.")
+        self.shuffle_buffer = shuffle_buffer
         self.dataset_format = dataset_format
 
-        # Set up tokenizer
+        # Count lines in file for length approximation
+        with open(file_path, 'r') as f:
+            self.total_samples = sum(1 for _ in f) - 1  # Subtract header
+
+        # Get column names
+        self.column_names = pd.read_csv(file_path, nrows=0).columns.tolist()
+
+        # Create tokenizer
         if tokenizer == "kmer":
             # Vocabulary
             base_pairs = "ACGT"
@@ -126,7 +131,6 @@ class StreamingDNADataset(Dataset):
                 base_pairs += "N"
             kmers = ["".join(kmer) for kmer in product(base_pairs, repeat=self.k_mer)]
 
-            # Separate between good (idx < 4**k) and bad k-mers (idx > 4**k) for prediction
             if tokenize_n_nucleotide:
                 prediction_kmers = []
                 other_kmers = []
@@ -135,7 +139,6 @@ class StreamingDNADataset(Dataset):
                         other_kmers.append(kmer)
                     else:
                         prediction_kmers.append(kmer)
-
                 kmers = prediction_kmers + other_kmers
 
             kmer_dict = dict.fromkeys(kmers, 1)
@@ -151,113 +154,73 @@ class StreamingDNADataset(Dataset):
         else:
             raise ValueError(f'Tokenizer "{tokenizer}" not recognized.')
 
-        # Get dataset length and labels without loading all data
-        self._calculate_length_and_labels()
-
-    def set_epoch(self, epoch):
-        """Update the dataset state for a new epoch"""
-        # Reset cache to ensure fresh data loading
-        if hasattr(self, '_current_chunk'):
-            del self._current_chunk
-            del self._current_chunk_key
-        # You can add epoch-specific randomization here if needed
-        if self.randomize_offset:
-            # Set a deterministic but different seed for each epoch
-            random.seed(epoch)
-    def _calculate_length_and_labels(self):
-        """Calculate dataset length and prepare label mapping without loading full dataset"""
-        # Count number of lines in the file (subtract 1 for header)
-        with open(self.file_path, 'r') as f:
-            self.length = sum(1 for _ in f) - 1
-
-        # For label information, we can either:
-        # 1. Read just the label column with usecols
-        # 2. Process in chunks to get unique labels
-
-        if self.dataset_format == "CANADA-1.5M":
-            # Read just the species_name column to get unique values
-            label_df = pd.read_csv(
-                self.file_path,
-                sep="\t" if self.file_path.endswith(".tsv") else ",",
-                usecols=["species_name"]
-            )
-            self.label_set, _ = pd.factorize(label_df["species_name"], sort=True)
+        # Set up label information
+        if dataset_format == "CANADA-1.5M":
+            # Create a mapping of species names to indices
+            # Use chunk loading to avoid memory issues
+            all_species = set()
+            for df_chunk in pd.read_csv(file_path, chunksize=chunk_size):
+                all_species.update(df_chunk["species_name"].unique())
+            self.label_set = sorted(list(all_species))
+            self.label_map = {name: idx for idx, name in enumerate(self.label_set)}
             self.num_labels = len(self.label_set)
-        elif self.dataset_format == "BIOSCAN-5M":
-            # Just need the number of labels
+        elif dataset_format == "BIOSCAN-5M":
             self.num_labels = 22_622
-        elif self.dataset_format == "DNABERT-2":
+        elif dataset_format == "DNABERT-2":
             # Dummy labels for DNABERT-2
             self.num_labels = 1
 
-    def _get_chunk(self, idx):
-        """Get the chunk containing the index"""
-        chunk_idx = idx // self.chunk_size
-        start_idx = chunk_idx * self.chunk_size
-        end_idx = min(start_idx + self.chunk_size, self.length)
+        # For tracking current epoch
+        self.epoch = 0
+        self._shuffle_seed = 0
 
-        # Calculate skip and nrows for efficient reading
-        skiprows = list(range(1, start_idx + 1))  # +1 to account for header
-        nrows = end_idx - start_idx
+    def _get_start_end_indices(self):
+        """Get start and end indices for this worker and process in distributed setting"""
+        # Get worker info
+        worker_info = get_worker_info()
+        num_workers = 1
+        worker_id = 0
 
-        # Load the specific chunk
-        chunk = pd.read_csv(
-            self.file_path,
-            sep="\t" if self.file_path.endswith(".tsv") else ",",
-            skiprows=skiprows,
-            nrows=nrows,
-            header=0 if not skiprows else None,  # Use header if reading from start
-            names=None if not skiprows else self._get_column_names(),
-            keep_default_na=False
-        )
+        # If inside dataloader worker process
+        if worker_info is not None:
+            num_workers = worker_info.num_workers
+            worker_id = worker_info.id
 
-        return chunk
+        # Get process info for distributed training
+        if dist.is_available() and dist.is_initialized():
+            world_size = dist.get_world_size()
+            rank = dist.get_rank()
+        else:
+            world_size = 1
+            rank = 0
 
-    def _get_column_names(self):
-        """Get column names from file"""
-        return pd.read_csv(
-            self.file_path,
-            sep="\t" if self.file_path.endswith(".tsv") else ",",
-            nrows=0
-        ).columns.tolist()
+        # Calculate per-worker chunk
+        # First shard by process (GPU), then by worker within process
+        per_worker = int(math.ceil((self.total_samples - 1) / (world_size * num_workers)))
 
-    def __len__(self):
-        return self.length
+        # Global worker ID
+        global_worker_id = rank * num_workers + worker_id
+        global_num_workers = world_size * num_workers
 
-    def __getitem__(self, idx):
-        # Calculate which chunk and position within chunk
-        chunk_idx = idx // self.chunk_size
-        local_idx = idx % self.chunk_size
+        # Calculate initial positions
+        start_idx = global_worker_id * per_worker + 1  # +1 to skip header
+        end_idx = min(start_idx + per_worker, self.total_samples)
 
-        # Get current cache key
-        current_chunk_key = chunk_idx
+        return start_idx, end_idx, global_worker_id, global_num_workers
 
-        # Check if we need to load a new chunk
-        if not hasattr(self, '_current_chunk') or self._current_chunk_key != current_chunk_key:
-            self._current_chunk = self._get_chunk(idx)
-            self._current_chunk_key = current_chunk_key
-
-        # Get data from current chunk
-        barcode = self._current_chunk.iloc[local_idx]["nucleotides"]
+    def _process_sample(self, row):
+        """Process a single sample row into model inputs"""
+        barcode = row["nucleotides"]
 
         # Process labels based on dataset format
         if self.dataset_format == "CANADA-1.5M":
-            # Need to factorize on the fly
-            if not hasattr(self, '_label_mapping'):
-                # Lazily create label mapping
-                all_labels = pd.read_csv(
-                    self.file_path,
-                    sep="\t" if self.file_path.endswith(".tsv") else ",",
-                    usecols=["species_name"]
-                )
-                unique_labels, _ = pd.factorize(all_labels["species_name"], sort=True)
-                self._label_mapping = {name: i for i, name in enumerate(unique_labels)}
+            label = self.label_map.get(row["species_name"], 0)
+        elif self.dataset_format == "BIOSCAN-5M":
+            label = row["species_index"]
+        else:  # DNABERT-2
+            label = 0
 
-            label = self._label_mapping.get(self._current_chunk.iloc[local_idx]["species_name"], 0)
-        else:  # BIOSCAN-5M format
-            label = self._current_chunk.iloc[local_idx]["species_index"]
-
-        # Process barcode
+        # Process barcode with tokenizer
         if self.randomize_offset:
             offset = torch.randint(self.k_mer, (1,)).item()
         else:
@@ -267,6 +230,80 @@ class StreamingDNADataset(Dataset):
         label = torch.tensor(label, dtype=torch.int64)
 
         return processed_barcode, label, att_mask
+
+    def set_epoch(self, epoch):
+        """Update epoch counter for deterministic shuffling"""
+        self.epoch = epoch
+        self._shuffle_seed = hash((epoch, 0))  # Use hash for more entropy
+
+    def __iter__(self):
+        # Get worker-specific start/end indices
+        start_idx, end_idx, worker_id, num_workers = self._get_start_end_indices()
+
+        # Create pandas reader for this worker's chunk
+        skiprows = list(range(1, start_idx))  # Skip rows before start
+        nrows = end_idx - start_idx + 1  # Include end index
+
+        # For better performance, read in chunks
+        chunk_size = min(self.chunk_size, nrows)
+        chunks_iter = pd.read_csv(
+            self.file_path,
+            skiprows=skiprows,
+            nrows=nrows,
+            chunksize=chunk_size,
+            names=self.column_names,
+            header=None if skiprows else 0  # Only use header if reading from start
+        )
+
+        if self.shuffle_buffer > 0:
+            # Use a shuffle buffer for better performance
+            buffer = []
+            buffer_size = min(self.shuffle_buffer, nrows)
+
+            # Set the random seed based on epoch, worker ID for reproducibility
+            rng = random.Random(self._shuffle_seed + worker_id)
+
+            # Process chunks with shuffling
+            for chunk in chunks_iter:
+                # Process each row in the chunk
+                for _, row in chunk.iterrows():
+                    # Add processed sample to buffer
+                    buffer.append(self._process_sample(row))
+
+                    # If buffer is full, yield a random sample
+                    if len(buffer) >= buffer_size:
+                        idx = rng.randint(0, len(buffer) - 1)
+                        yield buffer[idx]
+                        buffer[idx] = buffer[-1]
+                        buffer.pop()
+
+            # Empty the buffer
+            while buffer:
+                idx = rng.randint(0, len(buffer) - 1)
+                yield buffer[idx]
+                buffer[idx] = buffer[-1]
+                buffer.pop()
+        else:
+            # No shuffling - directly yield samples
+            for chunk in chunks_iter:
+                for _, row in chunk.iterrows():
+                    yield self._process_sample(row)
+
+    def __len__(self):
+        # Approximate length for progress bars
+        if dist.is_available() and dist.is_initialized():
+            world_size = dist.get_world_size()
+        else:
+            world_size = 1
+
+        worker_info = get_worker_info()
+        if worker_info is not None:
+            num_workers = worker_info.num_workers
+        else:
+            num_workers = 1
+
+        return math.ceil(self.total_samples / (world_size * num_workers))
+
 
 class DNADataset(Dataset):
     def __init__(
