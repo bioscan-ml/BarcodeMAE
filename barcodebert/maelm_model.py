@@ -2,15 +2,16 @@ import torch
 import torch.nn as nn
 from transformers import BertForTokenClassification, BertModel
 
-
 class MAELMModel(nn.Module):
 
     def __init__(self, encoder_config, decoder_config):
         super(MAELMModel, self).__init__()
         # Encoder BERT model
+        # model = BertForMaskedLM(encoder_config)
         self.encoder = BertModel(encoder_config)
 
         # Decoder BERT model with token classification head
+        # self.decoder = BertForTokenClassification(decoder_config)
         self.decoder = BertForTokenClassification(decoder_config)
 
         # Encoder Embeddings (word and positional)
@@ -24,68 +25,12 @@ class MAELMModel(nn.Module):
         self.decoder_embedding = self.decoder.bert.embeddings.word_embeddings
 
     def forward(self, input_ids, attention_mask, mask_positions, model_type="maelm_v2"):
-        if model_type == "maelm_v1":
-            return self.forward_v1(input_ids, attention_mask, mask_positions)
-        elif model_type == "maelm_v2":
-            return self.forward_v2(input_ids, attention_mask, mask_positions)
+        if model_type == "maelm_v2":
+            return self.forward_maelm(input_ids, attention_mask, mask_positions)
         elif model_type == "baseline":
             return self.forward_baseline(input_ids, attention_mask)
 
-    def forward_v1(self, input_ids, attention_mask, mask_positions):
-        """
-        This version is removing the masked token from the encoder inout by zeroing out
-        the embeddings/attention_masked of the masked tokens.
-        """
-        batch_size, seq_len = input_ids.size()
-        # Generate position IDs
-        position_ids = torch.arange(seq_len, device=input_ids.device).unsqueeze(0).expand(batch_size, seq_len)
-        # Create mask for unmasked positions
-        seen_token_indices = ~mask_positions
-
-        # Get embeddings for all tokens
-        token_embeddings = self.encoder_embedding(input_ids)
-        position_embeddings = self.encoder_position_embeddings(position_ids)
-        all_embeddings = token_embeddings + position_embeddings
-
-        # Zero out embeddings of masked tokens for the encoder
-        encoder_embeddings = all_embeddings * seen_token_indices.unsqueeze(-1).float()
-
-        # Adjust the attention mask to ignore masked tokens
-        encoder_attention_mask = attention_mask * seen_token_indices.int()
-
-        # Pass through the encoder
-        encoder_outputs = self.encoder(
-            inputs_embeds=encoder_embeddings,
-            attention_mask=encoder_attention_mask,
-        ).last_hidden_state
-
-        # Prepare decoder input embeddings
-        # not sure about this part
-        mask_token_id = 0
-        mask_token_embedding = self.decoder_embedding.weight[mask_token_id]
-        mask_token_embedding_expanded = mask_token_embedding.unsqueeze(0).unsqueeze(0)
-        mask_token_embeddings = mask_token_embedding_expanded + position_embeddings
-
-        decoder_input_embeddings = torch.where(
-            mask_positions.unsqueeze(-1),
-            mask_token_embeddings,
-            encoder_outputs + position_embeddings,
-        )
-
-        # Decoder attention mask
-        decoder_attention_mask = attention_mask
-
-        # Pass through the decoder
-        outputs = self.decoder(
-            inputs_embeds=decoder_input_embeddings,
-            attention_mask=decoder_attention_mask,
-            labels=None,
-            return_dict=True,
-        )
-
-        return outputs
-
-    def forward_v2(self, input_ids, attention_mask, mask_positions):
+    def forward_maelm(self, input_ids, attention_mask, mask_positions):
         """
         This version is removing the masked token from the encoder input by padding the sequence with the UNK token.
         The positional ids are based on the input sequence.
@@ -131,14 +76,14 @@ class MAELMModel(nn.Module):
 
         # Map encoder outputs back to the original sequence positions
         decoder_input_embeddings = torch.zeros(
-            batch_size, seq_len, encoder_sequence_output.size(-1), device=input_ids.device
+            batch_size, seq_len, encoder_sequence_output.size(-1), device=input_ids.device, dtype=encoder_sequence_output.dtype
         )
 
         # If the encoder and decoder have different hidden states, project the encoder hidden states
         if self.encoder.config.output_hidden_states != self.decoder.config.output_hidden_states:
             encoder_sequence_output = self.projection_layer(encoder_sequence_output)
 
-        decoder_input_embeddings[seen_token_positions] = encoder_sequence_output[seen_indices]
+        decoder_input_embeddings[seen_token_positions] = encoder_sequence_output[seen_indices].to(decoder_input_embeddings.dtype)
 
         # this should not be hard coded
         mask_token_id = 0
@@ -186,9 +131,8 @@ class MAELMModel(nn.Module):
 
         # Pass through the decoder (BertForMaskedLM)
         outputs = self.decoder(
-            inputs_embeds=decoder_input_embeddings,
+            input_embeds=decoder_input_embeddings,
             attention_mask=decoder_attention_mask,
-            return_dict=True,
             position_ids=decoder_position_ids,
         )
 
