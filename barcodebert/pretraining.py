@@ -22,6 +22,7 @@ from barcodebert.io import safe_save_model
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../..")))
 from barcodebert.maelm_model import MAELMModel
+from biological_masker import CompatibleBiologicalMasker, get_biological_replacements
 
 BASE_BATCH_SIZE = 64
 
@@ -102,6 +103,23 @@ def run(config):
         device = "cuda"
 
     print(f"Using device {device}", flush=True)
+
+    # ==========================================
+    # Initialize biological masker
+    biological_masker = None
+    try:
+        biological_masker = CompatibleBiologicalMasker.from_cache_dir(
+            cache_dir='./kmer_cache',
+            k_mer_size=config.k_mer,
+            tokenize_n_nucleotide=config.tokenize_n_nucleotide,
+            device=device
+        )
+        print("✅ Biological masking enabled")
+    except FileNotFoundError as e:
+        print(f"⚠️  Warning: {e}")
+        print("Using uniform random masking instead")
+        biological_masker = None
+    # ==========================================
 
     # LOAD PRE-EMPTION CHECKPOINT =============================================
     checkpoint = None
@@ -478,6 +496,7 @@ def run(config):
             distance_table=distance_table,
             n_special_tokens=n_special_tokens,
             n_all_tokens=n_all_tokens,
+            biological_masker=biological_masker,
         )
         t_end_train = time.time()
 
@@ -516,6 +535,7 @@ def run(config):
             distance_table=distance_table,
             n_special_tokens=n_special_tokens,
             n_all_tokens=n_all_tokens,
+            biological_masker=biological_masker
         )
         t_end_val = time.time()
         timing_stats["val"] = t_end_val - t_start_val
@@ -639,6 +659,7 @@ def train_one_epoch(
     distance_table=None,
     n_special_tokens=2,
     n_all_tokens=-1,
+    biological_masker=None
 ):
     r"""
     Train the encoder and classifier for one epoch.
@@ -754,24 +775,46 @@ def train_one_epoch(
         input_maskout = masked_unseen_tokens | masked_random_tokens | masked_original_tokens
         # Apply the masks
         masked_input[masked_unseen_tokens] = 0  # Masking the token
-        # Keep original tokens where mask_keep_original is True (no action needed)
+
         # Replace with random token where mask_random_token is True
         # Generate random tokens
+        if biological_masker is not None:
+            tokens_to_replace = sequences[masked_random_tokens]
+            # Get biological replacements (guaranteed different from originals)
+            biological_replacements = biological_masker.get_biological_replacements(tokens_to_replace)
+            masked_input[masked_random_tokens] = biological_replacements
+            if biological_masker is not None:
+                tokens_to_replace = sequences[masked_random_tokens]
+                biological_replacements = get_biological_replacements(tokens_to_replace, biological_masker)
+                masked_input[masked_random_tokens] = biological_replacements
 
-        min_token_id = n_special_tokens  # 0 is for masking, 1 is for <UNK>
-        max_token_id = n_all_tokens  # number of all tokens (including special)
-        random_tokens = torch.randint_like(masked_input, low=min_token_id, high=max_token_id)
+                # SIMPLE DEBUG - only first batch of first epoch
+                if batch_idx == 0 and epoch == 1:
+                    print(f"\n🔬 Biological masking check:")
+                    for i in range(min(5, len(tokens_to_replace))):
+                        orig_id = tokens_to_replace[i].item()
+                        repl_id = biological_replacements[i].item()
+                        orig_kmer = dataloader.dataset.vocab.lookup_token(orig_id)
+                        repl_kmer = dataloader.dataset.vocab.lookup_token(repl_id)
+                        same = " SAME!" if orig_id == repl_id else "OK"
+                        print(f"  {orig_kmer} → {repl_kmer} {same}")
 
-        # Ensure random tokens are not the same as the original tokens
-        while True:
-            same_as_original = (random_tokens == masked_input) & masked_random_tokens
-            if not same_as_original.any():
-                break
-            random_tokens[same_as_original] = torch.randint(
-                size=(same_as_original.sum().item(),), low=min_token_id, high=max_token_id, device=device
-            )
 
-        masked_input[masked_random_tokens] = random_tokens[masked_random_tokens]
+        else:
+            min_token_id = n_special_tokens  # 0 is for masking, 1 is for <UNK>
+            max_token_id = n_all_tokens  # number of all tokens (including special)
+            random_tokens = torch.randint_like(masked_input, low=min_token_id, high=max_token_id)
+
+            # Ensure random tokens are not the same as the original tokens
+            while True:
+                same_as_original = (random_tokens == masked_input) & masked_random_tokens
+                if not same_as_original.any():
+                    break
+                random_tokens[same_as_original] = torch.randint(
+                    size=(same_as_original.sum().item(),), low=min_token_id, high=max_token_id, device=device
+                )
+
+            masked_input[masked_random_tokens] = random_tokens[masked_random_tokens]
 
         # Forward pass --------------------------------------------------------
         t_start_forward = time.time()
@@ -1059,6 +1102,22 @@ def train_one_epoch(
             "accuracy_overall": acc_all_epoch / (batch_idx + 1),
         }
 
+    if biological_masker is not None:
+        tokens_to_replace = sequences[masked_random_tokens]
+        biological_replacements = get_biological_replacements(tokens_to_replace, biological_masker)
+        masked_input[masked_random_tokens] = biological_replacements
+
+        # SIMPLE DEBUG - only first batch of first epoch
+        if batch_idx == 0 and epoch == 1:
+            print(f"\n🔬 Biological masking check:")
+            for i in range(min(5, len(tokens_to_replace))):
+                orig_id = tokens_to_replace[i].item()
+                repl_id = biological_replacements[i].item()
+                orig_kmer = dataloader.dataset.vocab.lookup_token(orig_id)
+                repl_kmer = dataloader.dataset.vocab.lookup_token(repl_id)
+                same = "❌ SAME!" if orig_id == repl_id else "✅"
+                print(f"  {orig_kmer} → {repl_kmer} {same}")
+
     return results, total_step, n_samples_seen
 
 
@@ -1073,6 +1132,7 @@ def evaluate(
     distance_table=None,
     n_special_tokens=2,
     n_all_tokens=-1,
+    biological_masker=None
 ):
     r"""
     Evaluate the encoder on the validation data.
@@ -1169,21 +1229,27 @@ def evaluate(
             # Keep original tokens where mask_keep_original is True (no action needed)
             # Replace with random token where mask_random_token is True
             # Generate random tokens
+            if biological_masker is not None:
+                tokens_to_replace = sequences[masked_random_tokens]
+                # Get biological replacements (guaranteed different from originals)
+                biological_replacements = biological_masker.get_biological_replacements(tokens_to_replace)
+                masked_input[masked_random_tokens] = biological_replacements
 
-            min_token_id = n_special_tokens  # 0 is for masking, 1 is for <UNK>
-            max_token_id = n_all_tokens  # number of all tokens (including special)
-            random_tokens = torch.randint_like(masked_input, low=min_token_id, high=max_token_id)
+            else:
+                min_token_id = n_special_tokens  # 0 is for masking, 1 is for <UNK>
+                max_token_id = n_all_tokens  # number of all tokens (including special)
+                random_tokens = torch.randint_like(masked_input, low=min_token_id, high=max_token_id)
 
-            # Ensure random tokens are not the same as the original tokens
-            while True:
-                same_as_original = (random_tokens == masked_input) & masked_random_tokens
-                if not same_as_original.any():
-                    break
-                random_tokens[same_as_original] = torch.randint(
-                    size=(same_as_original.sum().item(),), low=min_token_id, high=max_token_id, device=device
-                )
+                # Ensure random tokens are not the same as the original tokens
+                while True:
+                    same_as_original = (random_tokens == masked_input) & masked_random_tokens
+                    if not same_as_original.any():
+                        break
+                    random_tokens[same_as_original] = torch.randint(
+                        size=(same_as_original.sum().item(),), low=min_token_id, high=max_token_id, device=device
+                    )
 
-            masked_input[masked_random_tokens] = random_tokens[masked_random_tokens]
+                masked_input[masked_random_tokens] = random_tokens[masked_random_tokens]
 
             # Forward pass ----------------------------------------------------
             if config.arch == "maelm":
@@ -1344,6 +1410,7 @@ def evaluate(
             "accuracy_overall": 100.0 * acc_all_epoch / n_samples,
             "n_samples": n_samples,
         }
+
     return results
 
 
