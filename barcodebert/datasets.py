@@ -1,322 +1,338 @@
-#!/usr/bin/env python3
 """
-Precompute k-mer substitution lookup tables that match DNADataset tokenization exactly.
-
-This version ensures token ID compatibility with your KmerTokenizer.
+Datasets.
 """
 
-import argparse
-import numpy as np
-import pickle
 import os
-from itertools import combinations, product
-import hashlib
-import time
+from itertools import product
+
+import numpy as np
+import pandas as pd
+import torch
+from torch.utils.data import Dataset
+from torchtext.vocab import vocab as build_vocab_from_dict
+from transformers import AutoTokenizer
 
 
-def create_compatible_vocab(k_mer_size, tokenize_n_nucleotide=False):
-    """
-    Create vocab that exactly matches DNADataset tokenization
-    
-    Returns:
-        tuple: (kmer_to_token_dict, token_to_kmer_dict, n_special_tokens)
-    """
-    # Exactly match DNADataset logic
-    base_pairs = "ACGT"
-    special_tokens = ["[MASK]", "[UNK]"]
-    
-    if tokenize_n_nucleotide:
-        base_pairs += "N"
-    
-    # Generate k-mers exactly like DNADataset
-    kmers = ["".join(kmer) for kmer in product(base_pairs, repeat=k_mer_size)]
-    
-    # Handle N-containing k-mers exactly like DNADataset
-    if tokenize_n_nucleotide:
-        prediction_kmers = []
-        other_kmers = []
-        for kmer in kmers:
-            if "N" in kmer:
-                other_kmers.append(kmer)
+class KmerTokenizer(object):
+    def __init__(self, k, vocabulary_mapper, stride=1, padding=False, max_len=660):
+        self.k = k
+        self.stride = stride
+        self.padding = padding
+        self.max_len = max_len
+        self.vocabulary_mapper = vocabulary_mapper
+
+    def __call__(self, dna_sequence, offset=0) -> tuple[list, list]:
+        tokens = []
+        att_mask = [1] * (self.max_len // self.stride)
+        x = dna_sequence[offset:]
+        if self.padding:
+            if len(x) > self.max_len:
+                x = x[: self.max_len]
             else:
-                prediction_kmers.append(kmer)
-        kmers = prediction_kmers + other_kmers
-    
-    # Create token mappings (special tokens first, then k-mers)
-    all_tokens = special_tokens + kmers
-    
-    kmer_to_token = {}
-    token_to_kmer = {}
-    
-    for token_id, token in enumerate(all_tokens):
-        if token not in special_tokens:  # Only map k-mers
-            kmer_to_token[token] = token_id
-            token_to_kmer[token_id] = token
-    
-    n_special_tokens = len(special_tokens)
-    
-    print(f"Created vocab with {len(special_tokens)} special tokens + {len(kmers)} k-mers")
-    print(f"Special tokens: {special_tokens}")
-    print(f"Token range for k-mers: {n_special_tokens} to {len(all_tokens)-1}")
-    
-    return kmer_to_token, token_to_kmer, n_special_tokens
+                att_mask[len(x) // self.stride :] = [0] * (len(att_mask) - len(x) // self.stride)
+                x = x + "N" * (self.max_len - len(x))
+        for i in range(0, len(x) - self.k + 1, self.stride):
+            k_mer = x[i : i + self.k]
+            tokens.append(k_mer)
+
+        tokens = torch.tensor(self.vocabulary_mapper(tokens), dtype=torch.int64)
+        att_mask = torch.tensor(att_mask, dtype=torch.int32)
+
+        return tokens, att_mask
 
 
-def kmer_to_sequence(kmer):
-    """Convert k-mer string to sequence of base indices"""
-    base_to_idx = {'A': 0, 'C': 1, 'G': 2, 'T': 3, 'N': 4}
-    return [base_to_idx[base] for base in kmer]
+class BPETokenizer(object):
+    def __init__(self, padding=False, max_tokenized_len=128, bpe_path=None):
+        self.padding = padding
+        self.max_tokenized_len = max_tokenized_len
+
+        assert os.path.isdir(bpe_path), f"The bpe path does not exist: {bpe_path}"
+
+        self.bpe = AutoTokenizer.from_pretrained(bpe_path)
+
+        # root_folder = os.path.dirname(__file__)
+        # if bpe_type == "dnabert":
+        #     # self.bpe = AutoTokenizer.from_pretrained("zhihan1996/DNABERT-2-117M", trust_remote_code=True)
+        #     bpe_folder = os.path.join(root_folder, "bpe_tokenizers", "bpe_dnabert2")
+        #     assert os.path.isdir(bpe_folder), f"Directory does not exist: {bpe_folder}"
+        #     self.bpe = AutoTokenizer.from_pretrained(f"{bpe_folder}/")
+        # elif bpe_type.__contains__("barcode"):
+        #     length = bpe_type.split("_")[-1]
+        #     bpe_folder = os.path.join(root_folder, "bpe_tokenizers", f"bpe_barcode_{length}")
+        #     assert os.path.isdir(bpe_folder), f"Directory does not exist: {bpe_folder}"
+        #     self.bpe = AutoTokenizer.from_pretrained(bpe_folder)
+        # else:
+        #     raise NotImplementedError(f"bpe_type {bpe_type} is  not supported.")
+
+    def __call__(self, dna_sequence, offset=0) -> tuple[list, list]:
+        x = dna_sequence[offset:]
+        tokens = self.bpe(x, padding=True, return_tensors="pt")["input_ids"]
+        tokens[tokens == 2] = 3
+        tokens[tokens == 1] = 2
+        tokens[tokens == 0] = 1  # all the UNK + CLS have token of 1
+
+        tokens = tokens[0].tolist()
+
+        if len(tokens) > self.max_tokenized_len:
+            att_mask = [1] * self.max_tokenized_len
+            tokens = tokens[: self.max_tokenized_len]
+        else:
+            att_mask = [1] * (len(tokens)) + [0] * (self.max_tokenized_len - len(tokens))
+            tokens = tokens + [1] * (self.max_tokenized_len - len(tokens))
+
+        att_mask = torch.tensor(att_mask, dtype=torch.int32)
+        tokens = torch.tensor(tokens, dtype=torch.int64)
+        return tokens, att_mask
 
 
-def sequence_to_kmer(sequence):
-    """Convert sequence of base indices to k-mer string"""
-    idx_to_base = {0: 'A', 1: 'C', 2: 'G', 3: 'T', 4: 'N'}
-    return ''.join(idx_to_base[idx] for idx in sequence)
+class DNADataset(Dataset):
+    def __init__(
+        self,
+        file_path,
+        k_mer=4,
+        stride=None,
+        max_len=256,
+        randomize_offset=False,
+        tokenizer="kmer",
+        bpe_path=None,
+        tokenize_n_nucleotide=False,
+        dataset_format="CANADA-1.5M",
+    ):
+        self.k_mer = k_mer
+        self.stride = k_mer if stride is None else stride
+        self.max_len = max_len
+        self.randomize_offset = randomize_offset
 
+        # Check that the dataframe contains a valid format
+        if dataset_format not in ["CANADA-1.5M", "BIOSCAN-5M"]:
+            raise NotImplementedError(f"Dataset {dataset_format} not supported.")
 
-def compute_substitution_probability(original_seq, target_seq, substitution_matrix):
-    """Compute probability of substituting original_seq -> target_seq"""
-    prob = 1.0
-    for i in range(len(original_seq)):
-        if original_seq[i] != target_seq[i]:
-            # Mutation occurred at position i
-            if original_seq[i] < len(substitution_matrix) and target_seq[i] < len(substitution_matrix):
-                prob *= substitution_matrix[original_seq[i], target_seq[i]]
-            else:
-                # Handle N base (skip or assign low probability)
-                prob *= 0.01  # Low probability for N substitutions
-    return prob
+        if tokenizer == "kmer":
+            # Vocabulary
+            base_pairs = "ACGT"
+            self.special_tokens = ["[MASK]", "[UNK]"]  # ["[MASK]", "[CLS]", "[SEP]", "[PAD]", "[EOS]", "[UNK]"]
+            UNK_TOKEN = "[UNK]"
 
+            if tokenize_n_nucleotide:
+                # Encode kmers which contain N differently depending on where it is
+                base_pairs += "N"
+            kmers = ["".join(kmer) for kmer in product(base_pairs, repeat=self.k_mer)]
 
-def generate_mutations_recursive(original_seq, positions, pos_idx, current_seq, 
-                                substitutions, substitution_matrix, exclude_n=True):
-    """Recursively generate all mutation combinations"""
-    if pos_idx == len(positions):
-        # Check if this is actually different from original
-        if current_seq != original_seq:
-            target_kmer = sequence_to_kmer(current_seq)
-            prob = compute_substitution_probability(original_seq, current_seq, substitution_matrix)
-            substitutions.append((target_kmer, prob))
-        return
-    
-    current_pos = positions[pos_idx]
-    original_base = original_seq[current_pos]
-    
-    # Determine valid bases for substitution
-    n_bases = 4 if exclude_n else 5  # A, C, G, T (and possibly N)
-    
-    # Try all possible substitutions at this position (except original)
-    for new_base in range(n_bases):
-        if new_base != original_base:
-            current_seq[current_pos] = new_base
-            generate_mutations_recursive(
-                original_seq, positions, pos_idx + 1, current_seq.copy(), 
-                substitutions, substitution_matrix, exclude_n
+            # Separate between good (idx < 4**k) and bad k-mers (idx > 4**k) for prediction
+            if tokenize_n_nucleotide:
+                prediction_kmers = []
+                other_kmers = []
+                for kmer in kmers:
+                    if "N" in kmer:
+                        other_kmers.append(kmer)
+                    else:
+                        prediction_kmers.append(kmer)
+
+                kmers = prediction_kmers + other_kmers
+
+            kmer_dict = dict.fromkeys(kmers, 1)
+            self.vocab = build_vocab_from_dict(kmer_dict, specials=self.special_tokens)
+            self.vocab.set_default_index(self.vocab[UNK_TOKEN])
+            self.vocab_size = len(self.vocab)
+            self.tokenizer = KmerTokenizer(
+                self.k_mer, self.vocab, stride=self.stride, padding=True, max_len=self.max_len
             )
-    
-    # Restore original base
-    current_seq[current_pos] = original_base
+        elif tokenizer == "bpe":
+            self.tokenizer = BPETokenizer(padding=True, max_tokenized_len=self.max_len, bpe_path=bpe_path)
+            self.vocab_size = self.tokenizer.bpe.vocab_size
+        else:
+            raise ValueError(f'Tokenizer "{tokenizer}" not recognized.')
+        df = pd.read_csv(file_path, sep="\t" if file_path.endswith(".tsv") else ",", keep_default_na=False)
+        self.barcodes = df["nucleotides"].to_list()
+
+        if dataset_format == "CANADA-1.5M":
+            self.labels, self.label_set = pd.factorize(df["species_name"], sort=True)
+            self.num_labels = len(self.label_set)
+        else:
+            self.label_names = df["species_name"].to_list()
+            self.labels = df["species_index"].to_list()
+            self.num_labels = 22_622
+
+    def __len__(self):
+        return len(self.barcodes)
+
+    def __getitem__(self, idx):
+        if self.randomize_offset:
+            offset = torch.randint(self.k_mer, (1,)).item()
+        else:
+            offset = 0
+        processed_barcode, att_mask = self.tokenizer(self.barcodes[idx], offset=offset)
+        label = torch.tensor(self.labels[idx], dtype=torch.int64)
+        return processed_barcode, label, att_mask
 
 
-def generate_all_substitutions_for_kmer(kmer, substitution_matrix, tokenize_n_nucleotide=False):
-    """Generate all possible substitutions for a given k-mer (excluding itself)"""
-    original_seq = kmer_to_sequence(kmer)
-    k_mer_size = len(kmer)
-    substitutions = []
-    
-    # Skip k-mers with N if not handling N
-    if not tokenize_n_nucleotide and 'N' in kmer:
-        return []
-    
-    # For each possible number of mutations (1 to k)
-    for num_mutations in range(1, k_mer_size + 1):
-        # For each combination of positions to mutate
-        for positions in combinations(range(k_mer_size), num_mutations):
-            # Generate all possible mutations for these positions
-            generate_mutations_recursive(
-                original_seq, list(positions), 0, original_seq.copy(), 
-                substitutions, substitution_matrix, exclude_n=not tokenize_n_nucleotide
-            )
-    
-    return substitutions
+def representations_from_df(df, target_level, model, tokenizer, dataset_name, mode=None, mask_rate=None):
 
-
-def precompute_kmer_substitutions_compatible(k_mer_size, substitution_matrix, tokenize_n_nucleotide=False):
-    """
-    Precompute k-mer substitutions with exact compatibility to DNADataset
-    
-    Returns:
-        dict: {original_token_id: [(target_token_id, cumulative_prob), ...]}
-    """
-    # Create compatible vocabulary
-    kmer_to_token, token_to_kmer, n_special_tokens = create_compatible_vocab(
-        k_mer_size, tokenize_n_nucleotide
-    )
-    
-    cumulative_lookup = {}
-    
-    print(f"Precomputing substitutions for {len(token_to_kmer)} k-mers...")
-    start_time = time.time()
-    
-    processed = 0
-    for token_id, kmer in token_to_kmer.items():
-        if processed % 500 == 0:
-            elapsed = time.time() - start_time
-            progress = processed / len(token_to_kmer)
-            eta = elapsed / max(progress, 0.001) - elapsed if progress > 0 else 0
-            print(f"Progress: {processed}/{len(token_to_kmer)} ({progress*100:.1f}%) - "
-                  f"ETA: {eta/60:.1f} minutes")
-        
-        substitutions = generate_all_substitutions_for_kmer(
-            kmer, substitution_matrix, tokenize_n_nucleotide
-        )
-        
-        if substitutions:
-            # Convert k-mer strings to token IDs and filter valid ones
-            valid_substitutions = []
-            for target_kmer, prob in substitutions:
-                if target_kmer in kmer_to_token:
-                    target_token_id = kmer_to_token[target_kmer]
-                    # Ensure we don't include the original token
-                    if target_token_id != token_id:
-                        valid_substitutions.append((target_token_id, prob))
-            
-            if valid_substitutions:
-                # Sort by probability (descending)
-                valid_substitutions.sort(key=lambda x: x[1], reverse=True)
-                
-                # Compute cumulative probabilities
-                total_prob = sum(prob for _, prob in valid_substitutions)
-                cumulative_probs = []
-                cumulative_sum = 0.0
-                
-                for target_token, prob in valid_substitutions:
-                    cumulative_sum += prob / total_prob  # Normalize
-                    cumulative_probs.append((target_token, cumulative_sum))
-                
-                cumulative_lookup[token_id] = cumulative_probs
-        
-        processed += 1
-    
-    elapsed = time.time() - start_time
-    print(f"Precomputation completed in {elapsed/60:.1f} minutes")
-    print(f"Generated lookup table for {len(cumulative_lookup)} k-mers")
-    
-    return cumulative_lookup, n_special_tokens
-
-
-def save_compatible_lookup_table(lookup_table, k_mer_size, substitution_matrix, 
-                                n_special_tokens, tokenize_n_nucleotide, output_path):
-    """Save precomputed lookup table with compatibility info"""
-    data = {
-        'k_mer_size': k_mer_size,
-        'substitution_matrix': substitution_matrix,
-        'cumulative_lookup': lookup_table,
-        'n_special_tokens': n_special_tokens,
-        'tokenize_n_nucleotide': tokenize_n_nucleotide,
-        'special_tokens': ["[MASK]", "[UNK]"],
-        'base_pairs': "ACGTN" if tokenize_n_nucleotide else "ACGT",
-        'compatibility_version': 'DNADataset_v1'
-    }
-    
-    with open(output_path, 'wb') as f:
-        pickle.dump(data, f)
-    
-    # Print file size and verification
-    file_size = os.path.getsize(output_path) / (1024 * 1024)  # MB
-    print(f"Compatible lookup table saved to {output_path}")
-    print(f"File size: {file_size:.1f} MB")
-    print(f"Special tokens: {data['special_tokens']}")
-    print(f"K-mer token range: {n_special_tokens} to {max(lookup_table.keys())}")
-
-
-def create_substitution_matrix(transition_bias=0.6):
-    """Create a biologically plausible substitution matrix"""
-    matrix = np.array([
-        [0.1, 0.15, transition_bias, 0.15],  # A -> A, C, G, T
-        [0.15, 0.1, 0.15, transition_bias],  # C -> A, C, G, T
-        [transition_bias, 0.15, 0.1, 0.15],  # G -> A, C, G, T
-        [0.15, transition_bias, 0.15, 0.1]   # T -> A, C, G, T
-    ])
-    return matrix / matrix.sum(axis=1, keepdims=True)
-
-
-def main():
-    parser = argparse.ArgumentParser(
-        description="Precompute k-mer substitutions compatible with DNADataset tokenization"
-    )
-    parser.add_argument(
-        "--k-mer", type=int, default=6,
-        help="Size of k-mers (default: 6)"
-    )
-    parser.add_argument(
-        "--output-dir", type=str, default="masking_codes/kmer_cache",
-        help="Directory to save lookup table (default: ./kmer_cache)"
-    )
-    parser.add_argument(
-        "--transition-bias", type=float, default=0.6,
-        help="Transition vs transversion bias (default: 0.6)"
-    )
-    parser.add_argument(
-        "--custom-matrix", type=str, default="masking_codes/lepidoptera_matrix.npy",
-        help="Path to custom substitution matrix (.npy file)"
-    )
-    parser.add_argument(
-        "--tokenize-n-nucleotide", action="store_true",
-        help="Include N-containing k-mers (matches DNADataset tokenize_n_nucleotide=True)"
-    )
-    
-    args = parser.parse_args()
-    
-    # Create output directory
-    os.makedirs(args.output_dir, exist_ok=True)
-    
-    # Create or load substitution matrix
-    if args.custom_matrix:
-        print(f"Loading custom substitution matrix from {args.custom_matrix}")
-        substitution_matrix = np.load(args.custom_matrix)
+    orders = df["order_name"].to_numpy()
+    if dataset_name == "CANADA-1.5M":
+        _label_set, y = np.unique(df[target_level], return_inverse=True)
+    elif dataset_name == "BIOSCAN-5M":
+        # _label_set = np.unique(df[target_level])
+        y = df[target_level]
     else:
-        print(f"Creating substitution matrix with transition bias {args.transition_bias}")
-        substitution_matrix = create_substitution_matrix(args.transition_bias)
-    
-    print("Substitution matrix:")
-    print("    A     C     G     T")
-    base_names = ['A', 'C', 'G', 'T']
-    for i, row in enumerate(substitution_matrix):
-        print(f"{base_names[i]} {' '.join(f'{x:.3f}' for x in row)}")
-    print()
-    
-    # Create filename with compatibility info
-    n_flag = "_with_n" if args.tokenize_n_nucleotide else ""
-    param_str = f"k{args.k_mer}{n_flag}_" + str(substitution_matrix.flatten().tolist())
-    cache_key = hashlib.md5(param_str.encode()).hexdigest()[:16]
-    output_path = os.path.join(
-        args.output_dir, 
-        f"kmer_substitutions_k{args.k_mer}{n_flag}_compatible_{cache_key}.pkl"
-    )
-    
-    # Check if already exists
-    if os.path.exists(output_path):
-        print(f"Compatible lookup table already exists at {output_path}")
-        file_size = os.path.getsize(output_path) / (1024 * 1024)
-        print(f"File size: {file_size:.1f} MB")
-        return
-    
-    # Precompute with compatibility
-    lookup_table, n_special_tokens = precompute_kmer_substitutions_compatible(
-        args.k_mer, substitution_matrix, args.tokenize_n_nucleotide
-    )
-    
-    # Save with compatibility metadata
-    save_compatible_lookup_table(
-        lookup_table, args.k_mer, substitution_matrix, 
-        n_special_tokens, args.tokenize_n_nucleotide, output_path
-    )
-    
-    print(f"\nDone! This lookup table is compatible with DNADataset tokenization.")
-    print(f"Use with: BiologicalMasker.from_file('{output_path}')")
-    print(f"Make sure to use tokenize_n_nucleotide={args.tokenize_n_nucleotide} in your training!")
+        raise NotImplementedError("Dataset format is not supported. Must be one of CANADA-1.5M or BIOSCAN-5M")
+
+    dna_embeddings = []
+
+    with torch.no_grad():
+        for barcode in df["nucleotides"]:
+            x, att_mask = tokenizer(barcode)
+
+            x = x.unsqueeze(0).to(model.device)
+            att_mask = att_mask.unsqueeze(0).to(model.device)
+            x = model(x, att_mask).hidden_states[-1]
+            # previous mean pooling
+            # x = x.mean(1)
+            # dna_embeddings.append(x.cpu().numpy())
+
+            # updated mean pooling to account for the attention mask and padding tokens
+            # sum the embeddings of the tokens (excluding padding tokens)
+            sum_embeddings = (x * att_mask.unsqueeze(-1)).sum(1)  # (batch_size, hidden_size)
+            # sum the attention mask (number of tokens in the sequence without considering the padding tokens)
+            sum_mask = att_mask.sum(1, keepdim=True)
+            # calculate the mean embeddings
+            mean_embeddings = sum_embeddings / sum_mask  # (batch_size, hidden_size)
+
+            dna_embeddings.append(mean_embeddings.cpu().numpy())
+
+    print(f"There are {len(df)} points in the dataset")
+    latent = np.array(dna_embeddings)
+    latent = np.squeeze(latent, 1)
+    print(latent.shape)
+    return latent, y, orders
 
 
-if __name__ == "__main__":
-    main()
+# def representations_from_df(df, target_level, model, tokenizer, dataset_name, mode="nonmask", mask_rate=0.5):
+#
+#     orders = df["order_name"].to_numpy()
+#     if dataset_name == "CANADA-1.5M":
+#         _label_set, y = np.unique(df[target_level], return_inverse=True)
+#     elif dataset_name == "BIOSCAN-5M":
+#         # _label_set = np.unique(df[target_level])
+#         y = df[target_level]
+#     else:
+#         raise NotImplementedError("Dataset format is not supported. Must be one of CANADA-1.5M or BIOSCAN-5M")
+#
+#     dna_embeddings = []
+#     print("mode", mode)
+#     print("mask rate", mask_rate)
+#
+#     with torch.no_grad():
+#         for barcode in df["nucleotides"]:
+#             x, att_mask = tokenizer(barcode)
+#
+#             if mode == "drop":
+#                 x, att_mask = tokenizer(barcode)
+#                 x = x.unsqueeze(0).to(model.device)
+#                 att_mask = att_mask.unsqueeze(0).to(model.device)
+#
+#                 random_mask = torch.rand(x.size())
+#                 mask_token_ratio = mask_rate
+#                 mask_ratio = 1
+#                 dropped_tokens = random_mask < mask_token_ratio * mask_ratio
+#                 att_mask[dropped_tokens] = 0
+#
+#                 x = model(x, att_mask).hidden_states[-1][~dropped_tokens]
+#                 att_mask = att_mask[~dropped_tokens].unsqueeze(-1)
+#
+#                 sum_embeddings = (x * att_mask.unsqueeze(-1)).sum(1)  # (batch_size, hidden_size)
+#                 # sum the attention mask (number of tokens in the sequence without considering the padding tokens)
+#                 sum_mask = att_mask.sum(0, keepdim=True)
+#                 # calculate the mean embeddings
+#                 mean_embeddings = sum_embeddings / sum_mask  # (batch_size, hidden_size)
+#
+#                 dna_embeddings.append(mean_embeddings.cpu().numpy().reshape(-1))
+#
+#             elif mode == "combined":
+#
+#                 n_special_tokens = 2
+#                 # print(x.size())
+#                 random_mask = torch.rand(x.size())
+#                 mask_token_ratio = mask_rate
+#                 mask_ratio = 1
+#                 masked_unseen_tokens = random_mask < mask_token_ratio * mask_ratio
+#
+#                 x = x.unsqueeze(0).to(model.device)
+#                 att_mask = att_mask.unsqueeze(0).to(model.device)
+#                 masked_unseen_tokens = masked_unseen_tokens.to(model.device)
+#
+#                 special_tokens_mask = x > (n_special_tokens - 1)
+#                 masked_unseen_tokens_n = masked_unseen_tokens & special_tokens_mask
+#
+#                 x[masked_unseen_tokens_n] = 0
+#
+#                 x = model(x, att_mask).hidden_states[-1]
+#
+#                 sum_embeddings = (x * att_mask.unsqueeze(-1)).sum(1)  # (batch_size, hidden_size)
+#                 # sum the attention mask (number of tokens in the sequence without considering the padding tokens)
+#                 sum_mask = att_mask.sum(1, keepdim=True)
+#                 # calculate the mean embeddings
+#                 mean_embeddings = sum_embeddings / sum_mask  # (batch_size, hidden_size)
+#
+#                 dna_embeddings.append(mean_embeddings.cpu().numpy().reshape(-1))
+#
+#             elif mode == "mask":
+#                 n_special_tokens = 2
+#                 # print(x.size())
+#                 random_mask = torch.rand(x.size())
+#                 mask_token_ratio = 0.5
+#                 mask_ratio = 1
+#                 masked_unseen_tokens = random_mask < mask_token_ratio * mask_ratio
+#                 # print(masked_unseen_tokens)
+#
+#                 x = x.unsqueeze(0).to(model.device)
+#                 att_mask = att_mask.unsqueeze(0).to(model.device)
+#                 masked_unseen_tokens = masked_unseen_tokens.to(model.device)
+#
+#                 special_tokens_mask = x > (n_special_tokens - 1)
+#                 masked_unseen_tokens_n = masked_unseen_tokens & special_tokens_mask
+#                 # print(masked_unseen_tokens_n)
+#
+#                 x[masked_unseen_tokens_n] = 0
+#                 # att_mask[~masked_unseen_tokens_n] = 0
+#                 x = model(x, att_mask).hidden_states[-1][masked_unseen_tokens_n]
+#                 # print(x.shape)
+#
+#                 mean_embeddings = x.mean(0)
+#
+#                 # print(mean_embeddings.shape)
+#                 dna_embeddings.append(mean_embeddings.cpu().numpy().reshape(-1))
+#
+#             elif mode == "nonmask":
+#
+#                 n_special_tokens = 2
+#                 # print(x.size())
+#                 random_mask = torch.rand(x.size())
+#                 mask_token_ratio = 0.5
+#                 mask_ratio = 1
+#                 masked_unseen_tokens = random_mask < mask_token_ratio * mask_ratio
+#                 # print(masked_unseen_tokens)
+#
+#                 x = x.unsqueeze(0).to(model.device)
+#                 att_mask = att_mask.unsqueeze(0).to(model.device)
+#                 masked_unseen_tokens = masked_unseen_tokens.to(model.device)
+#
+#                 special_tokens_mask = x > (n_special_tokens - 1)
+#                 masked_unseen_tokens_n = masked_unseen_tokens & special_tokens_mask
+#                 # print(masked_unseen_tokens_n)
+#
+#                 x[masked_unseen_tokens_n] = 0
+#                 # att_mask[~masked_unseen_tokens_n] = 0
+#                 x = model(x, att_mask).hidden_states[-1][~masked_unseen_tokens_n]
+#
+#                 mean_embeddings = x.mean(0)
+#
+#                 dna_embeddings.append(mean_embeddings.cpu().numpy().reshape(-1))
+#             else:
+#                 raise ValueError(f"Mode {mode} not recognized.")
+#
+#     print(f"There are {len(df)} points in the dataset")
+#     latent = np.array(dna_embeddings)
+#     # latent = np.squeeze(latent, 1)
+#     print(latent.shape)
+#     return latent, y, orders
