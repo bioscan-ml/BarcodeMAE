@@ -57,7 +57,7 @@ class CompatibleBiologicalMasker:
         """
         # Look for compatible files
         n_flag = "_with_n" if tokenize_n_nucleotide else ""
-        pattern = os.path.join(cache_dir, f"kmer_substitutions_k{k_mer_size}{n_flag}_compatible_*.pkl")
+        pattern = os.path.join(cache_dir, f"kmer_substitutions_k{k_mer_size}_compatible_*.pkl")
         files = glob.glob(pattern)
 
         if not files:
