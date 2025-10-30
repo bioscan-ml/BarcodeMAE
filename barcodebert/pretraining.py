@@ -824,7 +824,7 @@ def train_one_epoch(
         # Perform the forward pass through the model
         print(config.arch)
         if config.arch == "maelm":
-            print("MAELM is implemented")
+            # print("MAELM is implemented")
             out = model(masked_input, att_mask, masked_unseen_tokens, config.maelm_version)
         elif config.arch == "transformer":
             out = model(masked_input, attention_mask=att_mask)
