@@ -58,7 +58,7 @@ class CompatibleBiologicalMasker:
         # Look for compatible files
         n_flag = "_with_n" if tokenize_n_nucleotide else ""
         pattern = os.path.join(cache_dir, f"kmer_substitutions_k{k_mer_size}_compatible_*.pkl")
-        files = glob.glob("/home/m4safari/projects/def-lila-ab/m4safari/barcodeMAE/BarcodeMAE/barcodebert/masking_codes/kmer_cache/kmer_substitutions_k6_1c92e11db4415dc6.pkl")
+        files = glob.glob("/home/m4safari/projects/def-lila-ab/m4safari/barcodeMAE/BarcodeMAE/barcodebert/masking_codes/kmer_cache/kmer_substitutions_k6_compatible_1c92e11db4415dc6.pkl")
 
         if not files:
             raise FileNotFoundError(
