@@ -109,7 +109,7 @@ def run(config):
     biological_masker = None
     try:
         biological_masker = CompatibleBiologicalMasker.from_cache_dir(
-            cache_dir='./kmer_cache',
+            cache_dir='/home/m4safari/projects/def-lila-ab/m4safari/barcodeMAE/BarcodeMAE/barcodebert/masking_codes/kmer_cache',
             k_mer_size=config.k_mer,
             tokenize_n_nucleotide=config.tokenize_n_nucleotide,
             device=device
