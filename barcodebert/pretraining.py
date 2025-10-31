@@ -22,7 +22,7 @@ from barcodebert.io import safe_save_model
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../..")))
 from barcodebert.maelm_model import MAELMModel
-from biological_masker import CompatibleBiologicalMasker, get_biological_replacements
+from biological_masker import TemperatureCompatibleBiologicalMasker, get_temperature_biological_replacements, create_temperature_schedule
 
 BASE_BATCH_SIZE = 64
 
@@ -108,15 +108,21 @@ def run(config):
     # Initialize biological masker
     biological_masker = None
     try:
-        biological_masker = CompatibleBiologicalMasker.from_cache_dir(
+        biological_masker = TemperatureCompatibleBiologicalMasker.from_cache_dir(
             cache_dir='/home/m4safari/projects/def-lila-ab/m4safari/barcodeMAE/BarcodeMAE/barcodebert/masking_codes/kmer_cache',
             k_mer_size=config.k_mer,
             tokenize_n_nucleotide=config.tokenize_n_nucleotide,
             device=device
         )
-        print("✅ Biological masking enabled")
+        print(" Biological masking enabled")
+
+        temperature_schedule = create_temperature_schedule(
+            start_temp=2.5, end_temp=1.0, total_epochs=config.epochs, schedule_type='exponential'
+        )
+        print(" Temperature schedule:", temperature_schedule)
+
     except FileNotFoundError as e:
-        print(f"⚠️  Warning: {e}")
+        print(f" Warning: {e}")
         print("Using uniform random masking instead")
         biological_masker = None
     # ==========================================
@@ -497,6 +503,7 @@ def run(config):
             n_special_tokens=n_special_tokens,
             n_all_tokens=n_all_tokens,
             biological_masker=biological_masker,
+            temperature_schedule=temperature_schedule
         )
         t_end_train = time.time()
 
@@ -659,7 +666,8 @@ def train_one_epoch(
     distance_table=None,
     n_special_tokens=2,
     n_all_tokens=-1,
-    biological_masker=None
+    biological_masker=None,
+    temperature_schedule=None
 ):
     r"""
     Train the encoder and classifier for one epoch.
@@ -779,25 +787,22 @@ def train_one_epoch(
         # Replace with random token where mask_random_token is True
         # Generate random tokens
         if biological_masker is not None:
+            current_temperature = temperature_schedule[epoch - 1]
             tokens_to_replace = sequences[masked_random_tokens]
             # Get biological replacements (guaranteed different from originals)
-            biological_replacements = biological_masker.get_biological_replacements(tokens_to_replace)
+            biological_replacements = get_temperature_biological_replacements(tokens_to_replace, biological_masker, current_temperature)
             masked_input[masked_random_tokens] = biological_replacements
-            if biological_masker is not None:
-                tokens_to_replace = sequences[masked_random_tokens]
-                biological_replacements = get_biological_replacements(tokens_to_replace, biological_masker)
-                masked_input[masked_random_tokens] = biological_replacements
 
-                # SIMPLE DEBUG - only first batch of first epoch
-                if batch_idx == 0 and epoch == 1:
-                    print(f"\n🔬 Biological masking check:")
-                    for i in range(min(5, len(tokens_to_replace))):
-                        orig_id = tokens_to_replace[i].item()
-                        repl_id = biological_replacements[i].item()
-                        orig_kmer = dataloader.dataset.vocab.lookup_token(orig_id)
-                        repl_kmer = dataloader.dataset.vocab.lookup_token(repl_id)
-                        same = " SAME!" if orig_id == repl_id else "OK"
-                        print(f"  {orig_kmer} → {repl_kmer} {same}")
+            # SIMPLE DEBUG - only first batch of first epoch
+            if batch_idx == 0 and epoch == 1:
+                print(f"\n🔬 Biological masking check:")
+                for i in range(min(5, len(tokens_to_replace))):
+                    orig_id = tokens_to_replace[i].item()
+                    repl_id = biological_replacements[i].item()
+                    orig_kmer = dataloader.dataset.vocab.lookup_token(orig_id)
+                    repl_kmer = dataloader.dataset.vocab.lookup_token(repl_id)
+                    same = " SAME!" if orig_id == repl_id else "OK"
+                    print(f"  {orig_kmer} → {repl_kmer} {same}")
 
 
         else:
@@ -822,7 +827,6 @@ def train_one_epoch(
         ct_forward = torch.cuda.Event(enable_timing=True)
         ct_forward.record()
         # Perform the forward pass through the model
-        print(config.arch)
         if config.arch == "maelm":
             # print("MAELM is implemented")
             out = model(masked_input, att_mask, masked_unseen_tokens, config.maelm_version)
@@ -1102,22 +1106,6 @@ def train_one_epoch(
             "accuracy_overall": acc_all_epoch / (batch_idx + 1),
         }
 
-    if biological_masker is not None:
-        tokens_to_replace = sequences[masked_random_tokens]
-        biological_replacements = get_biological_replacements(tokens_to_replace, biological_masker)
-        masked_input[masked_random_tokens] = biological_replacements
-
-        # SIMPLE DEBUG - only first batch of first epoch
-        if batch_idx == 0 and epoch == 1:
-            print(f"\n🔬 Biological masking check:")
-            for i in range(min(5, len(tokens_to_replace))):
-                orig_id = tokens_to_replace[i].item()
-                repl_id = biological_replacements[i].item()
-                orig_kmer = dataloader.dataset.vocab.lookup_token(orig_id)
-                repl_kmer = dataloader.dataset.vocab.lookup_token(repl_id)
-                same = "❌ SAME!" if orig_id == repl_id else "✅"
-                print(f"  {orig_kmer} → {repl_kmer} {same}")
-
     return results, total_step, n_samples_seen
 
 
@@ -1230,9 +1218,10 @@ def evaluate(
             # Replace with random token where mask_random_token is True
             # Generate random tokens
             if biological_masker is not None:
+                current_temperature = 1.0
                 tokens_to_replace = sequences[masked_random_tokens]
                 # Get biological replacements (guaranteed different from originals)
-                biological_replacements = biological_masker.get_biological_replacements(tokens_to_replace)
+                biological_replacements = get_temperature_biological_replacements(tokens_to_replace, biological_masker, temperature=current_temperature)
                 masked_input[masked_random_tokens] = biological_replacements
 
             else:
