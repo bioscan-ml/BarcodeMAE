@@ -237,6 +237,7 @@ def run(config):
     if checkpoint is None:
         # Our epochs go from 1 to n_epoch, inclusive
         start_epoch = 1
+        start_step_in_epoch = 0
     else:
         # Calculate where to resume
         loaded_step = checkpoint["total_step"]
