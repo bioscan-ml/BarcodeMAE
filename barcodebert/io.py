@@ -17,7 +17,7 @@ def get_project_root() -> str:
     return os.path.dirname(PACKAGE_DIR)
 
 
-def safe_save_model(modules, checkpoint_path=None, config=None, **kwargs):
+def safe_save_model(modules, checkpoint_path=None, config=None, decoder_config=None, **kwargs):
     """
     Save a model to a checkpoint file, along with any additional data.
 
@@ -54,7 +54,8 @@ def safe_save_model(modules, checkpoint_path=None, config=None, **kwargs):
     data.update(kwargs)
     if config is not None:
         data["config"] = config
-
+    if decoder_config is not None:
+        data["decoder_config"] = decoder_config
     torch.save(data, tmp_fname)
     os.rename(tmp_fname, checkpoint_path)
     print(f"Saved model to  {checkpoint_path}")

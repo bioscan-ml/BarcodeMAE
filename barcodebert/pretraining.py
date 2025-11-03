@@ -23,6 +23,7 @@ from barcodebert.io import safe_save_model
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../..")))
 from barcodebert.maelm_model import MAELMModel
 from biological_masker import TemperatureCompatibleBiologicalMasker, get_temperature_biological_replacements, create_temperature_schedule
+from torch.cuda.amp import GradScaler, autocast
 
 BASE_BATCH_SIZE = 64
 
@@ -251,25 +252,36 @@ def run(config):
         raise NotImplementedError(f"Tokenizer {config.tokenizer} is not supported.")
 
     # Initializing a model (with random weights) from the bert-base-uncased style configuration
-    bert_config = BertConfig(
-        vocab_size=dataset_train.vocab_size,
-        num_hidden_layers=config.n_layers,
-        num_attention_heads=config.n_heads,
-        num_labels=n_output_tokens,
-        output_hidden_states=True,
-        max_position_embeddings=max_position_embeddings,
-    )
+    if checkpoint is not None and "bert_config" in checkpoint:
+        print("Using bert_config from checkpoint")
+        bert_config = BertConfig(**checkpoint["bert_config"])
+    else:
+
+        bert_config = BertConfig(
+            vocab_size=dataset_train.vocab_size,
+            num_hidden_layers=config.n_layers,
+            num_attention_heads=config.n_heads,
+            num_labels=n_output_tokens,
+            output_hidden_states=True,
+            max_position_embeddings=max_position_embeddings,
+        )
 
     if config.arch == "maelm":
 
-        decoder_config = BertConfig(
-            vocab_size=dataset_train.vocab_size,
-            num_hidden_layers=config.decoder_n_layers,
-            num_attention_heads=config.decoder_n_heads,
-            num_labels=n_output_tokens,
-            max_position_embeddings=max_position_embeddings,
-            hidden_size=config.decoder_embed_dim,
-        )
+        if checkpoint is not None and "decoder_config" in checkpoint:
+            print("Using decoder_config from checkpoint")
+            decoder_config = BertConfig(**checkpoint["decoder_config"])
+        else:
+            print("Using BertConfig for the decoder")
+            decoder_config = BertConfig(
+                vocab_size=dataset_train.vocab_size,
+                num_hidden_layers=config.decoder_n_layers,
+                num_attention_heads=config.decoder_n_heads,
+                num_labels=n_output_tokens,
+                max_position_embeddings=max_position_embeddings,
+                hidden_size=config.decoder_embed_dim,
+            )
+        print("Using MAELMModel with BertConfig for the decoder (not mosaic-bert)")
         model = MAELMModel(bert_config, decoder_config)
 
     elif config.arch == "transformer":
@@ -331,6 +343,16 @@ def run(config):
     distance_table = None
     if config.pretrain_levenshtein and not config.levenshtein_vectorized:
         distance_table = levenshtein.build_lookup_table(config.k_mer).to(device)
+
+    # Mixed Precision ---------------------------------------------------------
+    # Set up automatic mixed precision training
+    scaler = None
+    if config.mixed_precision and use_cuda:
+        from torch.cuda.amp import GradScaler
+        scaler = GradScaler()
+        print("Mixed precision training enabled with GradScaler.")
+    elif config.mixed_precision:
+        print("Warning: Mixed precision requested but CUDA is not available. Running in full precision.")
 
     # Mask schedule -----------------------------------------------------------
     if False:
@@ -421,16 +443,54 @@ def run(config):
         print(f"Loading state from checkpoint (epoch {checkpoint['epoch']})")
         total_step = checkpoint["total_step"]
         n_samples_seen = checkpoint["n_samples_seen"]
-        model.load_state_dict(checkpoint["model"])
+
+        # Handle different checkpoint formats
+        model_state_dict = checkpoint["model"]
+
+        # Check if we need to handle distributed model wrapper
+        if config.distributed:
+            # If model is wrapped in DistributedDataParallel but checkpoint isn't
+            if not any(key.startswith("module.") for key in model_state_dict.keys()):
+                model_state_dict = {f"module.{k}": v for k, v in model_state_dict.items()}
+        else:
+            # If checkpoint has 'module.' prefix but model doesn't
+            if any(key.startswith("module.") for key in model_state_dict.keys()):
+                model_state_dict = {k.replace("module.", ""): v for k, v in model_state_dict.items()}
+
+        try:
+            model.load_state_dict(model_state_dict, strict=True)
+            print("Successfully loaded model state dict")
+        except Exception as e:
+            print(f"Error loading model state dict: {e}")
+            print("Available keys in checkpoint:", list(checkpoint["model"].keys())[:10])
+            print("Expected keys in model:", list(model.state_dict().keys())[:10])
+            raise
+
         optimizer.load_state_dict(checkpoint["optimizer"])
         scheduler.load_state_dict(checkpoint["scheduler"])
+        print("Successfully loaded optimizer and scheduler state dicts")
+
+        # Load scaler state if available and we're using mixed precision
+        if scaler is not None and "scaler" in checkpoint:
+            scaler.load_state_dict(checkpoint["scaler"])
+            print("Loaded scaler state from checkpoint.")
+        elif scaler is not None:
+            print("Scaler state not found in checkpoint, using fresh scaler.")
+
+        # Verify configs match for MAELM
+        if config.arch == "maelm":
+            if "decoder_config" in checkpoint:
+                loaded_decoder_config = BertConfig(**checkpoint["decoder_config"])
+                print("✓ Decoder config loaded successfully")
+            else:
+                print("⚠️  Warning: No decoder config found in checkpoint")
+
         if checkpoint["config"].epochs != config.epochs:
             print(
-                f"Warning: the number of epochs in the checkpoint ({checkpoint['config'].epochs}) "
-                f"does not match the number of epochs in the current configuration ({config.epochs}).",
-                flush=True,
+                f"Warning: checkpoint epochs ({checkpoint['config'].epochs}) "
+                f"!= current epochs ({config.epochs}). Rebuilding scheduler.", flush=True
             )
-            scheduler.total_steps = len(dataloader_train) * config.epochs
+
         best_stats["max_accuracy"] = checkpoint.get("max_accuracy", 0)
         best_stats["best_epoch"] = checkpoint.get("best_epoch", 0)
 
@@ -503,7 +563,11 @@ def run(config):
             n_special_tokens=n_special_tokens,
             n_all_tokens=n_all_tokens,
             biological_masker=biological_masker,
-            temperature_schedule=temperature_schedule
+            temperature_schedule=temperature_schedule,
+            scaler=scaler,
+            bert_config=bert_config,
+            decoder_config=decoder_config,
+            best_stats=best_stats,
         )
         t_end_train = time.time()
 
@@ -570,29 +634,58 @@ def run(config):
         t_start_save = time.time()
 
         if config.model_output_dir and (not config.distributed or config.global_rank == 0):
+            actual_model = model.module if hasattr(model, "module") else model
+
+            save_dict = {
+                "model": actual_model,
+                "optimizer": optimizer,
+                "scheduler": scheduler,
+            }
+            # Add scaler state if using mixed precision
+            if scaler is not None:
+                save_dict["scaler"] = scaler
+
             if config.arch == "maelm":
-                safe_save_model(
-                    {
-                        "model": model.module.encoder,
+                # Get the actual model (handle distributed wrapper)
+
+                # Save encoder-only checkpoint (for inference/fine-tuning)
+                if hasattr(config, "checkpoint_path_encoder") and config.checkpoint_path_encoder:
+                    save_dict_encoder = {
+                        "model": actual_model.encoder,
                         "optimizer": optimizer,
                         "scheduler": scheduler,
-                    },
+                    }
+                    # Add scaler state if using mixed precision
+                    if scaler is not None:
+                        save_dict_encoder["scaler"] = scaler
+
+                    safe_save_model(
+                        save_dict_encoder,
+                        config.checkpoint_path_encoder,
+                        config=config,
+                        epoch=epoch,
+                        total_step=total_step,
+                        n_samples_seen=n_samples_seen,
+                        bert_config=bert_config.to_dict(),
+                        **best_stats,
+                    )
+
+                # Save full model checkpoint (for resuming training)
+                safe_save_model(
+                    save_dict,
                     config.checkpoint_path,
                     config=config,
                     epoch=epoch,
                     total_step=total_step,
                     n_samples_seen=n_samples_seen,
                     bert_config=bert_config.to_dict(),
+                    decoder_config=decoder_config.to_dict(),
                     **best_stats,
                 )
 
             elif config.arch == "transformer":
                 safe_save_model(
-                    {
-                        "model": model,
-                        "optimizer": optimizer,
-                        "scheduler": scheduler,
-                    },
+                    save_dict,
                     config.checkpoint_path,
                     config=config,
                     epoch=epoch,
@@ -667,7 +760,13 @@ def train_one_epoch(
     n_special_tokens=2,
     n_all_tokens=-1,
     biological_masker=None,
-    temperature_schedule=None
+    temperature_schedule=None,
+    scaler=None,
+    save_every_steps=2000,
+    bert_config=None,
+    decoder_config=None,
+    best_stats=None,
+
 ):
     r"""
     Train the encoder and classifier for one epoch.
@@ -826,75 +925,139 @@ def train_one_epoch(
         # N.B. To accurately time steps on GPU we need to use torch.cuda.Event
         ct_forward = torch.cuda.Event(enable_timing=True)
         ct_forward.record()
-        # Perform the forward pass through the model
-        if config.arch == "maelm":
-            # print("MAELM is implemented")
-            out = model(masked_input, att_mask, masked_unseen_tokens, config.maelm_version)
-        elif config.arch == "transformer":
-            out = model(masked_input, attention_mask=att_mask)
+        if scaler is not None:
+            with autocast():
+                # Perform the forward pass through the model
+                if config.arch == "maelm":
+                    # print("MAELM is implemented")
+                    out = model(masked_input, att_mask, masked_unseen_tokens, config.maelm_version)
+                elif config.arch == "transformer":
+                    out = model(masked_input, attention_mask=att_mask)
 
-        logits = out.logits.view(-1, n_output_tokens)
-
-        # Measure loss
-        if config.pretrain_levenshtein:
-            soft_targets = levenshtein.softmax_batch_levenshtein_matrices_vectorized(
-                sequences, config.k_mer, dataloader.dataset.vocab
-            ).to(device)
-            with torch.no_grad():
-                targets = torch.argmax(soft_targets, dim=-1)
-            soft_targets = soft_targets.view(-1, n_output_tokens)
-            if config.separate_loss:
-
-                masked_indices = input_maskout.view(-1)
-                non_masked_indices = ~masked_indices & special_tokens_mask.view(-1)  # ignore special tokens
-
-                masked_loss = criterion(logits[masked_indices], soft_targets[masked_indices])
-                non_masked_loss = criterion(logits[non_masked_indices], soft_targets[non_masked_indices])
-
-                masked_loss_weight = config.masked_loss_weight
-                non_masked_loss_weight = 1 - masked_loss_weight
-                loss = masked_loss_weight * masked_loss + non_masked_loss_weight * non_masked_loss
-            else:
-                loss = criterion(logits[special_tokens_mask.view(-1)], soft_targets[special_tokens_mask.view(-1)])
-
-        else:
-            # Need to remove the special token from the index in sequences
-            targets = sequences - n_special_tokens * (sequences > (n_special_tokens - 1))
-
-            if config.separate_loss:
                 logits = out.logits.view(-1, n_output_tokens)
-                targets_flat = targets.view(-1)
 
-                masked_indices = input_maskout.view(-1)
-                non_masked_indices = ~masked_indices & special_tokens_mask.view(-1)  # ignore special tokens
+                # Measure loss
+                if config.pretrain_levenshtein:
+                    soft_targets = levenshtein.softmax_batch_levenshtein_matrices_vectorized(
+                        sequences, config.k_mer, dataloader.dataset.vocab
+                    ).to(device)
+                    with torch.no_grad():
+                        targets = torch.argmax(soft_targets, dim=-1)
+                    soft_targets = soft_targets.view(-1, n_output_tokens)
+                    if config.separate_loss:
 
-                masked_loss = criterion(logits[masked_indices], targets_flat[masked_indices])
-                non_masked_loss = criterion(logits[non_masked_indices], targets_flat[non_masked_indices])
+                        masked_indices = input_maskout.view(-1)
+                        non_masked_indices = ~masked_indices & special_tokens_mask.view(-1)  # ignore special tokens
 
-                masked_loss_weight = config.masked_loss_weight
-                non_masked_loss_weight = 1 - masked_loss_weight
-                loss = masked_loss_weight * masked_loss + non_masked_loss_weight * non_masked_loss
+                        masked_loss = criterion(logits[masked_indices], soft_targets[masked_indices])
+                        non_masked_loss = criterion(logits[non_masked_indices], soft_targets[non_masked_indices])
 
-            # Need to remove the <UNK> and <CLS> tokens from the index in sequences
+                        masked_loss_weight = config.masked_loss_weight
+                        non_masked_loss_weight = 1 - masked_loss_weight
+                        loss = masked_loss_weight * masked_loss + non_masked_loss_weight * non_masked_loss
+                    else:
+                        loss = criterion(logits[special_tokens_mask.view(-1)], soft_targets[special_tokens_mask.view(-1)])
+
+                else:
+                    # Need to remove the special token from the index in sequences
+                    targets = sequences - n_special_tokens * (sequences > (n_special_tokens - 1))
+
+                    if config.separate_loss:
+                        logits = out.logits.view(-1, n_output_tokens)
+                        targets_flat = targets.view(-1)
+
+                        masked_indices = input_maskout.view(-1)
+                        non_masked_indices = ~masked_indices & special_tokens_mask.view(-1)  # ignore special tokens
+
+                        masked_loss = criterion(logits[masked_indices], targets_flat[masked_indices])
+                        non_masked_loss = criterion(logits[non_masked_indices], targets_flat[non_masked_indices])
+
+                        masked_loss_weight = config.masked_loss_weight
+                        non_masked_loss_weight = 1 - masked_loss_weight
+                        loss = masked_loss_weight * masked_loss + non_masked_loss_weight * non_masked_loss
+
+                    # Need to remove the <UNK> and <CLS> tokens from the index in sequences
+                    else:
+                        loss = criterion(
+                            out.logits.view(-1, n_output_tokens)[special_tokens_mask.view(-1)],
+                            targets.view(-1)[special_tokens_mask.view(-1)],
+                        )
+        else:
+            # Standard precision forward pass
+            if config.arch == "maelm":
+                out = model(masked_input, att_mask, masked_unseen_tokens, config.maelm_version)
+            elif config.arch == "transformer":
+                out = model(masked_input, attention_mask=att_mask)
+
+            logits = out.logits.view(-1, n_output_tokens)
+
+            # Same loss computation as above
+            if config.pretrain_levenshtein:
+                soft_targets = levenshtein.softmax_batch_levenshtein_matrices_vectorized(
+                    sequences, config.k_mer, dataloader.dataset.vocab
+                ).to(device)
+                with torch.no_grad():
+                    targets = torch.argmax(soft_targets, dim=-1)
+                soft_targets = soft_targets.view(-1, n_output_tokens)
+                if config.separate_loss:
+                    masked_indices = input_maskout.view(-1)
+                    non_masked_indices = ~masked_indices & special_tokens_mask.view(-1)
+                    masked_loss = criterion(logits[masked_indices], soft_targets[masked_indices])
+                    non_masked_loss = criterion(logits[non_masked_indices], soft_targets[non_masked_indices])
+                    masked_loss_weight = config.masked_loss_weight
+                    non_masked_loss_weight = 1 - masked_loss_weight
+                    loss = masked_loss_weight * masked_loss + non_masked_loss_weight * non_masked_loss
+                else:
+                    loss = criterion(logits[special_tokens_mask.view(-1)], soft_targets[special_tokens_mask.view(-1)])
             else:
-                loss = criterion(
-                    out.logits.view(-1, n_output_tokens)[special_tokens_mask.view(-1)],
-                    targets.view(-1)[special_tokens_mask.view(-1)],
-                )
-
+                targets = sequences - n_special_tokens * (sequences > (n_special_tokens - 1))
+                if config.separate_loss:
+                    targets_flat = targets.view(-1)
+                    masked_indices = input_maskout.view(-1)
+                    non_masked_indices = ~masked_indices & special_tokens_mask.view(-1)
+                    masked_loss = criterion(logits[masked_indices], targets_flat[masked_indices])
+                    non_masked_loss = criterion(logits[non_masked_indices], targets_flat[non_masked_indices])
+                    masked_loss_weight = config.masked_loss_weight
+                    non_masked_loss_weight = 1 - masked_loss_weight
+                    loss = masked_loss_weight * masked_loss + non_masked_loss_weight * non_masked_loss
+                else:
+                    loss = criterion(
+                        out.logits.view(-1, n_output_tokens)[special_tokens_mask.view(-1)],
+                        targets.view(-1)[special_tokens_mask.view(-1)],
+                    )
         # Backward pass -------------------------------------------------------
         # Reset gradients
         optimizer.zero_grad()
         # Now the backward pass
         ct_backward = torch.cuda.Event(enable_timing=True)
         ct_backward.record()
-        loss.backward()
+        if torch.isnan(loss) or torch.isinf(loss):
+            print(f"Skipping batch due to invalid loss: {loss}")
+            optimizer.zero_grad()
+            continue
+        if scaler is not None:
+            # Mixed precision backward pass
+            scaler.scale(loss).backward()
+        else:
+            loss.backward()
 
         # Update --------------------------------------------------------------
         # Use our optimizer to update the model parameters
         ct_optimizer = torch.cuda.Event(enable_timing=True)
         ct_optimizer.record()
-        optimizer.step()
+        if scaler is not None:
+            # Mixed precision optimizer step
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            # Standard optimizer step
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+
+        # Reset gradients
+        optimizer.zero_grad()
 
         # Step the scheduler each batch
         scheduler.step()
@@ -1005,6 +1168,47 @@ def train_one_epoch(
                     " AccSeen:{:6.2f}%".format(acc_kpt),
                     " LR: {}".format(scheduler.get_last_lr()),
                     flush=True,
+                )
+
+        # Saving the model every 2000 steps
+        if total_step > 0 and (total_step % save_every_steps == 0) and config.global_rank == 0:
+            actual_model = model.module if hasattr(model, "module") else model
+
+            save_dict = {
+                "model": actual_model,
+                "optimizer": optimizer,
+                "scheduler": scheduler,
+            }
+            # Add scaler state if using mixed precision
+            if scaler is not None:
+                save_dict["scaler"] = scaler
+
+            print(f"[Resuming] saving checkpoint at global step {total_step}", flush=True)
+            if config.arch == "maelm":
+
+                # Save full model checkpoint (for resuming training)
+                safe_save_model(
+                    save_dict,
+                    config.checkpoint_path,
+                    config=config,
+                    epoch=epoch,
+                    total_step=total_step,
+                    n_samples_seen=n_samples_seen,
+                    bert_config=bert_config.to_dict(),
+                    decoder_config= decoder_config.to_dict(),
+                    **best_stats,
+                )
+
+            elif config.arch == "transformer":
+                safe_save_model(
+                    save_dict,
+                    config.checkpoint_path,
+                    config=config,
+                    epoch=epoch,
+                    total_step=total_step,
+                    n_samples_seen=n_samples_seen,
+                    bert_config=bert_config.to_dict(),
+                    **best_stats,
                 )
 
         # Compute mask ratio actually used
@@ -1643,6 +1847,15 @@ def get_parser():
         help="random token ratio",
     )
 
+    group.add_argument(
+        "--mixed-precision",
+        "--mixed_precision",
+        "--amp",
+        dest="mixed_precision",
+        action="store_true",
+        help="Enable Automatic Mixed Precision (AMP) training for faster training and reduced memory usage.",
+    )
+
     # Output checkpoint args --------------------------------------------------
     group = parser.add_argument_group("Output checkpoint")
     group.add_argument(
@@ -1663,6 +1876,15 @@ def get_parser():
             " Overrides --models-dir."
         ),
     )
+    group.add_argument(
+        "--checkpoint_maelm",
+        dest="checkpoint_path_encoder",
+        default="",
+        type=str,
+        metavar="PATH",
+        help=("Save and resume partially trained MAE-LM encoder and optimizer state from this checkpoint."),
+    )
+
     group.add_argument(
         "--checkpoint-resume",
         "--checkpoint_resume",
