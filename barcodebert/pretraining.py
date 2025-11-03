@@ -131,7 +131,7 @@ def run(config):
 
     # DATASET =================================================================
 
-    if config.dataset_name not in ["CANADA-1.5M", "BIOSCAN-5M"]:
+    if config.dataset_name not in ["CANADA-1.5M", "BIOSCAN-5M", "ITS-5M"]:
         raise NotImplementedError(f"Dataset {config.dataset_name} not supported.")
 
     # Handle default stride dynamically set to equal k-mer size
@@ -147,19 +147,30 @@ def run(config):
         "tokenize_n_nucleotide": config.tokenize_n_nucleotide,
         "dataset_format": config.dataset_name,
     }
-
-    dataset_train = DNADataset(
-        file_path=os.path.join(config.data_dir, "pre_training.csv"),
-        randomize_offset=True,
-        **dataset_args,
-    )
-    dataset_val = DNADataset(
-        file_path=os.path.join(config.data_dir, "supervised_train.csv"),
-        randomize_offset=False,
-        **dataset_args,
-    )
-    eval_set = "Val"
-
+    if config.dataset_name == "ITS-5M":
+        dataset_train = DNADataset(
+            file_path=os.path.join(config.data_dir, "trainset.fasta"),
+            randomize_offset=True,
+            **dataset_args,
+        )
+        dataset_val = DNADataset(
+            file_path=os.path.join(config.data_dir, "trainset_valid.fasta"),
+            randomize_offset=False,
+            **dataset_args,
+        )
+        eval_set = "Val"
+    else:
+        dataset_train = DNADataset(
+            file_path=os.path.join(config.data_dir, "pre_training.csv"),
+            randomize_offset=True,
+            **dataset_args,
+        )
+        dataset_val = DNADataset(
+            file_path=os.path.join(config.data_dir, "supervised_train.csv"),
+            randomize_offset=False,
+            **dataset_args,
+        )
+        eval_set = "Val"
     # Dataloader --------------------------------------------------------------
     dl_train_kwargs = {
         "batch_size": config.batch_size_per_gpu,

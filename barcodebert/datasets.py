@@ -11,6 +11,9 @@ import torch
 from torch.utils.data import Dataset
 from torchtext.vocab import vocab as build_vocab_from_dict
 from transformers import AutoTokenizer
+from mycoai.data import Data
+from tqdm import tqdm
+from mycoai.data.encoders import TaxonEncoder
 
 
 class KmerTokenizer(object):
@@ -102,9 +105,12 @@ class DNADataset(Dataset):
         self.stride = k_mer if stride is None else stride
         self.max_len = max_len
         self.randomize_offset = randomize_offset
+        self.barcodes = []
+        self.tax_encoder = None
+        self.labels = []
 
         # Check that the dataframe contains a valid format
-        if dataset_format not in ["CANADA-1.5M", "BIOSCAN-5M"]:
+        if dataset_format not in ["CANADA-1.5M", "BIOSCAN-5M", "ITS-5M"]:
             raise NotImplementedError(f"Dataset {dataset_format} not supported.")
 
         if tokenizer == "kmer":
@@ -143,15 +149,27 @@ class DNADataset(Dataset):
         else:
             raise ValueError(f'Tokenizer "{tokenizer}" not recognized.')
         df = pd.read_csv(file_path, sep="\t" if file_path.endswith(".tsv") else ",", keep_default_na=False)
-        self.barcodes = df["nucleotides"].to_list()
+        if dataset_format == "ITS-5M":
+            fungi_data = Data(file_path)
+            self.tax_encoder = (TaxonEncoder(data=fungi_data) if self.tax_encoder is None else self.tax_encoder)
+            for index, row in tqdm(fungi_data.data.iterrows(), total=fungi_data.data.shape[0]):
+                self.barcodes.append(row["sequence"])
+                # self.labels.append(self.tax_encoder.encode(row))
+            # self.tax_encoder.finish_training()
+        else:
+            self.barcodes = df["nucleotides"].to_list()
 
         if dataset_format == "CANADA-1.5M":
             self.labels, self.label_set = pd.factorize(df["species_name"], sort=True)
             self.num_labels = len(self.label_set)
-        else:
+        elif dataset_format == "BIOSCAN-5M":
             self.label_names = df["species_name"].to_list()
             self.labels = df["species_index"].to_list()
             self.num_labels = 22_622
+        elif dataset_format == "ITS-5M":
+            self.labels = [] #dummy labels
+            # self.labels = torch.stack([label for label in self.labels])
+            # self.num_labels = self.tax_encoder.num_classes
 
     def __len__(self):
         return len(self.barcodes)
