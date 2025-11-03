@@ -167,7 +167,7 @@ class DNADataset(Dataset):
             self.labels = df["species_index"].to_list()
             self.num_labels = 22_622
         elif dataset_format == "ITS-5M":
-            self.labels = [] #dummy labels
+            self.labels = [0 for i in range(len(self.barcodes))] #dummy labels
             # self.labels = torch.stack([label for label in self.labels])
             # self.num_labels = self.tax_encoder.num_classes
 
