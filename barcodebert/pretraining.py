@@ -128,38 +128,6 @@ def run(config):
         biological_masker = None
     # ==========================================
 
-    # LOAD PRE-EMPTION CHECKPOINT =============================================
-    checkpoint = None
-    config.model_output_dir = None
-    if config.checkpoint_path:
-        config.model_output_dir = os.path.dirname(config.checkpoint_path)
-    if not config.checkpoint_path:
-        # Not trying to resume from a checkpoint
-        pass
-    elif not os.path.isfile(config.checkpoint_path):
-        # Looks like we're trying to resume from the checkpoint that this job
-        # will itself create. Let's assume this is to let the job resume upon
-        # preemption, and it just hasn't been preempted yet.
-        print(f"Skipping premature resumption from preemption: no checkpoint file found at '{config.checkpoint_path}'")
-        if config.checkpoint_path_resume and os.path.isfile(config.checkpoint_path_resume):
-            # Resume from another checkpoint instead
-            print(f"Loading resumption checkpoint '{config.checkpoint_path_resume}'", flush=True)
-            checkpoint = torch.load(config.checkpoint_path_resume, map_location=device)
-    else:
-        print(f"Loading resumption checkpoint '{config.checkpoint_path}'", flush=True)
-        # Map model parameters to be load to the specified gpu.
-        checkpoint = torch.load(config.checkpoint_path, map_location=device)
-
-    if checkpoint is None:
-        # Our epochs go from 1 to n_epoch, inclusive
-        start_epoch = 1
-    else:
-        # Continue from where we left off
-        start_epoch = checkpoint["epoch"] + 1
-        if config.seed is not None:
-            # Make sure we don't get the same behaviour as we did on the
-            # first epoch repeated on this resumed epoch.
-            utils.set_rng_seeds_fixed(config.seed + start_epoch, all_gpu=False)
 
     # DATASET =================================================================
 
@@ -232,6 +200,49 @@ def run(config):
 
     dataloader_train = torch.utils.data.DataLoader(dataset_train, **dl_train_kwargs)
     dataloader_val = torch.utils.data.DataLoader(dataset_val, **dl_val_kwargs)
+
+    # LOAD PRE-EMPTION CHECKPOINT =============================================
+    checkpoint = None
+    config.model_output_dir = None
+    if config.checkpoint_path:
+        config.model_output_dir = os.path.dirname(config.checkpoint_path)
+    if not config.checkpoint_path:
+        # Not trying to resume from a checkpoint
+        pass
+    elif not os.path.isfile(config.checkpoint_path):
+        # Looks like we're trying to resume from the checkpoint that this job
+        # will itself create. Let's assume this is to let the job resume upon
+        # preemption, and it just hasn't been preempted yet.
+        print(f"Skipping premature resumption from preemption: no checkpoint file found at '{config.checkpoint_path}'")
+        if config.checkpoint_path_resume and os.path.isfile(config.checkpoint_path_resume):
+            # Resume from another checkpoint instead
+            print(f"Loading resumption checkpoint '{config.checkpoint_path_resume}'", flush=True)
+            checkpoint = torch.load(config.checkpoint_path_resume, map_location=device)
+    else:
+        print(f"Loading resumption checkpoint '{config.checkpoint_path}'", flush=True)
+        # Map model parameters to be load to the specified gpu.
+        checkpoint = torch.load(config.checkpoint_path, map_location=device)
+
+    if checkpoint is None:
+        # Our epochs go from 1 to n_epoch, inclusive
+        start_epoch = 1
+    else:
+        # Calculate where to resume
+        loaded_step = checkpoint["total_step"]
+        batches_per_epoch = len(dataloader_train)
+
+        # Which epoch should we resume in?
+        start_epoch = (loaded_step // batches_per_epoch) + 1
+
+        # Which batch within that epoch should we start from?
+        start_step_in_epoch = loaded_step % batches_per_epoch
+
+        print(f"Resuming at epoch {start_epoch}, batch {start_step_in_epoch}")
+
+        if config.seed is not None:
+            # Make sure we don't get the same behaviour as we did on the
+            # first epoch repeated on this resumed epoch.
+            utils.set_rng_seeds_fixed(config.seed + start_epoch, all_gpu=False)
 
     # MODEL ===================================================================
     base_pairs = "ACGT"
@@ -568,6 +579,8 @@ def run(config):
             bert_config=bert_config,
             decoder_config=decoder_config,
             best_stats=best_stats,
+            start_epoch=start_epoch,
+            start_step_in_epoch=start_step_in_epoch if epoch == start_epoch else 0,
         )
         t_end_train = time.time()
 
@@ -766,6 +779,8 @@ def train_one_epoch(
     bert_config=None,
     decoder_config=None,
     best_stats=None,
+    start_epoch=0,
+    start_step_in_epoch=0,
 
 ):
     r"""
@@ -840,6 +855,10 @@ def train_one_epoch(
     t_end_batch = time.time()
     t_start_wandb = t_end_wandb = None
     for batch_idx, (sequences, y_true, att_mask) in enumerate(dataloader):
+        # Skip batches we already processed
+        if epoch == start_epoch and batch_idx < start_step_in_epoch:
+            continue
+
         t_start_batch = time.time()
         batch_size_this_gpu = sequences.shape[0]
 
