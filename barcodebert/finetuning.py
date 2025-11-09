@@ -196,7 +196,7 @@ def run(config):
 
     # DATASET =================================================================
 
-    if config.dataset_name not in ["CANADA-1.5M", "BIOSCAN-5M"]:
+    if config.dataset_name not in ["CANADA-1.5M", "BIOSCAN-5M","ITS-5M"]:
         raise NotImplementedError(f"Dataset {config.dataset_name} not supported.")
 
     # Handle default stride dynamically set to equal k-mer size
@@ -212,23 +212,60 @@ def run(config):
         "tokenize_n_nucleotide": config.tokenize_n_nucleotide,
         "dataset_format": config.dataset_name,
     }
-    dataset_train = DNADataset(
-        file_path=os.path.join(config.data_dir, "supervised_train.csv"),
-        randomize_offset=True,
-        **dataset_args,
-    )
-    dataset_val = DNADataset(
-        file_path=os.path.join(config.data_dir, "supervised_val.csv"),
-        randomize_offset=False,
-        **dataset_args,
-    )
-    dataset_test = DNADataset(
-        file_path=os.path.join(config.data_dir, "supervised_test.csv"),
-        randomize_offset=False,
-        **dataset_args,
-    )
-    distinct_val_test = True
-    eval_set = "Val" if distinct_val_test else "Test"
+    if config.dataset_name == "ITS-5M":
+        dataset_train = DNADataset(
+            file_path=os.path.join(config.data_dir, "trainset.fasta"),
+            randomize_offset=True,
+            **dataset_args,
+            taxonomic_level = config.taxonomic_level,
+        )
+        dataset_val = DNADataset(
+            file_path=os.path.join(config.data_dir, "trainset_valid.fasta"),
+            randomize_offset=False,
+            **dataset_args,
+            taxonomic_level = config.taxonomic_level
+        )
+
+        dataset_test1 = DNADataset(
+            file_path=os.path.join(config.data_dir, "test1.fasta"),
+            randomize_offset=False,
+            **dataset_args,
+            taxonomic_level=config.taxonomic_level
+        )
+        dataset_test2 = DNADataset(
+            file_path=os.path.join(config.data_dir, "test2.fasta"),
+            randomize_offset=False,
+            **dataset_args,
+            taxonomic_level=config.taxonomic_level
+        )
+        dataset_test3 = DNADataset(
+            file_path=os.path.join(config.data_dir, "test3.fasta"),
+            randomize_offset=False,
+            **dataset_args,
+            taxonomic_level=config.taxonomic_level
+        )
+
+        distinct_val_test = True
+        eval_set = "Val" if distinct_val_test else "Test"
+
+    else:
+        dataset_train = DNADataset(
+            file_path=os.path.join(config.data_dir, "supervised_train.csv"),
+            randomize_offset=True,
+            **dataset_args,
+        )
+        dataset_val = DNADataset(
+            file_path=os.path.join(config.data_dir, "supervised_val.csv"),
+            randomize_offset=False,
+            **dataset_args,
+        )
+        dataset_test = DNADataset(
+            file_path=os.path.join(config.data_dir, "supervised_test.csv"),
+            randomize_offset=False,
+            **dataset_args,
+        )
+        distinct_val_test = True
+        eval_set = "Val" if distinct_val_test else "Test"
 
     # Dataloader --------------------------------------------------------------
     dl_train_kwargs = {
@@ -251,7 +288,13 @@ def run(config):
         cuda_kwargs = {"num_workers": config.cpu_workers, "pin_memory": True}
         dl_train_kwargs.update(cuda_kwargs)
         dl_val_kwargs.update(cuda_kwargs)
-    dl_test_kwargs = copy.deepcopy(dl_val_kwargs)
+    if config.dataset_name == "ITS-5M":
+        dl_test_kwargs1 = copy.deepcopy(dl_val_kwargs)
+        dl_test_kwargs2 = copy.deepcopy(dl_val_kwargs)
+        dl_test_kwargs3 = copy.deepcopy(dl_val_kwargs)
+    else:
+        dl_test_kwargs = copy.deepcopy(dl_val_kwargs)
+
 
     if config.distributed:
         # The DistributedSampler breaks up the dataset across the GPUs
@@ -264,12 +307,26 @@ def run(config):
         dl_train_kwargs["shuffle"] = None
         dl_val_kwargs["sampler"] = DistributedSampler(dataset_val, shuffle=False, drop_last=False)
         dl_val_kwargs["shuffle"] = None
-        dl_test_kwargs["sampler"] = DistributedSampler(dataset_test, shuffle=False, drop_last=False)
-        dl_test_kwargs["shuffle"] = None
+        if config.dataset_name == "ITS-5M":
+            dl_test_kwargs1["sampler"] = DistributedSampler(dataset_test1, shuffle=False, drop_last=False)
+            dl_test_kwargs1["shuffle"] = None
+            dl_test_kwargs2["sampler"] = DistributedSampler(dataset_test2, shuffle=False, drop_last=False)
+            dl_test_kwargs2["shuffle"] = None
+            dl_test_kwargs3["sampler"] = DistributedSampler(dataset_test3, shuffle=False, drop_last=False)
+            dl_test_kwargs3["shuffle"] = None
+        else:
+            dl_test_kwargs["sampler"] = DistributedSampler(dataset_test, shuffle=False, drop_last=False)
+            dl_test_kwargs["shuffle"] = None
+
 
     dataloader_train = torch.utils.data.DataLoader(dataset_train, **dl_train_kwargs)
     dataloader_val = torch.utils.data.DataLoader(dataset_val, **dl_val_kwargs)
-    dataloader_test = torch.utils.data.DataLoader(dataset_test, **dl_test_kwargs)
+    if config.dataset_name == "ITS-5M":
+        dataloader_test1 = torch.utils.data.DataLoader(dataset_test1, **dl_test_kwargs1)
+        dataloader_test2 = torch.utils.data.DataLoader(dataset_test2, **dl_test_kwargs2)
+        dataloader_test3 = torch.utils.data.DataLoader(dataset_test3, **dl_test_kwargs3)
+    else:
+        dataloader_test = torch.utils.data.DataLoader(dataset_test, **dl_test_kwargs)
 
     # MODEL ===================================================================
 
@@ -601,17 +658,59 @@ def run(config):
     # TEST ====================================================================
     print(f"\nEvaluating final model (epoch {config.epochs}) performance")
     # Evaluate on test set
-    print("\nEvaluating final model on test set...", flush=True)
-    eval_stats = evaluate(
-        dataloader=dataloader_test,
-        model=model,
-        device=device,
-        partition_name="Test",
-        is_distributed=config.distributed,
-    )
-    # Send stats to wandb
-    if config.log_wandb and config.global_rank == 0:
-        wandb.log({**{f"Eval/Test/{k}": v for k, v in eval_stats.items()}}, step=total_step)
+    if config.dataset_name == "ITS-5M":
+        print("\nEvaluating final model on test1 set...", flush=True)
+        eval_stats1 = evaluate(
+            dataloader=dataloader_test1,
+            model=model,
+            device=device,
+            partition_name="Test1",
+            is_distributed=config.distributed,
+        )
+        # Send stats to wandb
+        if config.log_wandb and config.global_rank == 0:
+            wandb.log({**{f"Eval/Test1/{k}": v for k, v in eval_stats1.items()}}, step=total_step)
+
+        print("\nEvaluating final model on test2 set...", flush=True)
+        eval_stats2 = evaluate(
+            dataloader=dataloader_test2,
+            model=model,
+            device=device,
+            partition_name="Test2",
+            is_distributed=config.distributed,
+        )
+        # Send stats to wandb
+        if config.log_wandb and config.global_rank == 0:
+            wandb.log({**{f"Eval/Test2/{k}": v for k, v in eval_stats2.items()}}, step=total_step)
+
+        print("\nEvaluating final model on test3 set...", flush=True)
+        eval_stats3 = evaluate(
+            dataloader=dataloader_test3,
+            model=model,
+            device=device,
+            partition_name="Test3",
+            is_distributed=config.distributed,
+        )
+        # Send stats to wandb
+        if config.log_wandb and config.global_rank == 0:
+            wandb.log({**{f"Eval/Test3/{k}": v for k, v in eval_stats3.items()}}, step=total_step)
+
+        print(eval_stats1)
+        print(eval_stats2)
+        print(eval_stats3)
+
+    else:
+        print("\nEvaluating final model on test set...", flush=True)
+        eval_stats = evaluate(
+            dataloader=dataloader_test,
+            model=model,
+            device=device,
+            partition_name="Test",
+            is_distributed=config.distributed,
+        )
+        # Send stats to wandb
+        if config.log_wandb and config.global_rank == 0:
+            wandb.log({**{f"Eval/Test/{k}": v for k, v in eval_stats.items()}}, step=total_step)
 
     if distinct_val_test:
         # Evaluate on validation set
@@ -726,6 +825,10 @@ def train_one_epoch(
     t_end_batch = time.time()
     t_start_wandb = t_end_wandb = None
     for batch_idx, (sequences, y_true, att_mask) in enumerate(dataloader):
+        #skipping invalid samples
+        if y_true == 9999999:
+            # Skip invalid samples
+            continue
         t_start_batch = time.time()
         batch_size_this_gpu = sequences.shape[0]
 
@@ -912,6 +1015,17 @@ def get_parser():
         required=True,
         help="Path to pretrained model checkpoint (required).",
     )
+    group.add_argument(
+        "--taxonomic-level",
+        "--taxonomic_level",
+        dest="taxonomic_level",
+        required=True,
+        default="species",
+        type=str,
+        help="Taxonomic level to classify at (e.g., species, genus, family).",
+
+    )
+
     group.add_argument(
         "--freeze-encoder",
         "--freeze_encoder",

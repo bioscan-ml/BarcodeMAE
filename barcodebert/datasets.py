@@ -100,6 +100,7 @@ class DNADataset(Dataset):
         bpe_path=None,
         tokenize_n_nucleotide=False,
         dataset_format="CANADA-1.5M",
+        taxonomic_level="species"
     ):
         self.k_mer = k_mer
         self.stride = k_mer if stride is None else stride
@@ -167,9 +168,16 @@ class DNADataset(Dataset):
             self.labels = df["species_index"].to_list()
             self.num_labels = 22_622
         elif dataset_format == "ITS-5M":
-            self.labels = [0 for i in range(len(self.barcodes))] #dummy labels
+            labels_file = file_path.replace(".fasta", "_labels.csv")
+            if os.path.isfile(labels_file):
+                labels_df = pd.read_csv(labels_file)
+                self.labels = labels_df[taxonomic_level].to_list()
+                self.num_labels = len(set(self.labels)) - 1 # minus one for unknown labels = 9999999
+            else:
+                print("Labels file not found. Please provide labels file.")
+
             # self.labels = torch.stack([label for label in self.labels])
-            # self.num_labels = self.tax_encoder.num_classes
+            #
 
     def __len__(self):
         return len(self.barcodes)
