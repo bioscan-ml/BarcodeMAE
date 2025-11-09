@@ -445,7 +445,7 @@ def run(config):
             config.dataset_name,
             f"{config.run_name}__{config.run_id}",
         )
-        config.checkpoint_path = os.path.join(config.model_output_dir, "checkpoint_finetune.pt")
+        config.checkpoint_path = os.path.join(config.model_output_dir, f"checkpoint_finetune_{config.taxonomic_level}.pt")
         if config.log_wandb and config.global_rank == 0:
             wandb.config.update({"checkpoint_path": config.checkpoint_path}, allow_val_change=True)
 
@@ -611,7 +611,7 @@ def run(config):
                 **best_stats,
             )
             if config.save_best_model and best_stats["best_epoch"] == epoch:
-                ckpt_path_best = os.path.join(config.model_output_dir, "best_finetune.pt")
+                ckpt_path_best = os.path.join(config.model_output_dir, f"best_finetune_{config.taxonomic_level}.pt")
                 print(f"Copying model to {ckpt_path_best}")
                 shutil.copyfile(config.checkpoint_path, ckpt_path_best)
 
