@@ -172,12 +172,29 @@ class DNADataset(Dataset):
             if os.path.isfile(labels_file):
                 labels_df = pd.read_csv(labels_file)
                 self.labels = labels_df[taxonomic_level].to_list()
-                self.num_labels = len(set(self.labels)) - 1 # minus one for unknown labels = 9999999
             else:
-                print("Labels file not found. Please provide labels file.")
+                raise FileNotFoundError("Labels file not found for ITS-5M. Expected: " + labels_file)
 
-            # self.labels = torch.stack([label for label in self.labels])
-            #
+            if len(self.labels) != len(self.barcodes):
+                raise ValueError(
+                    f"Mismatch between barcodes ({len(self.barcodes)}) and labels ({len(self.labels)}). "
+                    "Ensure the labels CSV matches the FASTA order."
+                )
+
+            labels_np = np.asarray(self.labels)
+            valid_mask = labels_np != 9999999 # label for unknown labels
+            n_before = len(self.labels)
+            if not valid_mask.any():
+                raise ValueError("All ITS-5M labels are invalid.")
+            # apply mask
+            self.barcodes = [b for b, keep in zip(self.barcodes, valid_mask) if keep]
+            self.labels = labels_np[valid_mask].tolist()
+            n_after = len(self.labels)
+
+            print(f"[DNADataset] ITS-5M: dropped {n_before - n_after} invalid samples "
+                  f"(kept {n_after}/{n_before}).")
+            # set num_labels AFTER filtering
+            self.num_labels = len(set(self.labels))
 
     def __len__(self):
         return len(self.barcodes)
