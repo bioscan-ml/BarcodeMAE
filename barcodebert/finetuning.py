@@ -14,7 +14,7 @@ import torch.nn.functional as F
 import torch.optim
 from torch import nn
 from torch.utils.data.distributed import DistributedSampler
-from transformers.modeling_outputs import TokenClassifierOutput
+from transformers.models.bert.modeling_bert import TokenClassifierOutput
 
 from barcodebert import utils
 from barcodebert.datasets import DNADataset
@@ -41,7 +41,7 @@ class ClassificationModel(nn.Module):
         logits = self.classifier(GAP_embeddings.view(-1, self.hidden_size))
         loss = None
         if labels is not None:
-            loss = F.cross_entropy(logits.view(-1, self.num_labels), labels.view(-1))
+            loss = F.cross_entropy(logits.view(-1, self.num_labels), labels.view(-1), ignore_index=9999999)
         return TokenClassifierOutput(loss=loss, logits=logits, hidden_states=outputs.hidden_states)
 
 
@@ -825,10 +825,10 @@ def train_one_epoch(
     t_end_batch = time.time()
     t_start_wandb = t_end_wandb = None
     for batch_idx, (sequences, y_true, att_mask) in enumerate(dataloader):
-        #skipping invalid samples
-        if y_true == 9999999:
-            # Skip invalid samples
-            continue
+        # #skipping invalid samples
+        # if y_true == 9999999:
+        #     # Skip invalid samples
+        #     continue
         t_start_batch = time.time()
         batch_size_this_gpu = sequences.shape[0]
 
@@ -902,15 +902,23 @@ def train_one_epoch(
             print("loss =", loss.detach().item())
 
         # Compute accuracy
+            # 2) Mask invalids for metrics
         with torch.no_grad():
-            is_correct = y_pred == y_true
-            # Accuracy
-            acc = is_correct.sum() / is_correct.numel()
+            valid_mask = y_true != 9999999
+            # If a rare batch has zero valid labels, skip metric update safely
+            if valid_mask.any():
+                correct = (y_pred[valid_mask] == y_true[valid_mask]).sum()
+                acc = (correct.float() / valid_mask.sum().float()) * 100.0
+            else:
+                acc = torch.tensor(0.0, device=device)
+
             if config.distributed:
-                # Fetch results from other GPUs
-                dist.reduce(acc, 0, op=dist.ReduceOp.AVG)
-            acc = 100.0 * acc.item()
-            acc_epoch += acc
+                # Average acc across ranks (use a tensor)
+                acc_t = acc.clone()
+                torch.distributed.reduce(acc_t, 0, op=torch.distributed.ReduceOp.AVG)
+                acc = acc_t
+
+            acc_epoch += float(acc)
 
         # Log to console
         if batch_idx <= 2 or batch_idx % config.print_interval == 0 or batch_idx >= len(dataloader) - 1:
@@ -1017,10 +1025,8 @@ def get_parser():
     )
     group.add_argument(
         "--taxonomic-level",
-        "--taxonomic_level",
         dest="taxonomic_level",
-        required=True,
-        default="species",
+        default="",
         type=str,
         help="Taxonomic level to classify at (e.g., species, genus, family).",
 
