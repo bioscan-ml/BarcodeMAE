@@ -193,6 +193,13 @@ class DNADataset(Dataset):
             # apply mask
             self.barcodes = [b for b, keep in zip(self.barcodes, valid_mask) if keep]
             self.labels = labels_np[valid_mask].tolist()
+            # Reindex to contiguous [0..C-1] and keep mappings
+            self.labels, self.label_set = pd.factorize(self.labels, sort=True)  # self.labels now 0..C-1
+            self.num_labels = len(self.label_set)
+            print(max(self.labels))
+            self.id2label = {i: lab for i, lab in enumerate(self.label_set)}
+            self.label2id = {lab: i for i, lab in enumerate(self.label_set)}
+
             n_after = len(self.labels)
 
             print(f"[DNADataset] ITS-5M: dropped {n_before - n_after} invalid samples "
