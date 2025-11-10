@@ -75,6 +75,8 @@ def evaluate(
     # with some repetitions. We need to trim these off.
     n_samples = len(dataloader.dataset)
     xent = xent[:n_samples]
+    print(y_true)
+    print(y_pred)
     y_true = y_true[:n_samples]
     y_pred = y_pred[:n_samples]
     # Create results dictionary
