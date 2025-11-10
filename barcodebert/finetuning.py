@@ -221,6 +221,7 @@ def run(config):
         )
         # share mapping
         label2id = getattr(dataset_train, "label2id", None)
+        print(label2id)
         dataset_val = DNADataset(
             file_path=os.path.join(config.data_dir, "trainset_valid.fasta"),
             randomize_offset=False,
