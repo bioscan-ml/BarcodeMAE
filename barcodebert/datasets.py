@@ -196,29 +196,31 @@ class DNADataset(Dataset):
             self.barcodes = [b for b, keep in zip(self.barcodes, valid_mask) if keep]
             self.labels = labels_np[valid_mask].tolist()
             print("max labels before change", max(self.labels))
+            self.num_labels = len(self.label_set)
+            print(f"[DNADataset][ITS-5M] Removed {n_before - len(self.labels)} samples with unknown labels.")
             # Reindex to contiguous [0..C-1] and keep mappings
-            if self.label2id is None:
-                self.labels, self.label_set = pd.factorize(self.labels, sort=True)  # self.labels now 0..C-1
-                self.num_labels = len(self.label_set)
-                print("max labels after change",max(self.labels))
-                self.id2label = {i: lab for i, lab in enumerate(self.label_set)}
-                self.label2id = {lab: i for i, lab in enumerate(self.label_set)}
-            else:
-                mapped = []
-                kept_barcodes = []
-                dropped = 0
-                for b, lab in zip(self.barcodes, self.labels):
-                    if lab in self.label2id:
-                        mapped.append(self.label2id[lab])
-                        kept_barcodes.append(b)
-                    else:
-                        dropped += 1
-                if dropped:
-                    print(f"[DNADataset][ITS-5M] Dropped {dropped} samples with taxa unseen in train.")
-                self.barcodes = kept_barcodes
-                self.labels = mapped
-                self.num_labels = len(self.label2id)
-                self.id2label = {i: lab for lab, i in self.label2id.items()}
+            # if self.label2id is None:
+            #     self.labels, self.label_set = pd.factorize(self.labels, sort=True)  # self.labels now 0..C-1
+            #     self.num_labels = len(self.label_set)
+            #     print("max labels after change",max(self.labels))
+            #     self.id2label = {i: lab for i, lab in enumerate(self.label_set)}
+            #     self.label2id = {lab: i for i, lab in enumerate(self.label_set)}
+            # else:
+            #     mapped = []
+            #     kept_barcodes = []
+            #     dropped = 0
+            #     for b, lab in zip(self.barcodes, self.labels):
+            #         if lab in self.label2id:
+            #             mapped.append(self.label2id[lab])
+            #             kept_barcodes.append(b)
+            #         else:
+            #             dropped += 1
+            #     if dropped:
+            #         print(f"[DNADataset][ITS-5M] Dropped {dropped} samples with taxa unseen in train.")
+            #     self.barcodes = kept_barcodes
+            #     self.labels = mapped
+            #     self.num_labels = len(self.label2id)
+            #     self.id2label = {i: lab for lab, i in self.label2id.items()}
 
 
     def __len__(self):
