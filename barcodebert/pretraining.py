@@ -24,6 +24,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.
 from barcodebert.maelm_model import MAELMModel
 from biological_masker import TemperatureCompatibleBiologicalMasker, get_temperature_biological_replacements, create_temperature_schedule
 from torch.cuda.amp import GradScaler, autocast
+from barcodebert.jumbo_transformer import create_jumbo_transformer_model
 
 BASE_BATCH_SIZE = 64
 
@@ -308,7 +309,11 @@ def run(config):
         model = MAELMModel(bert_config, decoder_config)
 
     elif config.arch == "transformer":
-        model = BertForTokenClassification(bert_config)
+        if config.jumbo:
+            print("Using JumboBertForTokenClassification")
+            model = create_jumbo_transformer_model(bert_config, jumbo_multiplier=6)
+        else:
+            model = BertForTokenClassification(bert_config)
 
     # Configure model for distributed training --------------------------------
     print("\nModel architecture:")
@@ -1885,6 +1890,12 @@ def get_parser():
         dest="mixed_precision",
         action="store_true",
         help="Enable Automatic Mixed Precision (AMP) training for faster training and reduced memory usage.",
+    )
+
+    group.add_argument(
+        "--jumbo",
+        action="store_true",
+        help="Enable Jumbo CLS training"
     )
 
     # Output checkpoint args --------------------------------------------------

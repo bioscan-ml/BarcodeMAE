@@ -119,7 +119,7 @@ class DNADataset(Dataset):
         if tokenizer == "kmer":
             # Vocabulary
             base_pairs = "ACGT"
-            self.special_tokens = ["[MASK]", "[UNK]"]  # ["[MASK]", "[CLS]", "[SEP]", "[PAD]", "[EOS]", "[UNK]"]
+            self.special_tokens = ["[MASK]", "[UNK]", "[CLS]"]  # ["[MASK]", "[CLS]", "[SEP]", "[PAD]", "[EOS]", "[UNK]"]
             UNK_TOKEN = "[UNK]"
 
             if tokenize_n_nucleotide:
