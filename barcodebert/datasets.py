@@ -196,7 +196,7 @@ class DNADataset(Dataset):
             self.barcodes = [b for b, keep in zip(self.barcodes, valid_mask) if keep]
             self.labels = labels_np[valid_mask].tolist()
             print("max labels before change", max(self.labels))
-            self.num_labels = len(self.label_set)
+            self.num_labels = len(set(self.labels))
             print(f"[DNADataset][ITS-5M] Removed {n_before - len(self.labels)} samples with unknown labels.")
             # Reindex to contiguous [0..C-1] and keep mappings
             # if self.label2id is None:
