@@ -106,24 +106,28 @@ def run(config):
     # ==========================================
     # Initialize biological masker
     biological_masker = None
-    try:
-        biological_masker = TemperatureCompatibleBiologicalMasker.from_cache_dir(
-            cache_dir='/home/m4safari/projects/def-lila-ab/m4safari/barcodeMAE/BarcodeMAE/barcodebert/masking_codes/kmer_cache',
-            k_mer_size=config.k_mer,
-            tokenize_n_nucleotide=config.tokenize_n_nucleotide,
-            device=device
-        )
-        print(" Biological masking enabled")
+    if config.random_token_ratio > 0.0:
+        try:
+            biological_masker = TemperatureCompatibleBiologicalMasker.from_cache_dir(
+                cache_dir='/home/m4safari/projects/def-lila-ab/m4safari/barcodeMAE/BarcodeMAE/barcodebert/masking_codes/kmer_cache',
+                k_mer_size=config.k_mer,
+                tokenize_n_nucleotide=config.tokenize_n_nucleotide,
+                device=device
+            )
+            print(" Biological masking enabled")
 
-        temperature_schedule = create_temperature_schedule(
-            start_temp=2.5, end_temp=1.0, total_epochs=config.epochs, schedule_type='exponential'
-        )
-        print(" Temperature schedule:", temperature_schedule)
+            temperature_schedule = create_temperature_schedule(
+                start_temp=2.5, end_temp=1.0, total_epochs=config.epochs, schedule_type='exponential'
+            )
+            print(" Temperature schedule:", temperature_schedule)
 
-    except FileNotFoundError as e:
-        print(f" Warning: {e}")
-        print("Using uniform random masking instead")
-        biological_masker = None
+        except FileNotFoundError as e:
+            print(f" Warning: {e}")
+            print("Using uniform random masking instead")
+            biological_masker = None
+        else:
+            print("No biological masking will be applied")
+            print("All tokens are based with [MASK]")
     # ==========================================
 
 
