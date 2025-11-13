@@ -332,7 +332,7 @@ def run(config):
         model = model.to(device)
         torch.cuda.set_device(device)
         model = nn.parallel.DistributedDataParallel(
-            model, device_ids=[config.local_rank], output_device=config.local_rank, find_unused_parameters=True
+            model, device_ids=[config.local_rank], output_device=config.local_rank, find_unused_parameters=False
         )
     else:
         if config.local_rank is not None:
