@@ -336,11 +336,11 @@ def run(config):
         model = nn.parallel.DistributedDataParallel(
             model, device_ids=[config.local_rank], output_device=config.local_rank, find_unused_parameters=True
         )
-        if hasattr(model, "static_graph"):
-            model.static_graph = True
-        # Older PyTorch private API:
-        if hasattr(model, "_set_static_graph"):
-            model._set_static_graph()
+        # if hasattr(model, "static_graph"):
+        #     model.static_graph = True
+        # # Older PyTorch private API:
+        # if hasattr(model, "_set_static_graph"):
+        #     model._set_static_graph()
 
     else:
         if config.local_rank is not None:
