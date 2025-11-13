@@ -106,6 +106,7 @@ def run(config):
     # ==========================================
     # Initialize biological masker
     biological_masker = None
+    temperature_schedule = None
     if config.random_token_ratio > 0.0:
         try:
             biological_masker = TemperatureCompatibleBiologicalMasker.from_cache_dir(
