@@ -309,6 +309,7 @@ def run(config):
         model = MAELMModel(bert_config, decoder_config)
 
     elif config.arch == "transformer":
+        decoder_config = None
         if config.jumbo:
             print("Using JumboBertForTokenClassification")
             model = create_jumbo_transformer_model(bert_config, jumbo_multiplier=6)
