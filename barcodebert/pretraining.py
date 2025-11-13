@@ -51,21 +51,17 @@ def run(config):
         torch.backends.cudnn.benchmark = False
 
     # DISTRIBUTION ============================================================
-    # Setup for distributed training
-    utils.setup_slurm_distributed()
+    # Enable DDP only if we truly have >1 processes
     config.world_size = int(os.environ.get("WORLD_SIZE", 1))
-    config.distributed = utils.check_is_distributed()
-    if config.world_size > 1 and not config.distributed:
-        raise EnvironmentError(
-            f"WORLD_SIZE is {config.world_size}, but not all other required"
-            " environment variables for distributed training are set."
-        )
-    # Work out the total batch size depending on the number of GPUs we are using
+    config.distributed = config.world_size > 1
+
+    # Total batch size across all ranks
     config.batch_size = config.batch_size_per_gpu * config.world_size
 
     if config.distributed:
-        # For multiprocessing distributed training, gpu rank needs to be
-        # set to the global rank among all the processes.
+        # (Optional) keep if you rely on SLURM env setup
+        utils.setup_slurm_distributed()
+
         config.global_rank = int(os.environ["RANK"])
         config.local_rank = int(os.environ["LOCAL_RANK"])
         print(
@@ -76,6 +72,7 @@ def run(config):
         dist.init_process_group(backend="nccl")
     else:
         config.global_rank = 0
+        config.local_rank = 0  # or None
 
     # Suppress printing if this is not the master process for the node
     if config.distributed and config.global_rank != 0:
