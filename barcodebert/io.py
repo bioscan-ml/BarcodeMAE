@@ -7,6 +7,7 @@ from inspect import getsourcefile
 
 import torch
 from transformers import BertConfig, BertForTokenClassification, BertModel
+from barcodebert.jumbo_transformer import create_jumbo_transformer_model
 
 from .utils import remove_extra_pre_fix
 
@@ -80,6 +81,8 @@ def load_pretrained_model(checkpoint_path, device=None):
     print(f"\nLoading model from {checkpoint_path}")
     ckpt = torch.load(checkpoint_path, map_location=device)
     bert_config = BertConfig(**ckpt["bert_config"])
+    if ckpt["config"].jumbo:
+        model = create_jumbo_transformer_model(bert_config, ckpt["config"].jumbo_multiplier)
     if ckpt["config"].arch == "maelm":
         model = BertModel(bert_config)
     elif ckpt["config"].arch == "transformer":
