@@ -162,6 +162,7 @@ class JumboBertForTokenClassification(nn.Module):
 
         # Init Jumbo CLS tokens
         nn.init.trunc_normal_(self.jumbo_cls_tokens, mean=0.0, std=0.02)
+        self.device = None
 
     def forward(
         self,
@@ -181,8 +182,9 @@ class JumboBertForTokenClassification(nn.Module):
         )  # (B, N, D)
 
         batch_size, seq_len, hidden_size = embedding_output.size()
-        device = embedding_output.device
 
+        device = embedding_output.device
+        self.device = device
         # 2. Prepend J Jumbo CLS tokens
         jumbo_cls = self.jumbo_cls_tokens.expand(batch_size, -1, -1)  # (B, J, D)
         jumbo_cls = jumbo_cls.to(device)
