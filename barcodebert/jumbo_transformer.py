@@ -53,12 +53,13 @@ class JumboTokenHandler(nn.Module):
 
         # wide MLP
         mlp_out = self.jumbo_mlp(flat)
+        flat_with_residual = flat + mlp_out  # residual in flat space
 
         # (B, J*D) -> (B, J, D)
-        reshaped = mlp_out.reshape(bsz, actual_J, dim)
+        reshaped = flat_with_residual.reshape(bsz, actual_J, dim)
 
-        # residual on Jumbo tokens
-        return jumbo_tokens + reshaped
+        #Jumbo tokens
+        return reshaped
 
 
 class JumboBertLayer(nn.Module):
@@ -126,7 +127,7 @@ class JumboBertForTokenClassification(nn.Module):
     - Final Jumbo representation is returned as a flattened vector (B, J*D).
     """
 
-    def __init__(self, config: BertConfig, jumbo_multiplier: int = 6):
+    def __init__(self, config: BertConfig, jumbo_multiplier: int = 6, share_jumbo_mlp_across_layers: bool = True):
         super().__init__()
         self.config = config
         self.jumbo_multiplier = jumbo_multiplier
@@ -135,12 +136,24 @@ class JumboBertForTokenClassification(nn.Module):
         # Base BERT model (we'll only use its embeddings + encoder blocks)
         self.bert = BertModel(config, add_pooling_layer=False)
 
+        if share_jumbo_mlp_across_layers:
+            # Single shared handler
+            shared_jumbo_handler = JumboTokenHandler(
+                embed_dim=config.hidden_size,
+                jumbo_multiplier=jumbo_multiplier,
+                dropout=config.hidden_dropout_prob,
+            )
+            jumbo_handlers = [shared_jumbo_handler] * len(self.bert.encoder.layer)
+        else:
+            # Separate handler per layer
+            print("Using separate JumboTokenHandler per layer.")
+            jumbo_handlers = [
+                JumboTokenHandler(config.hidden_size, jumbo_multiplier, config.hidden_dropout_prob)
+                for _ in range(len(self.bert.encoder.layer))
+            ]
+
         # Shared Jumbo handler for ALL layers
-        shared_jumbo_handler = JumboTokenHandler(
-            embed_dim=config.hidden_size,
-            jumbo_multiplier=jumbo_multiplier,
-            dropout=config.hidden_dropout_prob,
-        )
+
 
         # J separate Jumbo CLS tokens, each of dim D
         self.jumbo_cls_tokens = nn.Parameter(
@@ -149,8 +162,8 @@ class JumboBertForTokenClassification(nn.Module):
 
         # Replace encoder layers with JumboBertLayer that use the shared handler
         new_layers = []
-        for original_layer in self.bert.encoder.layer:
-            new_layers.append(JumboBertLayer(original_layer, shared_jumbo_handler))
+        for original_layer, jumbo_handler in zip(self.bert.encoder.layer, jumbo_handlers):
+            new_layers.append(JumboBertLayer(original_layer, jumbo_handler))
         self.bert.encoder.layer = nn.ModuleList(new_layers)
 
         # Token classification head (applied only to patch tokens)

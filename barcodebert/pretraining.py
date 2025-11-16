@@ -1907,6 +1907,12 @@ def get_parser():
         help="Enable Jumbo CLS training"
     )
 
+    group.add_argument(
+        "--share_jumbo_layers",
+        action="store_true",
+        help="Enable Jumbo CLS training"
+    )
+
     # Output checkpoint args --------------------------------------------------
     group = parser.add_argument_group("Output checkpoint")
     group.add_argument(
