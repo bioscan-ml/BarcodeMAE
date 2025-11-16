@@ -27,7 +27,7 @@ class JumboTokenHandler(nn.Module):
 
         self.jumbo_mlp = nn.Sequential(
             nn.LayerNorm(self.jumbo_width),
-            nn.Linear(self.jumbo_width, self.jumbo_width * 4), # Wide hidden layer X4
+            nn.Linear(self.jumbo_width, self.jumbo_width * 2), # Wide hidden layer X4
             nn.GELU(),
             nn.Dropout(dropout),
             nn.Linear(self.jumbo_width * 4, self.jumbo_width),
