@@ -314,7 +314,7 @@ def run(config):
         decoder_config = None
         if config.jumbo:
             print("Using JumboBertForTokenClassification")
-            model = create_jumbo_transformer_model(bert_config, jumbo_multiplier=6)
+            model = create_jumbo_transformer_model(bert_config, 6, config.share_jumbo_layers)
         else:
             model = BertForTokenClassification(bert_config)
 
@@ -1910,7 +1910,7 @@ def get_parser():
     group.add_argument(
         "--share_jumbo_layers",
         action="store_true",
-        help="Enable Jumbo CLS training"
+        help="Enable sharing of layers in Jumbo CLS model"
     )
 
     # Output checkpoint args --------------------------------------------------

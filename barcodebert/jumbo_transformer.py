@@ -127,7 +127,7 @@ class JumboBertForTokenClassification(nn.Module):
     - Final Jumbo representation is returned as a flattened vector (B, J*D).
     """
 
-    def __init__(self, config: BertConfig, jumbo_multiplier: int = 6, share_jumbo_mlp_across_layers: bool = True):
+    def __init__(self, config: BertConfig, jumbo_multiplier: int = 6, share_jumbo_mlp_across_layers: bool = False):
         super().__init__()
         self.config = config
         self.jumbo_multiplier = jumbo_multiplier
@@ -249,36 +249,36 @@ class JumboBertForTokenClassification(nn.Module):
         })()
 
 
-def create_jumbo_transformer_model(original_config: BertConfig, jumbo_multiplier: int = 6):
+def create_jumbo_transformer_model(original_config: BertConfig, jumbo_multiplier: int = 6, share_jumbo_mlp_across_layers: bool = False):
     """
     Factory function to create Jumbo transformer model.
     """
-    return JumboBertForTokenClassification(original_config, jumbo_multiplier)
+    return JumboBertForTokenClassification(original_config, jumbo_multiplier, share_jumbo_mlp_across_layers)
 
 
 # Quick test you can use this to check the implementation
-if __name__ == "__main__":
-    config = BertConfig(
-        vocab_size=1000,
-        hidden_size=768,
-        num_hidden_layers=6,
-        num_attention_heads=12,
-        intermediate_size=3072,
-        max_position_embeddings=512,
-        num_labels=256,  # DNA token labels
-    )
-
-    model = create_jumbo_transformer_model(config, jumbo_multiplier=6)
-    print(model)
-    batch_size = 2
-    seq_len = 10
-    input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len))
-    attention_mask = torch.ones(batch_size, seq_len)
-
-    out = model(input_ids=input_ids, attention_mask=attention_mask)
-
-    print("Input shape:", input_ids.shape)                     # (2, 10)
-    print("Logits shape:", out.logits.shape)                   # (2, 10, 256)
-    print("Hidden states shape:", out.hidden_states.shape)     # (2, 10, 768)
-    print("Jumbo rep shape:", out.jumbo_representation.shape)  # (2, 6*768) = (2, 4608)
-    print("Jumbo BERT test passed!")
+# if __name__ == "__main__":
+#     config = BertConfig(
+#         vocab_size=1000,
+#         hidden_size=768,
+#         num_hidden_layers=6,
+#         num_attention_heads=12,
+#         intermediate_size=3072,
+#         max_position_embeddings=512,
+#         num_labels=256,  # DNA token labels
+#     )
+#
+#     model = create_jumbo_transformer_model(config, jumbo_multiplier=6)
+#     print(model)
+#     batch_size = 2
+#     seq_len = 10
+#     input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len))
+#     attention_mask = torch.ones(batch_size, seq_len)
+#
+#     out = model(input_ids=input_ids, attention_mask=attention_mask)
+#
+#     print("Input shape:", input_ids.shape)                     # (2, 10)
+#     print("Logits shape:", out.logits.shape)                   # (2, 10, 256)
+#     print("Hidden states shape:", out.hidden_states.shape)     # (2, 10, 768)
+#     print("Jumbo rep shape:", out.jumbo_representation.shape)  # (2, 6*768) = (2, 4608)
+#     print("Jumbo BERT test passed!")
