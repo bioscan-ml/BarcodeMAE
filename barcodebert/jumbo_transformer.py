@@ -30,7 +30,7 @@ class JumboTokenHandler(nn.Module):
             nn.Linear(self.jumbo_width, self.jumbo_width * 2), # Wide hidden layer X4
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(self.jumbo_width * 4, self.jumbo_width),
+            nn.Linear(self.jumbo_width * 2, self.jumbo_width),
             nn.Dropout(dropout),
         )
 
