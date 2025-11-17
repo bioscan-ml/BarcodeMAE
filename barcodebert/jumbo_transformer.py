@@ -152,9 +152,6 @@ class JumboBertForTokenClassification(nn.Module):
                 for _ in range(len(self.bert.encoder.layer))
             ]
 
-        # Shared Jumbo handler for ALL layers
-
-
         # J separate Jumbo CLS tokens, each of dim D
         self.jumbo_cls_tokens = nn.Parameter(
             torch.zeros(1, jumbo_multiplier, config.hidden_size)
@@ -174,7 +171,7 @@ class JumboBertForTokenClassification(nn.Module):
         self.jumbo_norm = nn.LayerNorm(config.hidden_size * jumbo_multiplier)
 
         # Init Jumbo CLS tokens
-        nn.init.trunc_normal_(self.jumbo_cls_tokens, mean=0.0, std=0.02)
+        nn.init.trunc_normal_(self.jumbo_cls_tokens, mean=0.0, std=0.001)
         self.device = None
 
     def forward(
