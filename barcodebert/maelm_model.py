@@ -5,14 +5,15 @@ from barcodebert.jumbo_bert import create_jumbo_transformer_model
 
 class MAELMModel(nn.Module):
 
-    def __init__(self, encoder_config, decoder_config, jumbo, jumbo_multiplier):
+    def __init__(self, encoder_config, decoder_config, jumbo, jumbo_multiplier, share_jumbo_layers):
         super(MAELMModel, self).__init__()
         # Encoder BERT model
         # model = BertForMaskedLM(encoder_config)
         self.jumbo = jumbo
         self.jumbo_multiplier = jumbo_multiplier
+        self.share_jumbo_layers = share_jumbo_layers
         if self.jumbo:
-            self.encoder = create_jumbo_transformer_model(encoder_config, jumbo_multiplier=jumbo_multiplier)
+            self.encoder = create_jumbo_transformer_model(encoder_config, jumbo_multiplier=share_jumbo_layers)
         else:
             self.encoder = BertModel(encoder_config)
 
