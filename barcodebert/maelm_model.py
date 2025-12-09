@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from transformers import BertForTokenClassification, BertModel
-from barcodebert.jumbo_bert import create_jumbo_transformer_model
+from barcodebert.jumbo_transformer import create_jumbo_transformer_model
 
 class MAELMModel(nn.Module):
 
