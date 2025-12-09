@@ -1,22 +1,28 @@
 import torch
 import torch.nn as nn
 from transformers import BertForTokenClassification, BertModel
+from barcodebert.jumbo_bert import create_jumbo_transformer_model
 
 class MAELMModel(nn.Module):
 
-    def __init__(self, encoder_config, decoder_config):
+    def __init__(self, encoder_config, decoder_config, jumbo, jumbo_multiplier):
         super(MAELMModel, self).__init__()
         # Encoder BERT model
         # model = BertForMaskedLM(encoder_config)
-        self.encoder = BertModel(encoder_config)
+        self.jumbo = jumbo
+        self.jumbo_multiplier = jumbo_multiplier
+        if self.jumbo:
+            self.encoder = create_jumbo_transformer_model(encoder_config, jumbo_multiplier=jumbo_multiplier)
+        else:
+            self.encoder = BertModel(encoder_config)
 
         # Decoder BERT model with token classification head
         # self.decoder = BertForTokenClassification(decoder_config)
         self.decoder = BertForTokenClassification(decoder_config)
 
         # Encoder Embeddings (word and positional)
-        self.encoder_embedding = self.encoder.embeddings.word_embeddings
-        self.encoder_position_embeddings = self.encoder.embeddings.position_embeddings
+        # self.encoder_embedding = self.encoder.embeddings.word_embeddings
+        # self.encoder_position_embeddings = self.encoder.embeddings.position_embeddings
 
         # Projection layer to map encoder hidden states to decoder input
         self.projection_layer = nn.Linear(encoder_config.hidden_size, decoder_config.hidden_size)
@@ -72,7 +78,13 @@ class MAELMModel(nn.Module):
             position_ids=padded_encoder_position_ids,
         )
 
-        encoder_sequence_output = encoder_outputs.last_hidden_state
+        # Handle Jumbo vs standard output
+        if self.jumbo:
+            encoder_sequence_output = encoder_outputs.hidden_states
+            jumbo_tokens = encoder_outputs.jumbo_tokens  # (B, J, D)
+        else:
+            encoder_sequence_output = encoder_outputs.last_hidden_state
+            jumbo_tokens = None
 
         # Map encoder outputs back to the original sequence positions
         decoder_input_embeddings = torch.zeros(
@@ -80,8 +92,10 @@ class MAELMModel(nn.Module):
         )
 
         # If the encoder and decoder have different hidden states, project the encoder hidden states
-        if self.encoder.config.output_hidden_states != self.decoder.config.output_hidden_states:
+        if self.encoder.config.hidden_size != self.decoder.config.hidden_size:
             encoder_sequence_output = self.projection_layer(encoder_sequence_output)
+            # if jumbo_tokens is not None:
+            #     jumbo_tokens = self.projection_layer(jumbo_tokens)
 
         decoder_input_embeddings[seen_token_positions] = encoder_sequence_output[seen_indices].to(decoder_input_embeddings.dtype)
 
@@ -95,6 +109,17 @@ class MAELMModel(nn.Module):
         # The positions ids of the decoder is the same as the input
         decoder_position_ids = position_ids
 
+        # Prepend Jumbo tokens to decoder input
+        if jumbo_tokens is not None:
+            decoder_input_embeddings = torch.cat([jumbo_tokens, decoder_input_embeddings], dim=1)
+            jumbo_mask = torch.ones(batch_size, self.jumbo_multiplier, device=input_ids.device,
+                                    dtype=attention_mask.dtype)
+            decoder_attention_mask = torch.cat([jumbo_mask, decoder_attention_mask], dim=1)
+            # Jumbo tokens all get position 0 (they're context, not sequence)
+            jumbo_pos = torch.zeros(batch_size, self.jumbo_multiplier, device=input_ids.device,
+                                    dtype=position_ids.dtype)
+            decoder_position_ids = torch.cat([jumbo_pos, position_ids], dim=1)  # No shift
+
         # Pass through the decoder (BertForMaskedLM)
         outputs = self.decoder(
             inputs_embeds=decoder_input_embeddings,
@@ -102,6 +127,9 @@ class MAELMModel(nn.Module):
             position_ids=decoder_position_ids,
             return_dict=True,
         )
+
+        if jumbo_tokens is not None:
+            outputs.logits = outputs.logits[:, self.jumbo_multiplier:, :]
 
         return outputs
 
@@ -120,7 +148,7 @@ class MAELMModel(nn.Module):
         )
         encoder_sequence_output = encoder_outputs.last_hidden_state
         # If the encoder and decoder have different hidden states, project the encoder hidden states
-        if self.encoder.config.output_hidden_states != self.decoder.config.output_hidden_states:
+        if self.encoder.config.hidden_size != self.decoder.config.hidden_size:
             encoder_sequence_output = self.projection_layer(encoder_sequence_output)
 
         decoder_input_embeddings = encoder_sequence_output
@@ -131,9 +159,10 @@ class MAELMModel(nn.Module):
 
         # Pass through the decoder (BertForMaskedLM)
         outputs = self.decoder(
-            input_embeds=decoder_input_embeddings,
+            inputs_embeds=decoder_input_embeddings,
             attention_mask=decoder_attention_mask,
             position_ids=decoder_position_ids,
+            return_dict=True
         )
 
         return outputs
