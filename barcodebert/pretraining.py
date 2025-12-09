@@ -308,7 +308,7 @@ def run(config):
                 hidden_size=config.decoder_embed_dim,
             )
         print("Using MAELMModel with BertConfig for the decoder (not mosaic-bert)")
-        model = MAELMModel(bert_config, decoder_config, config.jumbo, config.jumbu_multiplier, config.share_jumbo_layers)
+        model = MAELMModel(bert_config, decoder_config, config.jumbo, config.jumbo_multiplier, config.share_jumbo_layers)
 
     elif config.arch == "transformer":
         decoder_config = None
