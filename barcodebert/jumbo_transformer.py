@@ -243,6 +243,7 @@ class JumboBertForTokenClassification(nn.Module):
             "logits": logits,
             "hidden_states": final_patch_tokens,
             "jumbo_representation": jumbo_representation,
+            "jumbo_tokens": final_jumbo_tokens,
         })()
 
 
