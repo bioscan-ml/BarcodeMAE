@@ -121,6 +121,13 @@ class MAELMModel(nn.Module):
                                     dtype=position_ids.dtype)
             decoder_position_ids = torch.cat([jumbo_pos, position_ids], dim=1)  # No shift
 
+        if jumbo_tokens is not None:
+            print(f"jumbo_tokens shape: {jumbo_tokens.shape}")
+            print(f"decoder_input_embeddings before cat: {decoder_input_embeddings.shape}")
+            decoder_input_embeddings = torch.cat([jumbo_tokens, decoder_input_embeddings], dim=1)
+            print(f"decoder_input_embeddings after cat: {decoder_input_embeddings.shape}")
+            print(f"decoder_position_ids after cat: {decoder_position_ids.shape}")
+
         # Pass through the decoder (BertForMaskedLM)
         outputs = self.decoder(
             inputs_embeds=decoder_input_embeddings,
