@@ -136,8 +136,9 @@ class MAELMModel(nn.Module):
         )
 
         if jumbo_tokens is not None:
-            outputs.logits = outputs.logits[:, self.jumbo_multiplier:, :]
+            outputs.logits = outputs.logits[:, self.jumbo_multiplier:, :].contiguous()
 
+        print(outputs.logits.shape)
         return outputs
 
     def forward_baseline(self, input_ids, attention_mask):
