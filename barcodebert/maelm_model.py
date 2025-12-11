@@ -112,8 +112,8 @@ class MAELMModel(nn.Module):
 
         # Prepend Jumbo tokens to decoder input
         if jumbo_tokens is not None:
-            print(f"jumbo_tokens shape: {jumbo_tokens.shape}")
-            print(f"decoder_input_embeddings before cat: {decoder_input_embeddings.shape}")
+            # print(f"jumbo_tokens shape: {jumbo_tokens.shape}")
+            # print(f"decoder_input_embeddings before cat: {decoder_input_embeddings.shape}")
 
             decoder_input_embeddings = torch.cat([jumbo_tokens, decoder_input_embeddings], dim=1)
             jumbo_mask = torch.ones(batch_size, self.jumbo_multiplier, device=input_ids.device,
@@ -123,8 +123,8 @@ class MAELMModel(nn.Module):
                                     dtype=position_ids.dtype)
             decoder_position_ids = torch.cat([jumbo_pos, position_ids], dim=1)
 
-            print(f"decoder_input_embeddings after cat: {decoder_input_embeddings.shape}")
-            print(f"decoder_position_ids after cat: {decoder_position_ids.shape}")
+            # print(f"decoder_input_embeddings after cat: {decoder_input_embeddings.shape}")
+            # print(f"decoder_position_ids after cat: {decoder_position_ids.shape}")
 
 
         # Pass through the decoder (BertForMaskedLM)
@@ -138,7 +138,7 @@ class MAELMModel(nn.Module):
         if jumbo_tokens is not None:
             outputs.logits = outputs.logits[:, self.jumbo_multiplier:, :].contiguous()
 
-        print(outputs.logits.shape)
+        # print(outputs.logits.shape)
         return outputs
 
     def forward_baseline(self, input_ids, attention_mask):
