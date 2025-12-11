@@ -13,7 +13,7 @@ class MAELMModel(nn.Module):
         self.jumbo_multiplier = jumbo_multiplier
         self.share_jumbo_layers = share_jumbo_layers
         if self.jumbo:
-            self.encoder = create_jumbo_transformer_model(encoder_config, jumbo_multiplier=share_jumbo_layers)
+            self.encoder = create_jumbo_transformer_model(encoder_config, jumbo_multiplier=jumbo_multiplier, share_jumbo_mlp_across_layers=share_jumbo_layers)
         else:
             self.encoder = BertModel(encoder_config)
 
@@ -112,21 +112,20 @@ class MAELMModel(nn.Module):
 
         # Prepend Jumbo tokens to decoder input
         if jumbo_tokens is not None:
+            print(f"jumbo_tokens shape: {jumbo_tokens.shape}")
+            print(f"decoder_input_embeddings before cat: {decoder_input_embeddings.shape}")
+
             decoder_input_embeddings = torch.cat([jumbo_tokens, decoder_input_embeddings], dim=1)
             jumbo_mask = torch.ones(batch_size, self.jumbo_multiplier, device=input_ids.device,
                                     dtype=attention_mask.dtype)
             decoder_attention_mask = torch.cat([jumbo_mask, decoder_attention_mask], dim=1)
-            # Jumbo tokens all get position 0 (they're context, not sequence)
             jumbo_pos = torch.zeros(batch_size, self.jumbo_multiplier, device=input_ids.device,
                                     dtype=position_ids.dtype)
-            decoder_position_ids = torch.cat([jumbo_pos, position_ids], dim=1)  # No shift
+            decoder_position_ids = torch.cat([jumbo_pos, position_ids], dim=1)
 
-        if jumbo_tokens is not None:
-            print(f"jumbo_tokens shape: {jumbo_tokens.shape}")
-            print(f"decoder_input_embeddings before cat: {decoder_input_embeddings.shape}")
-            decoder_input_embeddings = torch.cat([jumbo_tokens, decoder_input_embeddings], dim=1)
             print(f"decoder_input_embeddings after cat: {decoder_input_embeddings.shape}")
             print(f"decoder_position_ids after cat: {decoder_position_ids.shape}")
+
 
         # Pass through the decoder (BertForMaskedLM)
         outputs = self.decoder(
