@@ -290,6 +290,7 @@ def run(config):
             num_labels=n_output_tokens,
             output_hidden_states=True,
             max_position_embeddings=max_position_embeddings,
+            hidden_size=config.encoder_embed_dim,
         )
 
     if config.arch == "maelm":
@@ -1775,6 +1776,14 @@ def get_parser():
         type=int,
         default=6,
         help="Number of attention heads in the decoder of MAELM. Default: %(default)s",
+    )
+
+    group.add_argument(
+        "--encoder-embed-dim",
+        "--encoder_embed_dim",
+        type=int,
+        default=768,
+        help="Size of the encoder embedding in the encoder of MAE-LM. Default: %(default)s",
     )
 
     group.add_argument(
