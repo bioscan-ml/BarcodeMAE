@@ -53,20 +53,6 @@ class BPETokenizer(object):
 
         self.bpe = AutoTokenizer.from_pretrained(bpe_path)
 
-        # root_folder = os.path.dirname(__file__)
-        # if bpe_type == "dnabert":
-        #     # self.bpe = AutoTokenizer.from_pretrained("zhihan1996/DNABERT-2-117M", trust_remote_code=True)
-        #     bpe_folder = os.path.join(root_folder, "bpe_tokenizers", "bpe_dnabert2")
-        #     assert os.path.isdir(bpe_folder), f"Directory does not exist: {bpe_folder}"
-        #     self.bpe = AutoTokenizer.from_pretrained(f"{bpe_folder}/")
-        # elif bpe_type.__contains__("barcode"):
-        #     length = bpe_type.split("_")[-1]
-        #     bpe_folder = os.path.join(root_folder, "bpe_tokenizers", f"bpe_barcode_{length}")
-        #     assert os.path.isdir(bpe_folder), f"Directory does not exist: {bpe_folder}"
-        #     self.bpe = AutoTokenizer.from_pretrained(bpe_folder)
-        # else:
-        #     raise NotImplementedError(f"bpe_type {bpe_type} is  not supported.")
-
     def __call__(self, dna_sequence, offset=0) -> tuple[list, list]:
         x = dna_sequence[offset:]
         tokens = self.bpe(x, padding=True, return_tensors="pt")["input_ids"]
@@ -101,16 +87,21 @@ class DNADataset(Dataset):
         tokenize_n_nucleotide=False,
         dataset_format="CANADA-1.5M",
         taxonomic_level="species",
-        label2id=None
+        label2id=None,
+        tax_encoder=None,
+        use_hierarchical=False,  # NEW: If True, load all 6 labels and don't filter
     ):
         self.k_mer = k_mer
         self.stride = k_mer if stride is None else stride
         self.max_len = max_len
         self.randomize_offset = randomize_offset
         self.barcodes = []
-        self.tax_encoder = None
+        self.tax_encoder = tax_encoder
         self.labels = []
         self.label2id = label2id
+        self.classes_per_level = None
+        self.use_hierarchical = use_hierarchical  # NEW
+        self.all_labels = None  # NEW: Store all 6 levels when hierarchical
 
         # Check that the dataframe contains a valid format
         if dataset_format not in ["CANADA-1.5M", "BIOSCAN-5M", "ITS-5M"]:
@@ -119,15 +110,13 @@ class DNADataset(Dataset):
         if tokenizer == "kmer":
             # Vocabulary
             base_pairs = "ACGT"
-            self.special_tokens = ["[MASK]", "[UNK]"]  # ["[MASK]", "[CLS]", "[SEP]", "[PAD]", "[EOS]", "[UNK]"]
+            self.special_tokens = ["[MASK]", "[UNK]"]
             UNK_TOKEN = "[UNK]"
 
             if tokenize_n_nucleotide:
-                # Encode kmers which contain N differently depending on where it is
                 base_pairs += "N"
             kmers = ["".join(kmer) for kmer in product(base_pairs, repeat=self.k_mer)]
 
-            # Separate between good (idx < 4**k) and bad k-mers (idx > 4**k) for prediction
             if tokenize_n_nucleotide:
                 prediction_kmers = []
                 other_kmers = []
@@ -136,7 +125,6 @@ class DNADataset(Dataset):
                         other_kmers.append(kmer)
                     else:
                         prediction_kmers.append(kmer)
-
                 kmers = prediction_kmers + other_kmers
 
             kmer_dict = dict.fromkeys(kmers, 1)
@@ -151,18 +139,24 @@ class DNADataset(Dataset):
             self.vocab_size = self.tokenizer.bpe.vocab_size
         else:
             raise ValueError(f'Tokenizer "{tokenizer}" not recognized.')
+
         df = pd.read_csv(file_path, sep="\t" if file_path.endswith(".tsv") else ",", keep_default_na=False)
+
         if dataset_format == "ITS-5M":
             if "train" in file_path:
                 fungi_data = Data(file_path, allow_duplicates=True)
             elif "test" in file_path:
                 fungi_data = Data(file_path, allow_duplicates=False)
 
-            self.tax_encoder = (TaxonEncoder(data=fungi_data) if self.tax_encoder is None else self.tax_encoder)
+            if self.tax_encoder is None:
+                self.tax_encoder = TaxonEncoder(data=fungi_data)
+
             for index, row in tqdm(fungi_data.data.iterrows(), total=fungi_data.data.shape[0]):
                 self.barcodes.append(row["sequence"])
-                # self.labels.append(self.tax_encoder.encode(row))
-            # self.tax_encoder.finish_training()
+
+            # Compute class counts per level for InferSum
+            self._compute_classes_per_level()
+
         else:
             self.barcodes = df["nucleotides"].to_list()
 
@@ -177,51 +171,112 @@ class DNADataset(Dataset):
             labels_file = file_path.replace(".fasta", "_labels.csv")
             if os.path.isfile(labels_file):
                 labels_df = pd.read_csv(labels_file)
-                self.labels = labels_df[taxonomic_level].to_list()
             else:
                 raise FileNotFoundError("Labels file not found for ITS-5M. Expected: " + labels_file)
 
-            if len(self.labels) != len(self.barcodes):
-                raise ValueError(
-                    f"Mismatch between barcodes ({len(self.barcodes)}) and labels ({len(self.labels)}). "
-                    "Ensure the labels CSV matches the FASTA order."
+            # NEW: Different handling based on use_hierarchical
+            if self.use_hierarchical:
+                self._load_hierarchical_labels(labels_df, taxonomic_level)
+            else:
+                self._load_single_level_labels(labels_df, taxonomic_level)
+
+    def _load_single_level_labels(self, labels_df, taxonomic_level):
+        """Original behavior: load single level, filter samples without labels."""
+        self.labels = labels_df[taxonomic_level].to_list()
+
+        if len(self.labels) != len(self.barcodes):
+            raise ValueError(
+                f"Mismatch between barcodes ({len(self.barcodes)}) and labels ({len(self.labels)}). "
+                "Ensure the labels CSV matches the FASTA order."
+            )
+
+        labels_np = np.asarray(self.labels)
+        valid_mask = labels_np != 9999999  # label for unknown labels
+        n_before = len(self.labels)
+        if not valid_mask.any():
+            raise ValueError("All ITS-5M labels are invalid.")
+
+        # Filter out samples without labels
+        self.barcodes = [b for b, keep in zip(self.barcodes, valid_mask) if keep]
+        self.labels = labels_np[valid_mask].tolist()
+        print("max labels before change", max(self.labels))
+        self.num_labels = len(set(self.labels))
+        print(f"[DNADataset][ITS-5M] Removed {n_before - len(self.labels)} samples with unknown labels.")
+
+    def _load_hierarchical_labels(self, labels_df, taxonomic_level):
+        """NEW: Load all 6 taxonomic levels, don't filter samples."""
+        self.tax_levels = ['phylum', 'class', 'order', 'family', 'genus', 'species']
+        self.all_labels = []
+
+        n_samples = len(labels_df)
+        if n_samples != len(self.barcodes):
+            raise ValueError(
+                f"Mismatch between barcodes ({len(self.barcodes)}) and labels ({n_samples}). "
+                "Ensure the labels CSV matches the FASTA order."
+            )
+
+        # Count valid samples at each level for logging
+        valid_counts = {lvl: 0 for lvl in self.tax_levels}
+
+        for idx in range(n_samples):
+            row_labels = []
+            for lvl in self.tax_levels:
+                if lvl in labels_df.columns:
+                    val = labels_df[lvl].iloc[idx]
+                    # Use -1 for missing/unknown labels
+                    if val == 9999999 or pd.isna(val):
+                        row_labels.append(-1)
+                    else:
+                        row_labels.append(int(val))
+                        valid_counts[lvl] += 1
+                else:
+                    row_labels.append(-1)
+            self.all_labels.append(row_labels)
+
+        # Log statistics
+        print(f"[DNADataset][ITS-5M][Hierarchical] Loaded {n_samples} samples with multi-level labels:")
+        for lvl in self.tax_levels:
+            pct = 100.0 * valid_counts[lvl] / n_samples
+            print(f"  {lvl}: {valid_counts[lvl]}/{n_samples} ({pct:.1f}%) valid labels")
+
+        # For compatibility, also store single-level labels (with -1 for missing)
+        level_idx = self.tax_levels.index(taxonomic_level)
+        self.labels = [row[level_idx] for row in self.all_labels]
+
+        # num_labels at the target taxonomic level (excluding -1)
+        valid_labels_at_level = [l for l in self.labels if l != -1]
+        if valid_labels_at_level:
+            self.num_labels = max(valid_labels_at_level) + 1
+        else:
+            self.num_labels = self.classes_per_level[level_idx] if self.classes_per_level else 0
+
+        print(f"[DNADataset][ITS-5M][Hierarchical] num_labels at {taxonomic_level}: {self.num_labels}")
+
+    def _compute_classes_per_level(self):
+        """Compute number of classes at each taxonomic level from tax_encoder."""
+        if self.tax_encoder is not None:
+            self.classes_per_level = []
+            # Get class counts from inference matrices dimensions
+            # inference_matrices[i] maps from level i+1 to level i
+            # Shape: (num_children, num_parents)
+            for lvl in range(5):  # 0 to 4
+                if lvl < len(self.tax_encoder.inference_matrices):
+                    # Number of classes at level lvl = number of columns (parents)
+                    self.classes_per_level.append(
+                        self.tax_encoder.inference_matrices[lvl].shape[1]
+                    )
+                else:
+                    self.classes_per_level.append(0)
+
+            # For species level (lvl=5), get from the last matrix's rows
+            if len(self.tax_encoder.inference_matrices) > 0:
+                self.classes_per_level.append(
+                    self.tax_encoder.inference_matrices[-1].shape[0]
                 )
+            else:
+                self.classes_per_level.append(0)
 
-            labels_np = np.asarray(self.labels)
-            valid_mask = labels_np != 9999999 # label for unknown labels
-            n_before = len(self.labels)
-            if not valid_mask.any():
-                raise ValueError("All ITS-5M labels are invalid.")
-            # apply mask
-            self.barcodes = [b for b, keep in zip(self.barcodes, valid_mask) if keep]
-            self.labels = labels_np[valid_mask].tolist()
-            print("max labels before change", max(self.labels))
-            self.num_labels = len(set(self.labels))
-            print(f"[DNADataset][ITS-5M] Removed {n_before - len(self.labels)} samples with unknown labels.")
-            # Reindex to contiguous [0..C-1] and keep mappings
-            # if self.label2id is None:
-            #     self.labels, self.label_set = pd.factorize(self.labels, sort=True)  # self.labels now 0..C-1
-            #     self.num_labels = len(self.label_set)
-            #     print("max labels after change",max(self.labels))
-            #     self.id2label = {i: lab for i, lab in enumerate(self.label_set)}
-            #     self.label2id = {lab: i for i, lab in enumerate(self.label_set)}
-            # else:
-            #     mapped = []
-            #     kept_barcodes = []
-            #     dropped = 0
-            #     for b, lab in zip(self.barcodes, self.labels):
-            #         if lab in self.label2id:
-            #             mapped.append(self.label2id[lab])
-            #             kept_barcodes.append(b)
-            #         else:
-            #             dropped += 1
-            #     if dropped:
-            #         print(f"[DNADataset][ITS-5M] Dropped {dropped} samples with taxa unseen in train.")
-            #     self.barcodes = kept_barcodes
-            #     self.labels = mapped
-            #     self.num_labels = len(self.label2id)
-            #     self.id2label = {i: lab for lab, i in self.label2id.items()}
-
+            print(f"[DNADataset] Classes per level: {self.classes_per_level}")
 
     def __len__(self):
         return len(self.barcodes)
@@ -232,7 +287,13 @@ class DNADataset(Dataset):
         else:
             offset = 0
         processed_barcode, att_mask = self.tokenizer(self.barcodes[idx], offset=offset)
-        label = torch.tensor(self.labels[idx], dtype=torch.int64)
+
+        # NEW: Return all 6 labels if hierarchical, else single label
+        if self.use_hierarchical and self.all_labels is not None:
+            label = torch.tensor(self.all_labels[idx], dtype=torch.int64)  # Shape: (6,)
+        else:
+            label = torch.tensor(self.labels[idx], dtype=torch.int64)  # Shape: ()
+
         return processed_barcode, label, att_mask
 
 
@@ -242,7 +303,6 @@ def representations_from_df(df, target_level, model, tokenizer, dataset_name, mo
     if dataset_name == "CANADA-1.5M":
         _label_set, y = np.unique(df[target_level], return_inverse=True)
     elif dataset_name == "BIOSCAN-5M":
-        # _label_set = np.unique(df[target_level])
         y = df[target_level]
     else:
         raise NotImplementedError("Dataset format is not supported. Must be one of CANADA-1.5M or BIOSCAN-5M")
@@ -256,17 +316,10 @@ def representations_from_df(df, target_level, model, tokenizer, dataset_name, mo
             x = x.unsqueeze(0).to(model.device)
             att_mask = att_mask.unsqueeze(0).to(model.device)
             x = model(x, att_mask).hidden_states[-1]
-            # previous mean pooling
-            # x = x.mean(1)
-            # dna_embeddings.append(x.cpu().numpy())
 
-            # updated mean pooling to account for the attention mask and padding tokens
-            # sum the embeddings of the tokens (excluding padding tokens)
-            sum_embeddings = (x * att_mask.unsqueeze(-1)).sum(1)  # (batch_size, hidden_size)
-            # sum the attention mask (number of tokens in the sequence without considering the padding tokens)
+            sum_embeddings = (x * att_mask.unsqueeze(-1)).sum(1)
             sum_mask = att_mask.sum(1, keepdim=True)
-            # calculate the mean embeddings
-            mean_embeddings = sum_embeddings / sum_mask  # (batch_size, hidden_size)
+            mean_embeddings = sum_embeddings / sum_mask
 
             dna_embeddings.append(mean_embeddings.cpu().numpy())
 
@@ -275,134 +328,3 @@ def representations_from_df(df, target_level, model, tokenizer, dataset_name, mo
     latent = np.squeeze(latent, 1)
     print(latent.shape)
     return latent, y, orders
-
-
-# def representations_from_df(df, target_level, model, tokenizer, dataset_name, mode="nonmask", mask_rate=0.5):
-#
-#     orders = df["order_name"].to_numpy()
-#     if dataset_name == "CANADA-1.5M":
-#         _label_set, y = np.unique(df[target_level], return_inverse=True)
-#     elif dataset_name == "BIOSCAN-5M":
-#         # _label_set = np.unique(df[target_level])
-#         y = df[target_level]
-#     else:
-#         raise NotImplementedError("Dataset format is not supported. Must be one of CANADA-1.5M or BIOSCAN-5M")
-#
-#     dna_embeddings = []
-#     print("mode", mode)
-#     print("mask rate", mask_rate)
-#
-#     with torch.no_grad():
-#         for barcode in df["nucleotides"]:
-#             x, att_mask = tokenizer(barcode)
-#
-#             if mode == "drop":
-#                 x, att_mask = tokenizer(barcode)
-#                 x = x.unsqueeze(0).to(model.device)
-#                 att_mask = att_mask.unsqueeze(0).to(model.device)
-#
-#                 random_mask = torch.rand(x.size())
-#                 mask_token_ratio = mask_rate
-#                 mask_ratio = 1
-#                 dropped_tokens = random_mask < mask_token_ratio * mask_ratio
-#                 att_mask[dropped_tokens] = 0
-#
-#                 x = model(x, att_mask).hidden_states[-1][~dropped_tokens]
-#                 att_mask = att_mask[~dropped_tokens].unsqueeze(-1)
-#
-#                 sum_embeddings = (x * att_mask.unsqueeze(-1)).sum(1)  # (batch_size, hidden_size)
-#                 # sum the attention mask (number of tokens in the sequence without considering the padding tokens)
-#                 sum_mask = att_mask.sum(0, keepdim=True)
-#                 # calculate the mean embeddings
-#                 mean_embeddings = sum_embeddings / sum_mask  # (batch_size, hidden_size)
-#
-#                 dna_embeddings.append(mean_embeddings.cpu().numpy().reshape(-1))
-#
-#             elif mode == "combined":
-#
-#                 n_special_tokens = 2
-#                 # print(x.size())
-#                 random_mask = torch.rand(x.size())
-#                 mask_token_ratio = mask_rate
-#                 mask_ratio = 1
-#                 masked_unseen_tokens = random_mask < mask_token_ratio * mask_ratio
-#
-#                 x = x.unsqueeze(0).to(model.device)
-#                 att_mask = att_mask.unsqueeze(0).to(model.device)
-#                 masked_unseen_tokens = masked_unseen_tokens.to(model.device)
-#
-#                 special_tokens_mask = x > (n_special_tokens - 1)
-#                 masked_unseen_tokens_n = masked_unseen_tokens & special_tokens_mask
-#
-#                 x[masked_unseen_tokens_n] = 0
-#
-#                 x = model(x, att_mask).hidden_states[-1]
-#
-#                 sum_embeddings = (x * att_mask.unsqueeze(-1)).sum(1)  # (batch_size, hidden_size)
-#                 # sum the attention mask (number of tokens in the sequence without considering the padding tokens)
-#                 sum_mask = att_mask.sum(1, keepdim=True)
-#                 # calculate the mean embeddings
-#                 mean_embeddings = sum_embeddings / sum_mask  # (batch_size, hidden_size)
-#
-#                 dna_embeddings.append(mean_embeddings.cpu().numpy().reshape(-1))
-#
-#             elif mode == "mask":
-#                 n_special_tokens = 2
-#                 # print(x.size())
-#                 random_mask = torch.rand(x.size())
-#                 mask_token_ratio = 0.5
-#                 mask_ratio = 1
-#                 masked_unseen_tokens = random_mask < mask_token_ratio * mask_ratio
-#                 # print(masked_unseen_tokens)
-#
-#                 x = x.unsqueeze(0).to(model.device)
-#                 att_mask = att_mask.unsqueeze(0).to(model.device)
-#                 masked_unseen_tokens = masked_unseen_tokens.to(model.device)
-#
-#                 special_tokens_mask = x > (n_special_tokens - 1)
-#                 masked_unseen_tokens_n = masked_unseen_tokens & special_tokens_mask
-#                 # print(masked_unseen_tokens_n)
-#
-#                 x[masked_unseen_tokens_n] = 0
-#                 # att_mask[~masked_unseen_tokens_n] = 0
-#                 x = model(x, att_mask).hidden_states[-1][masked_unseen_tokens_n]
-#                 # print(x.shape)
-#
-#                 mean_embeddings = x.mean(0)
-#
-#                 # print(mean_embeddings.shape)
-#                 dna_embeddings.append(mean_embeddings.cpu().numpy().reshape(-1))
-#
-#             elif mode == "nonmask":
-#
-#                 n_special_tokens = 2
-#                 # print(x.size())
-#                 random_mask = torch.rand(x.size())
-#                 mask_token_ratio = 0.5
-#                 mask_ratio = 1
-#                 masked_unseen_tokens = random_mask < mask_token_ratio * mask_ratio
-#                 # print(masked_unseen_tokens)
-#
-#                 x = x.unsqueeze(0).to(model.device)
-#                 att_mask = att_mask.unsqueeze(0).to(model.device)
-#                 masked_unseen_tokens = masked_unseen_tokens.to(model.device)
-#
-#                 special_tokens_mask = x > (n_special_tokens - 1)
-#                 masked_unseen_tokens_n = masked_unseen_tokens & special_tokens_mask
-#                 # print(masked_unseen_tokens_n)
-#
-#                 x[masked_unseen_tokens_n] = 0
-#                 # att_mask[~masked_unseen_tokens_n] = 0
-#                 x = model(x, att_mask).hidden_states[-1][~masked_unseen_tokens_n]
-#
-#                 mean_embeddings = x.mean(0)
-#
-#                 dna_embeddings.append(mean_embeddings.cpu().numpy().reshape(-1))
-#             else:
-#                 raise ValueError(f"Mode {mode} not recognized.")
-#
-#     print(f"There are {len(df)} points in the dataset")
-#     latent = np.array(dna_embeddings)
-#     # latent = np.squeeze(latent, 1)
-#     print(latent.shape)
-#     return latent, y, orders
