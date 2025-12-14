@@ -5,12 +5,39 @@ Datasets.
 import os
 from itertools import product
 
+# Set matplotlib backend before importing mycoai to avoid display/plotting issues
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+plt.ioff()  # Turn off interactive mode
+
 import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import Dataset
 from torchtext.vocab import vocab as build_vocab_from_dict
 from transformers import AutoTokenizer
+
+# Configure mycoai to suppress plotting if possible
+try:
+    from mycoai import utils as mycoai_utils
+    # Set output directory to current working directory to avoid path issues
+    mycoai_utils.OUTPUT_DIR = './'
+    # Disable plotting if the option exists
+    if hasattr(mycoai_utils, 'SUPPRESS_PLOTS'):
+        mycoai_utils.SUPPRESS_PLOTS = True
+except ImportError:
+    pass
+
+# Monkey-patch mycoai plotter to disable automatic chart generation
+try:
+    from mycoai import plotter
+    # Replace plotting functions with no-ops to avoid I/O errors on clusters
+    plotter.counts_barchart = lambda *args, **kwargs: None
+    plotter.distribution_plot = lambda *args, **kwargs: None
+except ImportError:
+    pass
+
 from mycoai.data import Data
 from tqdm import tqdm
 from mycoai.data.encoders import TaxonEncoder
