@@ -324,7 +324,7 @@ class DNADataset(Dataset):
         return processed_barcode, label, att_mask
 
 
-def representations_from_df(df, target_level, model, tokenizer, dataset_name, mode=None, mask_rate=None):
+def representations_from_df(df, target_level, model, tokenizer, dataset_name, mode=None, mask_rate=None, jumbo=False):
 
     orders = df["order_name"].to_numpy()
     if dataset_name == "CANADA-1.5M":
@@ -339,16 +339,24 @@ def representations_from_df(df, target_level, model, tokenizer, dataset_name, mo
     with torch.no_grad():
         for barcode in df["nucleotides"]:
             x, att_mask = tokenizer(barcode)
+            if jumbo:
+                device = "cude:0"
+                x = x.unsqueeze(0).to(device)
+                att_mask = att_mask.unsqueeze(0).to(device)
+                x = model(x, att_mask).jumbo_representation
+                dna_embeddings.append(x.cpu().numpy())
 
-            x = x.unsqueeze(0).to(model.device)
-            att_mask = att_mask.unsqueeze(0).to(model.device)
-            x = model(x, att_mask).hidden_states[-1]
 
-            sum_embeddings = (x * att_mask.unsqueeze(-1)).sum(1)
-            sum_mask = att_mask.sum(1, keepdim=True)
-            mean_embeddings = sum_embeddings / sum_mask
+            else:
+                x = x.unsqueeze(0).to(model.device)
+                att_mask = att_mask.unsqueeze(0).to(model.device)
+                x = model(x, att_mask).hidden_states[-1]
 
-            dna_embeddings.append(mean_embeddings.cpu().numpy())
+                sum_embeddings = (x * att_mask.unsqueeze(-1)).sum(1)
+                sum_mask = att_mask.sum(1, keepdim=True)
+                mean_embeddings = sum_embeddings / sum_mask
+
+                dna_embeddings.append(mean_embeddings.cpu().numpy())
 
     print(f"There are {len(df)} points in the dataset")
     latent = np.array(dna_embeddings)
