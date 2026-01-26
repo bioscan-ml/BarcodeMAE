@@ -7,8 +7,9 @@ that operates on the jumbo tokens for non-MAELM (single encoder) architectures.
 
 import torch
 import torch.nn as nn
-from barcodebert.jumbo_transformer import create_jumbo_transformer_model
+
 from barcodebert.jumbo_taxonomy_classifier import JumboTaxonomyClassifier
+from barcodebert.jumbo_transformer import create_jumbo_transformer_model
 
 
 class JumboTransformerWithTaxonomy(nn.Module):
@@ -19,8 +20,9 @@ class JumboTransformerWithTaxonomy(nn.Module):
     The model uses jumbo CLS tokens for taxonomy classification.
     """
 
-    def __init__(self, bert_config, jumbo_multiplier=6, share_jumbo_mlp_across_layers=False,
-                 enable_taxonomy_classification=True):
+    def __init__(
+        self, bert_config, jumbo_multiplier=6, share_jumbo_mlp_across_layers=False, enable_taxonomy_classification=True
+    ):
         super().__init__()
 
         self.jumbo_multiplier = jumbo_multiplier
@@ -28,9 +30,7 @@ class JumboTransformerWithTaxonomy(nn.Module):
 
         # Create the jumbo transformer model
         self.transformer = create_jumbo_transformer_model(
-            bert_config,
-            jumbo_multiplier=jumbo_multiplier,
-            share_jumbo_mlp_across_layers=share_jumbo_mlp_across_layers
+            bert_config, jumbo_multiplier=jumbo_multiplier, share_jumbo_mlp_across_layers=share_jumbo_mlp_across_layers
         )
 
         # Add taxonomy classifier if enabled
@@ -43,8 +43,9 @@ class JumboTransformerWithTaxonomy(nn.Module):
             self.taxonomy_classifier = None
             self.genus_classifier = None
 
-    def forward(self, input_ids=None, attention_mask=None, token_type_ids=None,
-                position_ids=None, inputs_embeds=None, **kwargs):
+    def forward(
+        self, input_ids=None, attention_mask=None, token_type_ids=None, position_ids=None, inputs_embeds=None, **kwargs
+    ):
         """
         Forward pass through jumbo transformer.
 
@@ -69,7 +70,7 @@ class JumboTransformerWithTaxonomy(nn.Module):
             token_type_ids=token_type_ids,
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
-            **kwargs
+            **kwargs,
         )
 
         # Attach jumbo_tokens to outputs for consistency with MAELM interface
@@ -88,9 +89,9 @@ class JumboTransformerWithTaxonomy(nn.Module):
         return self.transformer.bert
 
 
-def create_jumbo_transformer_with_taxonomy(bert_config, jumbo_multiplier=6,
-                                          share_jumbo_mlp_across_layers=False,
-                                          enable_taxonomy_classification=True):
+def create_jumbo_transformer_with_taxonomy(
+    bert_config, jumbo_multiplier=6, share_jumbo_mlp_across_layers=False, enable_taxonomy_classification=True
+):
     """
     Factory function to create a jumbo transformer with taxonomy classification.
 
@@ -107,7 +108,7 @@ def create_jumbo_transformer_with_taxonomy(bert_config, jumbo_multiplier=6,
         bert_config,
         jumbo_multiplier=jumbo_multiplier,
         share_jumbo_mlp_across_layers=share_jumbo_mlp_across_layers,
-        enable_taxonomy_classification=enable_taxonomy_classification
+        enable_taxonomy_classification=enable_taxonomy_classification,
     )
 
 
@@ -127,11 +128,7 @@ if __name__ == "__main__":
         num_labels=256,
     )
 
-    model = create_jumbo_transformer_with_taxonomy(
-        config,
-        jumbo_multiplier=6,
-        enable_taxonomy_classification=True
-    )
+    model = create_jumbo_transformer_with_taxonomy(config, jumbo_multiplier=6, enable_taxonomy_classification=True)
 
     # Test input
     batch_size = 4
@@ -139,7 +136,7 @@ if __name__ == "__main__":
     input_ids = torch.randint(0, 256, (batch_size, seq_len))
     attention_mask = torch.ones(batch_size, seq_len)
 
-    print(f"\nInput shapes:")
+    print("\nInput shapes:")
     print(f"  input_ids: {input_ids.shape}")
     print(f"  attention_mask: {attention_mask.shape}")
 
@@ -147,7 +144,7 @@ if __name__ == "__main__":
     with torch.no_grad():
         outputs = model(input_ids=input_ids, attention_mask=attention_mask)
 
-    print(f"\nOutput shapes:")
+    print("\nOutput shapes:")
     print(f"  logits: {outputs.logits.shape}")
     print(f"  hidden_states: {outputs.hidden_states.shape}")
     print(f"  jumbo_representation: {outputs.jumbo_representation.shape}")
@@ -155,7 +152,7 @@ if __name__ == "__main__":
 
     # Test taxonomy classifier
     if model.taxonomy_classifier is not None:
-        print(f"\nTesting taxonomy classifier...")
+        print("\nTesting taxonomy classifier...")
         jumbo_flat = outputs.jumbo_representation
 
         # Create pairs

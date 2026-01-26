@@ -22,10 +22,15 @@ from barcodebert.io import safe_save_model
 from barcodebert.jumbo_taxonomy_classifier import compute_taxonomy_classification_loss
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../..")))
-from barcodebert.maelm_model import MAELMModel
-from biological_masker import TemperatureCompatibleBiologicalMasker, get_temperature_biological_replacements, create_temperature_schedule
-from torch.cuda.amp import GradScaler, autocast
+from biological_masker import (
+    TemperatureCompatibleBiologicalMasker,
+    create_temperature_schedule,
+    get_temperature_biological_replacements,
+)
+from torch.cuda.amp import autocast
+
 from barcodebert.jumbo_transformer import create_jumbo_transformer_model
+from barcodebert.maelm_model import MAELMModel
 
 BASE_BATCH_SIZE = 64
 
@@ -111,15 +116,15 @@ def run(config):
     if config.random_token_ratio > 0.0:
         try:
             biological_masker = TemperatureCompatibleBiologicalMasker.from_cache_dir(
-                cache_dir='/home/m4safari/projects/def-lila-ab/m4safari/barcodeMAE/BarcodeMAE/barcodebert/masking_codes/kmer_cache',
+                cache_dir="/home/m4safari/projects/def-lila-ab/m4safari/barcodeMAE/BarcodeMAE/barcodebert/masking_codes/kmer_cache",
                 k_mer_size=config.k_mer,
                 tokenize_n_nucleotide=config.tokenize_n_nucleotide,
-                device=device
+                device=device,
             )
             print(" Biological masking enabled")
 
             temperature_schedule = create_temperature_schedule(
-                start_temp=2.5, end_temp=1.0, total_epochs=config.epochs, schedule_type='exponential'
+                start_temp=2.5, end_temp=1.0, total_epochs=config.epochs, schedule_type="exponential"
             )
             print(" Temperature schedule:", temperature_schedule)
 
@@ -132,7 +137,6 @@ def run(config):
             print("All tokens are based with [MASK]")
     # ==========================================
 
-
     # DATASET =================================================================
 
     if config.dataset_name not in ["CANADA-1.5M", "BIOSCAN-5M", "ITS-5M"]:
@@ -143,8 +147,12 @@ def run(config):
         config.stride = config.k_mer
 
     # Check if taxonomy classification is enabled
-    enable_genus_classification = config.enable_genus_classification if hasattr(config, 'enable_genus_classification') else False
-    taxonomy_level = config.taxonomy_level_for_classification if hasattr(config, 'taxonomy_level_for_classification') else "genus"
+    enable_genus_classification = (
+        config.enable_genus_classification if hasattr(config, "enable_genus_classification") else False
+    )
+    taxonomy_level = (
+        config.taxonomy_level_for_classification if hasattr(config, "taxonomy_level_for_classification") else "genus"
+    )
 
     dataset_args = {
         "k_mer": config.k_mer,
@@ -315,8 +323,10 @@ def run(config):
                 hidden_size=config.decoder_embed_dim,
             )
         print("Using MAELMModel with BertConfig for the decoder (not mosaic-bert)")
-        enable_genus_classification = config.enable_genus_classification if hasattr(config, 'enable_genus_classification') else False
-        jumbo_source = config.jumbo_source if hasattr(config, 'jumbo_source') else "encoder"
+        enable_genus_classification = (
+            config.enable_genus_classification if hasattr(config, "enable_genus_classification") else False
+        )
+        jumbo_source = config.jumbo_source if hasattr(config, "jumbo_source") else "encoder"
         model = MAELMModel(
             bert_config,
             decoder_config,
@@ -324,21 +334,23 @@ def run(config):
             config.jumbo_multiplier,
             config.share_jumbo_layers,
             enable_genus_classification=enable_genus_classification,
-            jumbo_source=jumbo_source
+            jumbo_source=jumbo_source,
         )
 
     elif config.arch == "transformer":
         decoder_config = None
         if config.jumbo:
-            enable_genus_classification = config.enable_genus_classification if hasattr(config, 'enable_genus_classification') else False
+            enable_genus_classification = (
+                config.enable_genus_classification if hasattr(config, "enable_genus_classification") else False
+            )
             if enable_genus_classification:
                 print("Using JumboBertForTokenClassification with Taxonomy Classification")
-                from barcodebert.jumbo_transformer_with_taxonomy import create_jumbo_transformer_with_taxonomy
+                from barcodebert.jumbo_transformer_with_taxonomy import (
+                    create_jumbo_transformer_with_taxonomy,
+                )
+
                 model = create_jumbo_transformer_with_taxonomy(
-                    bert_config,
-                    config.jumbo_multiplier,
-                    config.share_jumbo_layers,
-                    enable_taxonomy_classification=True
+                    bert_config, config.jumbo_multiplier, config.share_jumbo_layers, enable_taxonomy_classification=True
                 )
             else:
                 print("Using JumboBertForTokenClassification")
@@ -362,7 +374,11 @@ def run(config):
         model = model.to(device)
         torch.cuda.set_device(device)
         model = nn.parallel.DistributedDataParallel(
-            model, device_ids=[config.local_rank], output_device=config.local_rank, find_unused_parameters=False, static_graph= True
+            model,
+            device_ids=[config.local_rank],
+            output_device=config.local_rank,
+            find_unused_parameters=False,
+            static_graph=True,
         )
         # if hasattr(model, "static_graph"):
         #     model.static_graph = True
@@ -414,6 +430,7 @@ def run(config):
     scaler = None
     if config.mixed_precision and use_cuda:
         from torch.cuda.amp import GradScaler
+
         scaler = GradScaler()
         print("Mixed precision training enabled with GradScaler.")
     elif config.mixed_precision:
@@ -545,7 +562,8 @@ def run(config):
         # Verify configs match for MAELM
         if config.arch == "maelm":
             if "decoder_config" in checkpoint:
-                loaded_decoder_config = BertConfig(**checkpoint["decoder_config"])
+                # Verify decoder config exists and is loadable
+                BertConfig(**checkpoint["decoder_config"])
                 print("✓ Decoder config loaded successfully")
             else:
                 print("⚠️  Warning: No decoder config found in checkpoint")
@@ -553,7 +571,8 @@ def run(config):
         if checkpoint["config"].epochs != config.epochs:
             print(
                 f"Warning: checkpoint epochs ({checkpoint['config'].epochs}) "
-                f"!= current epochs ({config.epochs}). Rebuilding scheduler.", flush=True
+                f"!= current epochs ({config.epochs}). Rebuilding scheduler.",
+                flush=True,
             )
 
         best_stats["max_accuracy"] = checkpoint.get("max_accuracy", 0)
@@ -673,7 +692,7 @@ def run(config):
             distance_table=distance_table,
             n_special_tokens=n_special_tokens,
             n_all_tokens=n_all_tokens,
-            biological_masker=biological_masker
+            biological_masker=biological_masker,
         )
         t_end_val = time.time()
         timing_stats["val"] = t_end_val - t_start_val
@@ -835,7 +854,6 @@ def train_one_epoch(
     best_stats=None,
     start_epoch=0,
     start_step_in_epoch=0,
-
 ):
     r"""
     Train the encoder and classifier for one epoch.
@@ -911,8 +929,12 @@ def train_one_epoch(
 
     t_end_batch = time.time()
     t_start_wandb = t_end_wandb = None
-    enable_genus_classification = config.enable_genus_classification if hasattr(config, 'enable_genus_classification') else False
-    taxonomy_level = config.taxonomy_level_for_classification if hasattr(config, 'taxonomy_level_for_classification') else "genus"
+    enable_genus_classification = (
+        config.enable_genus_classification if hasattr(config, "enable_genus_classification") else False
+    )
+    taxonomy_level = (
+        config.taxonomy_level_for_classification if hasattr(config, "taxonomy_level_for_classification") else "genus"
+    )
     # Capitalize for display
     taxonomy_level_display = taxonomy_level.capitalize()
 
@@ -979,12 +1001,14 @@ def train_one_epoch(
             current_temperature = temperature_schedule[epoch - 1]
             tokens_to_replace = sequences[masked_random_tokens]
             # Get biological replacements (guaranteed different from originals)
-            biological_replacements = get_temperature_biological_replacements(tokens_to_replace, biological_masker, current_temperature)
+            biological_replacements = get_temperature_biological_replacements(
+                tokens_to_replace, biological_masker, current_temperature
+            )
             masked_input[masked_random_tokens] = biological_replacements
 
             # SIMPLE DEBUG - only first batch of first epoch
             if batch_idx == 0 and epoch == 1:
-                print(f"\n🔬 Biological masking check:")
+                print("\n🔬 Biological masking check:")
                 for i in range(min(5, len(tokens_to_replace))):
                     orig_id = tokens_to_replace[i].item()
                     repl_id = biological_replacements[i].item()
@@ -992,7 +1016,6 @@ def train_one_epoch(
                     repl_kmer = dataloader.dataset.vocab.lookup_token(repl_id)
                     same = " SAME!" if orig_id == repl_id else "OK"
                     print(f"  {orig_kmer} → {repl_kmer} {same}")
-
 
         else:
             min_token_id = n_special_tokens  # 0 is for masking, 1 is for <UNK>
@@ -1046,7 +1069,9 @@ def train_one_epoch(
                         non_masked_loss_weight = 1 - masked_loss_weight
                         loss = masked_loss_weight * masked_loss + non_masked_loss_weight * non_masked_loss
                     else:
-                        loss = criterion(logits[special_tokens_mask.view(-1)], soft_targets[special_tokens_mask.view(-1)])
+                        loss = criterion(
+                            logits[special_tokens_mask.view(-1)], soft_targets[special_tokens_mask.view(-1)]
+                        )
 
                 else:
                     # Need to remove the special token from the index in sequences
@@ -1126,16 +1151,18 @@ def train_one_epoch(
         if enable_genus_classification and genus_labels is not None:
             # Check if model has taxonomy classifier and jumbo tokens are available
             model_deref = model.module if config.distributed else model
-            if hasattr(model_deref, 'taxonomy_classifier') and model_deref.taxonomy_classifier is not None:
+            if hasattr(model_deref, "taxonomy_classifier") and model_deref.taxonomy_classifier is not None:
                 # Get jumbo tokens from output
-                if hasattr(out, 'jumbo_tokens') and out.jumbo_tokens is not None:
-                    taxonomy_loss, taxonomy_acc, num_taxonomy_pairs, num_same_pairs, num_diff_pairs = compute_taxonomy_classification_loss(
-                        out.jumbo_tokens, genus_labels, model_deref.taxonomy_classifier, same_ratio=0.5
+                if hasattr(out, "jumbo_tokens") and out.jumbo_tokens is not None:
+                    taxonomy_loss, taxonomy_acc, num_taxonomy_pairs, num_same_pairs, num_diff_pairs = (
+                        compute_taxonomy_classification_loss(
+                            out.jumbo_tokens, genus_labels, model_deref.taxonomy_classifier, same_ratio=0.5
+                        )
                     )
 
                     # Add taxonomy loss to total loss if valid
                     if taxonomy_loss is not None:
-                        taxonomy_loss_weight = config.genus_loss_weight if hasattr(config, 'genus_loss_weight') else 0.1
+                        taxonomy_loss_weight = config.genus_loss_weight if hasattr(config, "genus_loss_weight") else 0.1
                         loss = loss + taxonomy_loss_weight * taxonomy_loss
 
         # Keep aliases for backward compatibility in logging
@@ -1287,7 +1314,8 @@ def train_one_epoch(
         if batch_idx <= 2 or batch_idx % config.print_interval == 0 or batch_idx >= len(dataloader) - 1:
             if config.separate_loss:
                 log_msg = (
-                    f"Train Epoch:{epoch:3d}" + (f"/{n_epoch}" if n_epoch is not None else "")
+                    f"Train Epoch:{epoch:3d}"
+                    + (f"/{n_epoch}" if n_epoch is not None else "")
                     + " Step:{:6d}/{}".format(batch_idx + 1, len(dataloader))
                     + " LossMask:{:8.5f}".format(masked_loss_batch)
                     + " LossSeen:{:8.5f}".format(non_masked_loss_batch)
@@ -1296,23 +1324,26 @@ def train_one_epoch(
                     + " AccSeen:{:6.2f}%".format(acc_kpt)
                 )
                 if genus_loss_batch_val is not None:
-                    log_msg += f" {taxonomy_level_display}Loss:{{:7.4f}} {taxonomy_level_display}Acc:{{:5.1f}}% Pairs:{{}}({{}}/{{}}same/diff)".format(
-                        genus_loss_batch_val, genus_acc_batch_val, num_genus_pairs, num_same_pairs, num_diff_pairs
-                    )
+                    log_msg += (
+                        f" {taxonomy_level_display}Loss:{{:7.4f}} "
+                        f"{taxonomy_level_display}Acc:{{:5.1f}}% Pairs:{{}}({{}}/{{}}same/diff)"
+                    ).format(genus_loss_batch_val, genus_acc_batch_val, num_genus_pairs, num_same_pairs, num_diff_pairs)
                 log_msg += " LR: {}".format(scheduler.get_last_lr())
                 print(log_msg, flush=True)
             else:
                 log_msg = (
-                    f"Train Epoch:{epoch:3d}" + (f"/{n_epoch}" if n_epoch is not None else "")
+                    f"Train Epoch:{epoch:3d}"
+                    + (f"/{n_epoch}" if n_epoch is not None else "")
                     + " Step:{:6d}/{}".format(batch_idx + 1, len(dataloader))
                     + " Loss:{:8.5f}".format(loss_batch)
                     + " AccMask:{:6.2f}%".format(acc_msk)
                     + " AccSeen:{:6.2f}%".format(acc_kpt)
                 )
                 if genus_loss_batch_val is not None:
-                    log_msg += f" {taxonomy_level_display}Loss:{{:7.4f}} {taxonomy_level_display}Acc:{{:5.1f}}% Pairs:{{}}({{}}/{{}}same/diff)".format(
-                        genus_loss_batch_val, genus_acc_batch_val, num_genus_pairs, num_same_pairs, num_diff_pairs
-                    )
+                    log_msg += (
+                        f" {taxonomy_level_display}Loss:{{:7.4f}} "
+                        f"{taxonomy_level_display}Acc:{{:5.1f}}% Pairs:{{}}({{}}/{{}}same/diff)"
+                    ).format(genus_loss_batch_val, genus_acc_batch_val, num_genus_pairs, num_same_pairs, num_diff_pairs)
                 log_msg += " LR: {}".format(scheduler.get_last_lr())
                 print(log_msg, flush=True)
 
@@ -1341,7 +1372,7 @@ def train_one_epoch(
                     total_step=total_step,
                     n_samples_seen=n_samples_seen,
                     bert_config=bert_config.to_dict(),
-                    decoder_config= decoder_config.to_dict(),
+                    decoder_config=decoder_config.to_dict(),
                     **best_stats,
                 )
 
@@ -1486,7 +1517,7 @@ def evaluate(
     distance_table=None,
     n_special_tokens=2,
     n_all_tokens=-1,
-    biological_masker=None
+    biological_masker=None,
 ):
     r"""
     Evaluate the encoder on the validation data.
@@ -1587,7 +1618,9 @@ def evaluate(
                 current_temperature = 1.0
                 tokens_to_replace = sequences[masked_random_tokens]
                 # Get biological replacements (guaranteed different from originals)
-                biological_replacements = get_temperature_biological_replacements(tokens_to_replace, biological_masker, temperature=current_temperature)
+                biological_replacements = get_temperature_biological_replacements(
+                    tokens_to_replace, biological_masker, temperature=current_temperature
+                )
                 masked_input[masked_random_tokens] = biological_replacements
 
             else:
@@ -2026,17 +2059,9 @@ def get_parser():
         help="Enable Automatic Mixed Precision (AMP) training for faster training and reduced memory usage.",
     )
 
-    group.add_argument(
-        "--jumbo",
-        action="store_true",
-        help="Enable Jumbo CLS training"
-    )
+    group.add_argument("--jumbo", action="store_true", help="Enable Jumbo CLS training")
 
-    group.add_argument(
-        "--share_jumbo_layers",
-        action="store_true",
-        help="Enable sharing of layers in Jumbo CLS model"
-    )
+    group.add_argument("--share_jumbo_layers", action="store_true", help="Enable sharing of layers in Jumbo CLS model")
 
     group.add_argument(
         "--jumbo_multiplier",
@@ -2052,7 +2077,11 @@ def get_parser():
         type=str,
         default="encoder",
         choices=["encoder", "decoder"],
-        help="Source of jumbo tokens for taxonomy classification: 'encoder' (direct from encoder) or 'decoder' (encoder jumbo tokens after being processed through decoder). Default: %(default)s. Requires --enable-taxonomy-classification and --jumbo."
+        help=(
+            "Source of jumbo tokens for taxonomy classification: 'encoder' (direct from encoder) or "
+            "'decoder' (encoder jumbo tokens after being processed through decoder). "
+            "Default: %(default)s. Requires --enable-taxonomy-classification and --jumbo."
+        ),
     )
 
     group.add_argument(
@@ -2060,7 +2089,11 @@ def get_parser():
         "--enable_taxonomy_classification",
         dest="enable_genus_classification",
         action="store_true",
-        help="Enable taxonomy classification head for Jumbo CLS tokens during pretraining. Requires --jumbo flag. Use --taxonomy-level to specify the taxonomic level and --jumbo-source to choose between encoder or decoder-processed jumbo tokens."
+        help=(
+            "Enable taxonomy classification head for Jumbo CLS tokens during pretraining. "
+            "Requires --jumbo flag. Use --taxonomy-level to specify the taxonomic level and "
+            "--jumbo-source to choose between encoder or decoder-processed jumbo tokens."
+        ),
     )
 
     group.add_argument(

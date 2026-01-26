@@ -8,12 +8,12 @@ from itertools import product
 import numpy as np
 import pandas as pd
 import torch
+from mycoai.data import Data
+from mycoai.data.encoders import TaxonEncoder
 from torch.utils.data import Dataset
 from torchtext.vocab import vocab as build_vocab_from_dict
-from transformers import AutoTokenizer
-from mycoai.data import Data
 from tqdm import tqdm
-from mycoai.data.encoders import TaxonEncoder
+from transformers import AutoTokenizer
 
 
 class KmerTokenizer(object):
@@ -103,7 +103,7 @@ class DNADataset(Dataset):
         taxonomic_level="species",
         label2id=None,
         return_genus=False,  # Deprecated: use return_taxonomy_level instead
-        return_taxonomy_level=None  # Can be: phylum, class, order, family, genus, species
+        return_taxonomy_level=None,  # Can be: phylum, class, order, family, genus, species
     ):
         self.k_mer = k_mer
         self.stride = k_mer if stride is None else stride
@@ -166,8 +166,8 @@ class DNADataset(Dataset):
             elif "test" in file_path:
                 fungi_data = Data(file_path, allow_duplicates=False)
 
-            self.tax_encoder = (TaxonEncoder(data=fungi_data) if self.tax_encoder is None else self.tax_encoder)
-            for index, row in tqdm(fungi_data.data.iterrows(), total=fungi_data.data.shape[0]):
+            self.tax_encoder = TaxonEncoder(data=fungi_data) if self.tax_encoder is None else self.tax_encoder
+            for _, row in tqdm(fungi_data.data.iterrows(), total=fungi_data.data.shape[0]):
                 self.barcodes.append(row["sequence"])
                 # self.labels.append(self.tax_encoder.encode(row))
             # self.tax_encoder.finish_training()
@@ -216,7 +216,7 @@ class DNADataset(Dataset):
                 )
 
             labels_np = np.asarray(self.labels)
-            valid_mask = labels_np != 9999999 # label for unknown labels
+            valid_mask = labels_np != 9999999  # label for unknown labels
             n_before = len(self.labels)
             if not valid_mask.any():
                 raise ValueError("All ITS-5M labels are invalid.")
@@ -249,7 +249,6 @@ class DNADataset(Dataset):
             #     self.labels = mapped
             #     self.num_labels = len(self.label2id)
             #     self.id2label = {i: lab for lab, i in self.label2id.items()}
-
 
     def __len__(self):
         return len(self.barcodes)

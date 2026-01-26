@@ -30,7 +30,7 @@ class JumboTaxonomyClassifier(nn.Module):
             nn.Linear(jumbo_dim * 2, hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_dim, 1)  # Binary classification
+            nn.Linear(hidden_dim, 1),  # Binary classification
         )
 
     def forward(self, jumbo_rep1, jumbo_rep2):

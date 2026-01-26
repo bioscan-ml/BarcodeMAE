@@ -2,15 +2,16 @@
 Compatible biological masker that works with DNADataset tokenization exactly.
 """
 
-import torch
-import pickle
-import numpy as np
-import os
 import glob
+import os
+import pickle
+
+import numpy as np
+import torch
 
 
 class CompatibleBiologicalMasker:
-    def __init__(self, lookup_file_path, device='cuda'):
+    def __init__(self, lookup_file_path, device="cuda"):
         """
         Load precomputed k-mer substitution lookup table compatible with DNADataset
 
@@ -21,22 +22,22 @@ class CompatibleBiologicalMasker:
         self.device = device
 
         # Load precomputed data
-        with open(lookup_file_path, 'rb') as f:
+        with open(lookup_file_path, "rb") as f:
             data = pickle.load(f)
 
         # Verify compatibility
-        if 'compatibility_version' not in data:
+        if "compatibility_version" not in data:
             raise ValueError(
                 "This lookup table is not compatible with DNADataset tokenization. "
                 "Please regenerate using precompute_compatible_kmers.py"
             )
 
-        self.k_mer_size = data['k_mer_size']
-        self.substitution_matrix = data['substitution_matrix']
-        self.cumulative_lookup = data['cumulative_lookup']
-        self.n_special_tokens = data['n_special_tokens']
-        self.tokenize_n_nucleotide = data['tokenize_n_nucleotide']
-        self.special_tokens = data['special_tokens']
+        self.k_mer_size = data["k_mer_size"]
+        self.substitution_matrix = data["substitution_matrix"]
+        self.cumulative_lookup = data["cumulative_lookup"]
+        self.n_special_tokens = data["n_special_tokens"]
+        self.tokenize_n_nucleotide = data["tokenize_n_nucleotide"]
+        self.special_tokens = data["special_tokens"]
 
         print(f"Loaded compatible biological masker for k={self.k_mer_size}")
         print(f"Special tokens: {self.special_tokens} (IDs 0-{self.n_special_tokens - 1})")
@@ -45,7 +46,7 @@ class CompatibleBiologicalMasker:
         print(f"Lookup table contains {len(self.cumulative_lookup)} k-mers")
 
     @classmethod
-    def from_cache_dir(cls, cache_dir, k_mer_size, tokenize_n_nucleotide=False, device='cuda'):
+    def from_cache_dir(cls, cache_dir, k_mer_size, tokenize_n_nucleotide=False, device="cuda"):
         """
         Automatically find and load compatible lookup table
 
@@ -56,9 +57,8 @@ class CompatibleBiologicalMasker:
             device: torch device
         """
         # Look for compatible files
-        n_flag = "_with_n" if tokenize_n_nucleotide else ""
         pattern = os.path.join(cache_dir, f"kmer_substitutions_k{k_mer_size}_compatible_*.pkl")
-        files = glob.glob("/home/m4safari/projects/def-lila-ab/m4safari/barcodeMAE/BarcodeMAE/barcodebert/masking_codes/kmer_cache/kmer_substitutions_k6_compatible_1c92e11db4415dc6.pkl")
+        files = glob.glob(pattern)
 
         if not files:
             raise FileNotFoundError(
@@ -95,7 +95,7 @@ class CompatibleBiologicalMasker:
         cumulative_probs = self.cumulative_lookup[original_token]
 
         # Try multiple times to ensure we get a different token
-        for attempt in range(max_attempts):
+        for _attempt in range(max_attempts):
             rand_val = np.random.random()
 
             # Find the sampled substitution
@@ -145,7 +145,7 @@ class CompatibleBiologicalMasker:
 
 # Temperature-controlled version for curriculum learning
 class TemperatureCompatibleBiologicalMasker(CompatibleBiologicalMasker):
-    def __init__(self, lookup_file_path, device='cuda'):
+    def __init__(self, lookup_file_path, device="cuda"):
         """Load compatible masker with temperature support"""
         super().__init__(lookup_file_path, device)
 
@@ -198,7 +198,7 @@ class TemperatureCompatibleBiologicalMasker(CompatibleBiologicalMasker):
         scaled_probs = self.apply_temperature(raw_probs, temperature)
 
         # Try multiple times to ensure we get a different token
-        for attempt in range(max_attempts):
+        for _attempt in range(max_attempts):
             rand_val = np.random.random()
             cumulative_sum = 0.0
 
@@ -306,8 +306,9 @@ def compatible_biological_random_tokens(sequences, masked_random_tokens, biologi
     return result
 
 
-def temperature_compatible_biological_random_tokens(sequences, masked_random_tokens,
-                                                    biological_masker, temperature=1.0):
+def temperature_compatible_biological_random_tokens(
+    sequences, masked_random_tokens, biological_masker, temperature=1.0
+):
     """
     Legacy interface: Temperature-controlled biological random token generation
 
@@ -329,9 +330,7 @@ def temperature_compatible_biological_random_tokens(sequences, masked_random_tok
     tokens_to_replace = sequences[masked_random_tokens]
 
     # Get temperature-controlled biological replacements
-    replacements = biological_masker.get_biological_replacements_with_temperature(
-        tokens_to_replace, temperature
-    )
+    replacements = biological_masker.get_biological_replacements_with_temperature(tokens_to_replace, temperature)
 
     # Put replacements back
     result[masked_random_tokens] = replacements
@@ -339,16 +338,16 @@ def temperature_compatible_biological_random_tokens(sequences, masked_random_tok
     return result
 
 
-def create_temperature_schedule(start_temp, end_temp, total_epochs, schedule_type='exponential'):
+def create_temperature_schedule(start_temp, end_temp, total_epochs, schedule_type="exponential"):
     """Create temperature schedule for curriculum learning"""
     epochs = np.arange(total_epochs)
 
-    if schedule_type == 'linear':
+    if schedule_type == "linear":
         temperatures = start_temp - (start_temp - end_temp) * epochs / (total_epochs - 1)
-    elif schedule_type == 'exponential':
+    elif schedule_type == "exponential":
         ratio = end_temp / start_temp
         temperatures = start_temp * (ratio ** (epochs / (total_epochs - 1)))
-    elif schedule_type == 'cosine':
+    elif schedule_type == "cosine":
         temperatures = end_temp + (start_temp - end_temp) * (1 + np.cos(np.pi * epochs / (total_epochs - 1))) / 2
     else:
         raise ValueError(f"Unknown schedule_type: {schedule_type}")

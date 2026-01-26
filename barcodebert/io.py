@@ -7,6 +7,7 @@ from inspect import getsourcefile
 
 import torch
 from transformers import BertConfig, BertForTokenClassification, BertModel
+
 from barcodebert.jumbo_transformer import create_jumbo_transformer_model
 
 from .utils import remove_extra_pre_fix

@@ -6,12 +6,13 @@ This version ensures token ID compatibility with your KmerTokenizer.
 """
 
 import argparse
-import numpy as np
-import pickle
-import os
-from itertools import combinations, product
 import hashlib
+import os
+import pickle
 import time
+from itertools import combinations, product
+
+import numpy as np
 
 
 def create_compatible_vocab(k_mer_size, tokenize_n_nucleotide=False):
@@ -64,14 +65,14 @@ def create_compatible_vocab(k_mer_size, tokenize_n_nucleotide=False):
 
 def kmer_to_sequence(kmer):
     """Convert k-mer string to sequence of base indices"""
-    base_to_idx = {'A': 0, 'C': 1, 'G': 2, 'T': 3, 'N': 4}
+    base_to_idx = {"A": 0, "C": 1, "G": 2, "T": 3, "N": 4}
     return [base_to_idx[base] for base in kmer]
 
 
 def sequence_to_kmer(sequence):
     """Convert sequence of base indices to k-mer string"""
-    idx_to_base = {0: 'A', 1: 'C', 2: 'G', 3: 'T', 4: 'N'}
-    return ''.join(idx_to_base[idx] for idx in sequence)
+    idx_to_base = {0: "A", 1: "C", 2: "G", 3: "T", 4: "N"}
+    return "".join(idx_to_base[idx] for idx in sequence)
 
 
 def compute_substitution_probability(original_seq, target_seq, substitution_matrix):
@@ -88,8 +89,9 @@ def compute_substitution_probability(original_seq, target_seq, substitution_matr
     return prob
 
 
-def generate_mutations_recursive(original_seq, positions, pos_idx, current_seq,
-                                 substitutions, substitution_matrix, exclude_n=True):
+def generate_mutations_recursive(
+    original_seq, positions, pos_idx, current_seq, substitutions, substitution_matrix, exclude_n=True
+):
     """Recursively generate all mutation combinations"""
     if pos_idx == len(positions):
         # Check if this is actually different from original
@@ -110,8 +112,7 @@ def generate_mutations_recursive(original_seq, positions, pos_idx, current_seq,
         if new_base != original_base:
             current_seq[current_pos] = new_base
             generate_mutations_recursive(
-                original_seq, positions, pos_idx + 1, current_seq.copy(),
-                substitutions, substitution_matrix, exclude_n
+                original_seq, positions, pos_idx + 1, current_seq.copy(), substitutions, substitution_matrix, exclude_n
             )
 
     # Restore original base
@@ -125,7 +126,7 @@ def generate_all_substitutions_for_kmer(kmer, substitution_matrix, tokenize_n_nu
     substitutions = []
 
     # Skip k-mers with N if not handling N
-    if not tokenize_n_nucleotide and 'N' in kmer:
+    if not tokenize_n_nucleotide and "N" in kmer:
         return []
 
     # For each possible number of mutations (1 to k)
@@ -134,8 +135,13 @@ def generate_all_substitutions_for_kmer(kmer, substitution_matrix, tokenize_n_nu
         for positions in combinations(range(k_mer_size), num_mutations):
             # Generate all possible mutations for these positions
             generate_mutations_recursive(
-                original_seq, list(positions), 0, original_seq.copy(),
-                substitutions, substitution_matrix, exclude_n=not tokenize_n_nucleotide
+                original_seq,
+                list(positions),
+                0,
+                original_seq.copy(),
+                substitutions,
+                substitution_matrix,
+                exclude_n=not tokenize_n_nucleotide,
             )
 
     return substitutions
@@ -149,9 +155,7 @@ def precompute_kmer_substitutions_compatible(k_mer_size, substitution_matrix, to
         dict: {original_token_id: [(target_token_id, cumulative_prob), ...]}
     """
     # Create compatible vocabulary
-    kmer_to_token, token_to_kmer, n_special_tokens = create_compatible_vocab(
-        k_mer_size, tokenize_n_nucleotide
-    )
+    kmer_to_token, token_to_kmer, n_special_tokens = create_compatible_vocab(k_mer_size, tokenize_n_nucleotide)
 
     cumulative_lookup = {}
 
@@ -164,12 +168,9 @@ def precompute_kmer_substitutions_compatible(k_mer_size, substitution_matrix, to
             elapsed = time.time() - start_time
             progress = processed / len(token_to_kmer)
             eta = elapsed / max(progress, 0.001) - elapsed if progress > 0 else 0
-            print(f"Progress: {processed}/{len(token_to_kmer)} ({progress * 100:.1f}%) - "
-                  f"ETA: {eta / 60:.1f} minutes")
+            print(f"Progress: {processed}/{len(token_to_kmer)} ({progress * 100:.1f}%) - ETA: {eta / 60:.1f} minutes")
 
-        substitutions = generate_all_substitutions_for_kmer(
-            kmer, substitution_matrix, tokenize_n_nucleotide
-        )
+        substitutions = generate_all_substitutions_for_kmer(kmer, substitution_matrix, tokenize_n_nucleotide)
 
         if substitutions:
             # Convert k-mer strings to token IDs and filter valid ones
@@ -205,21 +206,22 @@ def precompute_kmer_substitutions_compatible(k_mer_size, substitution_matrix, to
     return cumulative_lookup, n_special_tokens
 
 
-def save_compatible_lookup_table(lookup_table, k_mer_size, substitution_matrix,
-                                 n_special_tokens, tokenize_n_nucleotide, output_path):
+def save_compatible_lookup_table(
+    lookup_table, k_mer_size, substitution_matrix, n_special_tokens, tokenize_n_nucleotide, output_path
+):
     """Save precomputed lookup table with compatibility info"""
     data = {
-        'k_mer_size': k_mer_size,
-        'substitution_matrix': substitution_matrix,
-        'cumulative_lookup': lookup_table,
-        'n_special_tokens': n_special_tokens,
-        'tokenize_n_nucleotide': tokenize_n_nucleotide,
-        'special_tokens': ["[MASK]", "[UNK]"],
-        'base_pairs': "ACGTN" if tokenize_n_nucleotide else "ACGT",
-        'compatibility_version': 'DNADataset_v1'
+        "k_mer_size": k_mer_size,
+        "substitution_matrix": substitution_matrix,
+        "cumulative_lookup": lookup_table,
+        "n_special_tokens": n_special_tokens,
+        "tokenize_n_nucleotide": tokenize_n_nucleotide,
+        "special_tokens": ["[MASK]", "[UNK]"],
+        "base_pairs": "ACGTN" if tokenize_n_nucleotide else "ACGT",
+        "compatibility_version": "DNADataset_v1",
     }
 
-    with open(output_path, 'wb') as f:
+    with open(output_path, "wb") as f:
         pickle.dump(data, f)
 
     # Print file size and verification
@@ -232,12 +234,14 @@ def save_compatible_lookup_table(lookup_table, k_mer_size, substitution_matrix,
 
 def create_substitution_matrix(transition_bias=0.6):
     """Create a biologically plausible substitution matrix"""
-    matrix = np.array([
-        [0.1, 0.15, transition_bias, 0.15],  # A -> A, C, G, T
-        [0.15, 0.1, 0.15, transition_bias],  # C -> A, C, G, T
-        [transition_bias, 0.15, 0.1, 0.15],  # G -> A, C, G, T
-        [0.15, transition_bias, 0.15, 0.1]  # T -> A, C, G, T
-    ])
+    matrix = np.array(
+        [
+            [0.1, 0.15, transition_bias, 0.15],  # A -> A, C, G, T
+            [0.15, 0.1, 0.15, transition_bias],  # C -> A, C, G, T
+            [transition_bias, 0.15, 0.1, 0.15],  # G -> A, C, G, T
+            [0.15, transition_bias, 0.15, 0.1],  # T -> A, C, G, T
+        ]
+    )
     return matrix / matrix.sum(axis=1, keepdims=True)
 
 
@@ -245,25 +249,26 @@ def main():
     parser = argparse.ArgumentParser(
         description="Precompute k-mer substitutions compatible with DNADataset tokenization"
     )
+    parser.add_argument("--k-mer", type=int, default=6, help="Size of k-mers (default: 6)")
     parser.add_argument(
-        "--k-mer", type=int, default=6,
-        help="Size of k-mers (default: 6)"
+        "--output-dir",
+        type=str,
+        default="masking_codes/kmer_cache",
+        help="Directory to save lookup table (default: ./kmer_cache)",
     )
     parser.add_argument(
-        "--output-dir", type=str, default="masking_codes/kmer_cache",
-        help="Directory to save lookup table (default: ./kmer_cache)"
+        "--transition-bias", type=float, default=0.6, help="Transition vs transversion bias (default: 0.6)"
     )
     parser.add_argument(
-        "--transition-bias", type=float, default=0.6,
-        help="Transition vs transversion bias (default: 0.6)"
+        "--custom-matrix",
+        type=str,
+        default="masking_codes/lepidoptera_matrix.npy",
+        help="Path to custom substitution matrix (.npy file)",
     )
     parser.add_argument(
-        "--custom-matrix", type=str, default="masking_codes/lepidoptera_matrix.npy",
-        help="Path to custom substitution matrix (.npy file)"
-    )
-    parser.add_argument(
-        "--tokenize-n-nucleotide", action="store_true",
-        help="Include N-containing k-mers (matches DNADataset tokenize_n_nucleotide=True)"
+        "--tokenize-n-nucleotide",
+        action="store_true",
+        help="Include N-containing k-mers (matches DNADataset tokenize_n_nucleotide=True)",
     )
 
     args = parser.parse_args()
@@ -281,7 +286,7 @@ def main():
 
     print("Substitution matrix:")
     print("    A     C     G     T")
-    base_names = ['A', 'C', 'G', 'T']
+    base_names = ["A", "C", "G", "T"]
     for i, row in enumerate(substitution_matrix):
         print(f"{base_names[i]} {' '.join(f'{x:.3f}' for x in row)}")
     print()
@@ -290,10 +295,7 @@ def main():
     n_flag = "_with_n" if args.tokenize_n_nucleotide else ""
     param_str = f"k{args.k_mer}{n_flag}_" + str(substitution_matrix.flatten().tolist())
     cache_key = hashlib.md5(param_str.encode()).hexdigest()[:16]
-    output_path = os.path.join(
-        args.output_dir,
-        f"kmer_substitutions_k{args.k_mer}{n_flag}_compatible_{cache_key}.pkl"
-    )
+    output_path = os.path.join(args.output_dir, f"kmer_substitutions_k{args.k_mer}{n_flag}_compatible_{cache_key}.pkl")
 
     # Check if already exists
     if os.path.exists(output_path):
@@ -309,11 +311,10 @@ def main():
 
     # Save with compatibility metadata
     save_compatible_lookup_table(
-        lookup_table, args.k_mer, substitution_matrix,
-        n_special_tokens, args.tokenize_n_nucleotide, output_path
+        lookup_table, args.k_mer, substitution_matrix, n_special_tokens, args.tokenize_n_nucleotide, output_path
     )
 
-    print(f"\nDone! This lookup table is compatible with DNADataset tokenization.")
+    print("\nDone! This lookup table is compatible with DNADataset tokenization.")
     print(f"Use with: BiologicalMasker.from_file('{output_path}')")
     print(f"Make sure to use tokenize_n_nucleotide={args.tokenize_n_nucleotide} in your training!")
 

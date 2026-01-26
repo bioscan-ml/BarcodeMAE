@@ -6,7 +6,7 @@ Simple implementation of Jumbo CLS tokens for a BERT-style transformer.
 
 import torch
 import torch.nn as nn
-from transformers import BertModel, BertConfig
+from transformers import BertConfig, BertModel
 from transformers.models.bert.modeling_bert import BertLayer
 
 
@@ -21,13 +21,13 @@ class JumboTokenHandler(nn.Module):
 
     def __init__(self, embed_dim: int, jumbo_multiplier: int = 6, dropout: float = 0.1):
         super().__init__()
-        self.embed_dim = embed_dim               # D
-        self.jumbo_multiplier = jumbo_multiplier # J
+        self.embed_dim = embed_dim  # D
+        self.jumbo_multiplier = jumbo_multiplier  # J
         self.jumbo_width = embed_dim * jumbo_multiplier  # J * D
 
         self.jumbo_mlp = nn.Sequential(
             nn.LayerNorm(self.jumbo_width),
-            nn.Linear(self.jumbo_width, self.jumbo_width * 2), # Wide hidden layer X4
+            nn.Linear(self.jumbo_width, self.jumbo_width * 2),  # Wide hidden layer X4
             nn.GELU(),
             nn.Dropout(dropout),
             nn.Linear(self.jumbo_width * 2, self.jumbo_width),
@@ -44,8 +44,7 @@ class JumboTokenHandler(nn.Module):
 
         if expected_width != self.jumbo_width:
             raise ValueError(
-                f"JumboTokenHandler: width mismatch. "
-                f"Expected {self.jumbo_width} (J*D), got {expected_width}."
+                f"JumboTokenHandler: width mismatch. Expected {self.jumbo_width} (J*D), got {expected_width}."
             )
 
         # (B, J, D) -> (B, J*D)
@@ -58,7 +57,7 @@ class JumboTokenHandler(nn.Module):
         # (B, J*D) -> (B, J, D)
         reshaped = flat_with_residual.reshape(bsz, actual_J, dim)
 
-        #Jumbo tokens
+        # Jumbo tokens
         return reshaped
 
 
@@ -102,18 +101,18 @@ class JumboBertLayer(nn.Module):
         attn_output = attn_outputs[0]  # (B, J+N, D); already includes residual + LayerNorm inside BERT
 
         # 2. Split into jumbo and patch tokens
-        jumbo_tokens = attn_output[:, :self.j, :]   # (B, J, D)
-        patch_tokens = attn_output[:, self.j:, :]   # (B, N, D)
+        jumbo_tokens = attn_output[:, : self.j, :]  # (B, J, D)
+        patch_tokens = attn_output[:, self.j :, :]  # (B, N, D)
 
         # 3. Jumbo path
         jumbo_out = self.jumbo_handler.apply_jumbo_mlp(jumbo_tokens)  # (B, J, D)
 
         # 4. Patch path: standard FFN
         patch_intermediate = self.intermediate(patch_tokens)
-        patch_out = self.output(patch_intermediate, patch_tokens)     # (B, N, D) includes residual + LN
+        patch_out = self.output(patch_intermediate, patch_tokens)  # (B, N, D) includes residual + LN
 
         # 5. Concatenate
-        final_output = torch.cat([jumbo_out, patch_out], dim=1)       # (B, J+N, D)
+        final_output = torch.cat([jumbo_out, patch_out], dim=1)  # (B, J+N, D)
         return final_output
 
 
@@ -153,9 +152,7 @@ class JumboBertForTokenClassification(nn.Module):
             ]
 
         # J separate Jumbo CLS tokens, each of dim D
-        self.jumbo_cls_tokens = nn.Parameter(
-            torch.zeros(1, jumbo_multiplier, config.hidden_size)
-        )
+        self.jumbo_cls_tokens = nn.Parameter(torch.zeros(1, jumbo_multiplier, config.hidden_size))
 
         # Replace encoder layers with JumboBertLayer that use the shared handler
         new_layers = []
@@ -228,8 +225,8 @@ class JumboBertForTokenClassification(nn.Module):
             )
 
         # 5. Split final output back into jumbo + patch tokens
-        final_jumbo_tokens = hidden_states[:, :self.jumbo_multiplier, :]  # (B, J, D)
-        final_patch_tokens = hidden_states[:, self.jumbo_multiplier:, :]  # (B, N, D)
+        final_jumbo_tokens = hidden_states[:, : self.jumbo_multiplier, :]  # (B, J, D)
+        final_patch_tokens = hidden_states[:, self.jumbo_multiplier :, :]  # (B, N, D)
 
         # 6. Token classification on patch tokens
         patch_outputs = self.dropout(final_patch_tokens)
@@ -237,17 +234,23 @@ class JumboBertForTokenClassification(nn.Module):
 
         # 7. Jumbo representation: flattened + LayerNorm
         flattened_jumbo = final_jumbo_tokens.reshape(batch_size, -1)  # (B, J*D)
-        jumbo_representation = self.jumbo_norm(flattened_jumbo)       # (B, J*D)
+        jumbo_representation = self.jumbo_norm(flattened_jumbo)  # (B, J*D)
 
-        return type("JumboTokenClassificationOutput", (), {
-            "logits": logits,
-            "hidden_states": final_patch_tokens,
-            "jumbo_representation": jumbo_representation,
-            "jumbo_tokens": final_jumbo_tokens,
-        })()
+        return type(
+            "JumboTokenClassificationOutput",
+            (),
+            {
+                "logits": logits,
+                "hidden_states": final_patch_tokens,
+                "jumbo_representation": jumbo_representation,
+                "jumbo_tokens": final_jumbo_tokens,
+            },
+        )()
 
 
-def create_jumbo_transformer_model(original_config: BertConfig, jumbo_multiplier: int = 6, share_jumbo_mlp_across_layers: bool = False):
+def create_jumbo_transformer_model(
+    original_config: BertConfig, jumbo_multiplier: int = 6, share_jumbo_mlp_across_layers: bool = False
+):
     """
     Factory function to create Jumbo transformer model.
     """

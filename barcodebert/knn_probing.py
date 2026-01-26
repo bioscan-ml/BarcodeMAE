@@ -149,7 +149,14 @@ def run(config):
     )
     print("Generating embeddings for train set", flush=True)
     X, y, train_orders = representations_from_df(
-        df_train, config.target_level, model, tokenizer, config.dataset_name, config.mode, config.mask_rate, config.jumbo
+        df_train,
+        config.target_level,
+        model,
+        tokenizer,
+        config.dataset_name,
+        config.mode,
+        config.mask_rate,
+        config.jumbo,
     )
     timing_stats["embed"] = time.time() - t_start_embed
 

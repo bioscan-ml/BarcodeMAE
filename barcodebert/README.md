@@ -50,7 +50,7 @@ model = MAELMModel(
     jumbo_multiplier=6,
     share_jumbo_layers=False,
     enable_genus_classification=True,
-    jumbo_source="decoder"  # or "encoder"
+    jumbo_source="decoder",  # or "encoder"
 )
 ```
 
@@ -61,12 +61,12 @@ Single-encoder transformer with jumbo tokens and taxonomy classification:
 - Standard masked language modeling
 
 ```python
-from barcodebert.jumbo_transformer_with_taxonomy import create_jumbo_transformer_with_taxonomy
+from barcodebert.jumbo_transformer_with_taxonomy import (
+    create_jumbo_transformer_with_taxonomy,
+)
 
 model = create_jumbo_transformer_with_taxonomy(
-    bert_config=config,
-    jumbo_multiplier=6,
-    enable_taxonomy_classification=True
+    bert_config=config, jumbo_multiplier=6, enable_taxonomy_classification=True
 )
 ```
 
@@ -93,20 +93,18 @@ Binary pairwise taxonomy classifier:
 ```python
 from barcodebert.jumbo_taxonomy_classifier import (
     JumboTaxonomyClassifier,
-    compute_taxonomy_classification_loss
+    compute_taxonomy_classification_loss,
 )
 
 # Create classifier
 classifier = JumboTaxonomyClassifier(jumbo_dim=2304)  # 6 × 384
 
 # Compute loss during training
-taxonomy_loss, accuracy, num_pairs, num_same, num_diff = \
+taxonomy_loss, accuracy, num_pairs, num_same, num_diff = (
     compute_taxonomy_classification_loss(
-        jumbo_tokens,
-        genus_labels,
-        classifier,
-        same_ratio=0.5
+        jumbo_tokens, genus_labels, classifier, same_ratio=0.5
     )
+)
 ```
 
 ### 4. Biological Masking (`biological_masker.py`)
@@ -119,11 +117,7 @@ Temperature-based biologically-informed masking:
 ```python
 from biological_masker import TemperatureCompatibleBiologicalMasker
 
-masker = TemperatureCompatibleBiologicalMasker(
-    vocab=vocab,
-    k_mer=6,
-    temperature=1.0
-)
+masker = TemperatureCompatibleBiologicalMasker(vocab=vocab, k_mer=6, temperature=1.0)
 ```
 
 ### 5. Datasets (`datasets.py`)
@@ -140,7 +134,7 @@ dataset = DNADataset(
     tokenizer_type="kmer",
     k_mer=6,
     stride=1,
-    max_len=660
+    max_len=660,
 )
 ```
 
@@ -318,8 +312,8 @@ python barcodebert/finetuning.py \
 outputs = model(input_ids, attention_mask, mask_positions)
 
 # Outputs contain:
-outputs.logits          # (B, seq_len, vocab_size) - reconstruction logits
-outputs.jumbo_tokens    # (B, J, D) - jumbo CLS tokens for classification
+outputs.logits  # (B, seq_len, vocab_size) - reconstruction logits
+outputs.jumbo_tokens  # (B, J, D) - jumbo CLS tokens for classification
 ```
 
 ### Transformer
@@ -327,10 +321,10 @@ outputs.jumbo_tokens    # (B, J, D) - jumbo CLS tokens for classification
 outputs = model(input_ids, attention_mask)
 
 # Outputs contain:
-outputs.logits                  # (B, seq_len, vocab_size)
-outputs.hidden_states           # (B, seq_len, D)
-outputs.jumbo_tokens            # (B, J, D)
-outputs.jumbo_representation    # (B, J×D) - flattened for classifier
+outputs.logits  # (B, seq_len, vocab_size)
+outputs.hidden_states  # (B, seq_len, D)
+outputs.jumbo_tokens  # (B, J, D)
+outputs.jumbo_representation  # (B, J×D) - flattened for classifier
 ```
 
 ## Loading Pretrained Models
@@ -339,8 +333,7 @@ outputs.jumbo_representation    # (B, J×D) - flattened for classifier
 from barcodebert.io import load_pretrained_model
 
 model, checkpoint = load_pretrained_model(
-    checkpoint_path="model_checkpoints/pretrained.pt",
-    device="cuda"
+    checkpoint_path="model_checkpoints/pretrained.pt", device="cuda"
 )
 
 # Access configuration

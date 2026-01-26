@@ -196,7 +196,7 @@ def run(config):
 
     # DATASET =================================================================
 
-    if config.dataset_name not in ["CANADA-1.5M", "BIOSCAN-5M","ITS-5M"]:
+    if config.dataset_name not in ["CANADA-1.5M", "BIOSCAN-5M", "ITS-5M"]:
         raise NotImplementedError(f"Dataset {config.dataset_name} not supported.")
 
     # Handle default stride dynamically set to equal k-mer size
@@ -217,7 +217,7 @@ def run(config):
             file_path=os.path.join(config.data_dir, "trainset.fasta"),
             randomize_offset=True,
             **dataset_args,
-            taxonomic_level = config.taxonomic_level,
+            taxonomic_level=config.taxonomic_level,
         )
         # share mapping
         # label2id = getattr(dataset_train, "label2id", None)
@@ -226,7 +226,7 @@ def run(config):
             file_path=os.path.join(config.data_dir, "trainset_valid.fasta"),
             randomize_offset=False,
             **dataset_args,
-            taxonomic_level = config.taxonomic_level,
+            taxonomic_level=config.taxonomic_level,
             label2id=None,
         )
 
@@ -302,7 +302,6 @@ def run(config):
     else:
         dl_test_kwargs = copy.deepcopy(dl_val_kwargs)
 
-
     if config.distributed:
         # The DistributedSampler breaks up the dataset across the GPUs
         dl_train_kwargs["sampler"] = DistributedSampler(
@@ -324,7 +323,6 @@ def run(config):
         else:
             dl_test_kwargs["sampler"] = DistributedSampler(dataset_test, shuffle=False, drop_last=False)
             dl_test_kwargs["shuffle"] = None
-
 
     dataloader_train = torch.utils.data.DataLoader(dataset_train, **dl_train_kwargs)
     dataloader_val = torch.utils.data.DataLoader(dataset_val, **dl_val_kwargs)
@@ -361,7 +359,10 @@ def run(config):
         model = model.to(device)
         torch.cuda.set_device(device)
         model = nn.parallel.DistributedDataParallel(
-            model, device_ids=[config.local_rank], output_device=config.local_rank, find_unused_parameters=True,
+            model,
+            device_ids=[config.local_rank],
+            output_device=config.local_rank,
+            find_unused_parameters=True,
         )
     else:
         if config.local_rank is not None:
@@ -453,7 +454,9 @@ def run(config):
             config.dataset_name,
             f"{config.run_name}__{config.run_id}",
         )
-        config.checkpoint_path = os.path.join(config.model_output_dir, f"checkpoint_finetune_{config.taxonomic_level}.pt")
+        config.checkpoint_path = os.path.join(
+            config.model_output_dir, f"checkpoint_finetune_{config.taxonomic_level}.pt"
+        )
         if config.log_wandb and config.global_rank == 0:
             wandb.config.update({"checkpoint_path": config.checkpoint_path}, allow_val_change=True)
 
@@ -1026,7 +1029,6 @@ def get_parser():
         default="",
         type=str,
         help="Taxonomic level to classify at (e.g., species, genus, family).",
-
     )
 
     group.add_argument(
