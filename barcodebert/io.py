@@ -87,7 +87,7 @@ def load_pretrained_model(checkpoint_path, device=None):
                 jumbo_multiplier = ckpt["config"].jumbo_multiplier
             else:
                 jumbo_multiplier = 6
-            model = create_jumbo_transformer_model(bert_config, jumbo_multiplier) #TODO: make jumbo multiplier configurable
+            model = create_jumbo_transformer_model(bert_config, jumbo_multiplier)
     elif ckpt["config"].arch == "maelm":
         model = BertModel(bert_config)
     elif ckpt["config"].arch == "transformer":

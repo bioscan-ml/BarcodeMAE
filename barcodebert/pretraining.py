@@ -19,6 +19,7 @@ from transformers import BertConfig, BertForTokenClassification
 from barcodebert import levenshtein, utils
 from barcodebert.datasets import DNADataset
 from barcodebert.io import safe_save_model
+from barcodebert.jumbo_taxonomy_classifier import compute_taxonomy_classification_loss
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../..")))
 from barcodebert.maelm_model import MAELMModel
@@ -141,6 +142,10 @@ def run(config):
     if config.stride is None:
         config.stride = config.k_mer
 
+    # Check if taxonomy classification is enabled
+    enable_genus_classification = config.enable_genus_classification if hasattr(config, 'enable_genus_classification') else False
+    taxonomy_level = config.taxonomy_level_for_classification if hasattr(config, 'taxonomy_level_for_classification') else "genus"
+
     dataset_args = {
         "k_mer": config.k_mer,
         "stride": config.stride,
@@ -149,6 +154,7 @@ def run(config):
         "bpe_path": config.bpe_path,
         "tokenize_n_nucleotide": config.tokenize_n_nucleotide,
         "dataset_format": config.dataset_name,
+        "return_taxonomy_level": taxonomy_level if enable_genus_classification else None,
     }
     if config.dataset_name == "ITS-5M":
         dataset_train = DNADataset(
@@ -309,13 +315,34 @@ def run(config):
                 hidden_size=config.decoder_embed_dim,
             )
         print("Using MAELMModel with BertConfig for the decoder (not mosaic-bert)")
-        model = MAELMModel(bert_config, decoder_config, config.jumbo, config.jumbo_multiplier, config.share_jumbo_layers)
+        enable_genus_classification = config.enable_genus_classification if hasattr(config, 'enable_genus_classification') else False
+        jumbo_source = config.jumbo_source if hasattr(config, 'jumbo_source') else "encoder"
+        model = MAELMModel(
+            bert_config,
+            decoder_config,
+            config.jumbo,
+            config.jumbo_multiplier,
+            config.share_jumbo_layers,
+            enable_genus_classification=enable_genus_classification,
+            jumbo_source=jumbo_source
+        )
 
     elif config.arch == "transformer":
         decoder_config = None
         if config.jumbo:
-            print("Using JumboBertForTokenClassification")
-            model = create_jumbo_transformer_model(bert_config, config.jumbo_multiplier, config.share_jumbo_layers)
+            enable_genus_classification = config.enable_genus_classification if hasattr(config, 'enable_genus_classification') else False
+            if enable_genus_classification:
+                print("Using JumboBertForTokenClassification with Taxonomy Classification")
+                from barcodebert.jumbo_transformer_with_taxonomy import create_jumbo_transformer_with_taxonomy
+                model = create_jumbo_transformer_with_taxonomy(
+                    bert_config,
+                    config.jumbo_multiplier,
+                    config.share_jumbo_layers,
+                    enable_taxonomy_classification=True
+                )
+            else:
+                print("Using JumboBertForTokenClassification")
+                model = create_jumbo_transformer_model(bert_config, config.jumbo_multiplier, config.share_jumbo_layers)
         else:
             model = BertForTokenClassification(bert_config)
 
@@ -868,6 +895,9 @@ def train_one_epoch(
     acc_epoch = 0
     acc_kpt_epoch = 0
     acc_all_epoch = 0
+    genus_loss_epoch = 0
+    genus_acc_epoch = 0
+    genus_pairs_epoch = 0
 
     base_pairs = "ACGT"
     if config.predict_n_nucleotide:
@@ -881,7 +911,19 @@ def train_one_epoch(
 
     t_end_batch = time.time()
     t_start_wandb = t_end_wandb = None
-    for batch_idx, (sequences, y_true, att_mask) in enumerate(dataloader):
+    enable_genus_classification = config.enable_genus_classification if hasattr(config, 'enable_genus_classification') else False
+    taxonomy_level = config.taxonomy_level_for_classification if hasattr(config, 'taxonomy_level_for_classification') else "genus"
+    # Capitalize for display
+    taxonomy_level_display = taxonomy_level.capitalize()
+
+    for batch_idx, batch_data in enumerate(dataloader):
+        # Unpack batch data (may include genus labels if enabled)
+        if enable_genus_classification:
+            sequences, y_true, att_mask, genus_labels = batch_data
+        else:
+            sequences, y_true, att_mask = batch_data
+            genus_labels = None
+
         # Skip batches we already processed
         if epoch == start_epoch and batch_idx < start_step_in_epoch:
             continue
@@ -892,6 +934,8 @@ def train_one_epoch(
         # Move training inputs and targets to the GPU
         sequences = sequences.to(device)
         att_mask = att_mask.to(device)
+        if genus_labels is not None:
+            genus_labels = genus_labels.to(device)
 
         # Build the masking on the fly ----------------------------------------
         # t_start_masking = time.time()
@@ -1071,6 +1115,34 @@ def train_one_epoch(
                         out.logits.view(-1, n_output_tokens)[special_tokens_mask.view(-1)],
                         targets.view(-1)[special_tokens_mask.view(-1)],
                     )
+
+        # Taxonomy classification loss (if enabled) ------------------------------
+        taxonomy_loss = None
+        taxonomy_acc = None
+        num_taxonomy_pairs = 0
+        num_same_pairs = 0
+        num_diff_pairs = 0
+
+        if enable_genus_classification and genus_labels is not None:
+            # Check if model has taxonomy classifier and jumbo tokens are available
+            model_deref = model.module if config.distributed else model
+            if hasattr(model_deref, 'taxonomy_classifier') and model_deref.taxonomy_classifier is not None:
+                # Get jumbo tokens from output
+                if hasattr(out, 'jumbo_tokens') and out.jumbo_tokens is not None:
+                    taxonomy_loss, taxonomy_acc, num_taxonomy_pairs, num_same_pairs, num_diff_pairs = compute_taxonomy_classification_loss(
+                        out.jumbo_tokens, genus_labels, model_deref.taxonomy_classifier, same_ratio=0.5
+                    )
+
+                    # Add taxonomy loss to total loss if valid
+                    if taxonomy_loss is not None:
+                        taxonomy_loss_weight = config.genus_loss_weight if hasattr(config, 'genus_loss_weight') else 0.1
+                        loss = loss + taxonomy_loss_weight * taxonomy_loss
+
+        # Keep aliases for backward compatibility in logging
+        genus_loss = taxonomy_loss
+        genus_acc = taxonomy_acc
+        num_genus_pairs = num_taxonomy_pairs
+
         # Backward pass -------------------------------------------------------
         # Reset gradients
         optimizer.zero_grad()
@@ -1142,6 +1214,26 @@ def train_one_epoch(
             masked_loss_epoch += masked_loss_batch
             non_masked_loss_epoch += non_masked_loss_batch
 
+        # Handle genus classification metrics
+        if genus_loss is not None and genus_acc is not None:
+            genus_loss_batch = genus_loss.clone()
+            genus_acc_batch = genus_acc.clone()
+
+            if config.distributed:
+                # Fetch results from other GPUs
+                dist.reduce(genus_loss_batch, 0, op=dist.ReduceOp.AVG)
+                dist.reduce(genus_acc_batch, 0, op=dist.ReduceOp.AVG)
+
+            genus_loss_batch_val = genus_loss_batch.item()
+            genus_acc_batch_val = 100.0 * genus_acc_batch.item()
+
+            genus_loss_epoch += genus_loss_batch_val
+            genus_acc_epoch += genus_acc_batch_val
+            genus_pairs_epoch += num_genus_pairs
+        else:
+            genus_loss_batch_val = None
+            genus_acc_batch_val = None
+
         with torch.no_grad():
             x_pred = torch.argmax(out.logits, dim=-1)
 
@@ -1194,27 +1286,35 @@ def train_one_epoch(
         # Log to console
         if batch_idx <= 2 or batch_idx % config.print_interval == 0 or batch_idx >= len(dataloader) - 1:
             if config.separate_loss:
-                print(
-                    f"Train Epoch:{epoch:3d}" + (f"/{n_epoch}" if n_epoch is not None else ""),
-                    " Step:{:6d}/{}".format(batch_idx + 1, len(dataloader)),
-                    " LossMask:{:8.5f}".format(masked_loss_batch),
-                    " LossSeen:{:8.5f}".format(non_masked_loss_batch),
-                    " Loss:{:8.5f}".format(loss_batch),
-                    " AccMask:{:6.2f}%".format(acc_msk),
-                    " AccSeen:{:6.2f}%".format(acc_kpt),
-                    " LR: {}".format(scheduler.get_last_lr()),
-                    flush=True,
+                log_msg = (
+                    f"Train Epoch:{epoch:3d}" + (f"/{n_epoch}" if n_epoch is not None else "")
+                    + " Step:{:6d}/{}".format(batch_idx + 1, len(dataloader))
+                    + " LossMask:{:8.5f}".format(masked_loss_batch)
+                    + " LossSeen:{:8.5f}".format(non_masked_loss_batch)
+                    + " Loss:{:8.5f}".format(loss_batch)
+                    + " AccMask:{:6.2f}%".format(acc_msk)
+                    + " AccSeen:{:6.2f}%".format(acc_kpt)
                 )
+                if genus_loss_batch_val is not None:
+                    log_msg += f" {taxonomy_level_display}Loss:{{:7.4f}} {taxonomy_level_display}Acc:{{:5.1f}}% Pairs:{{}}({{}}/{{}}same/diff)".format(
+                        genus_loss_batch_val, genus_acc_batch_val, num_genus_pairs, num_same_pairs, num_diff_pairs
+                    )
+                log_msg += " LR: {}".format(scheduler.get_last_lr())
+                print(log_msg, flush=True)
             else:
-                print(
-                    f"Train Epoch:{epoch:3d}" + (f"/{n_epoch}" if n_epoch is not None else ""),
-                    " Step:{:6d}/{}".format(batch_idx + 1, len(dataloader)),
-                    " Loss:{:8.5f}".format(loss_batch),
-                    " AccMask:{:6.2f}%".format(acc_msk),
-                    " AccSeen:{:6.2f}%".format(acc_kpt),
-                    " LR: {}".format(scheduler.get_last_lr()),
-                    flush=True,
+                log_msg = (
+                    f"Train Epoch:{epoch:3d}" + (f"/{n_epoch}" if n_epoch is not None else "")
+                    + " Step:{:6d}/{}".format(batch_idx + 1, len(dataloader))
+                    + " Loss:{:8.5f}".format(loss_batch)
+                    + " AccMask:{:6.2f}%".format(acc_msk)
+                    + " AccSeen:{:6.2f}%".format(acc_kpt)
                 )
+                if genus_loss_batch_val is not None:
+                    log_msg += f" {taxonomy_level_display}Loss:{{:7.4f}} {taxonomy_level_display}Acc:{{:5.1f}}% Pairs:{{}}({{}}/{{}}same/diff)".format(
+                        genus_loss_batch_val, genus_acc_batch_val, num_genus_pairs, num_same_pairs, num_diff_pairs
+                    )
+                log_msg += " LR: {}".format(scheduler.get_last_lr())
+                print(log_msg, flush=True)
 
         # Saving the model every 2000 steps
         if total_step > 0 and (total_step % save_every_steps == 0) and config.global_rank == 0:
@@ -1306,6 +1406,15 @@ def train_one_epoch(
                     "Pretraining/stepwise/Train/mask_ratio_random_token": actual_random_token,
                     "Pretraining/stepwise/Train/mask_ratio_original_token": actual_original_token,
                 }
+            # Add taxonomy classification metrics if available
+            if genus_loss_batch_val is not None:
+                # Use dynamic taxonomy level in logging keys
+                log_dict[f"Pretraining/stepwise/{taxonomy_level_display}/loss"] = genus_loss_batch_val
+                log_dict[f"Pretraining/stepwise/{taxonomy_level_display}/accuracy"] = genus_acc_batch_val
+                log_dict[f"Pretraining/stepwise/{taxonomy_level_display}/num_pairs"] = num_genus_pairs
+                log_dict[f"Pretraining/stepwise/{taxonomy_level_display}/num_same_pairs"] = num_same_pairs
+                log_dict[f"Pretraining/stepwise/{taxonomy_level_display}/num_diff_pairs"] = num_diff_pairs
+
             # Track the learning rate of each parameter group
             for lr_idx in range(len(optimizer.param_groups)):
                 if "name" in optimizer.param_groups[lr_idx]:
@@ -1355,6 +1464,13 @@ def train_one_epoch(
             "accuracy_unmasked": acc_kpt_epoch / (batch_idx + 1),
             "accuracy_overall": acc_all_epoch / (batch_idx + 1),
         }
+
+    # Add taxonomy classification metrics if any pairs were created
+    if genus_pairs_epoch > 0:
+        # Use dynamic taxonomy level in result keys
+        results[f"{taxonomy_level}_loss"] = genus_loss_epoch / (batch_idx + 1)
+        results[f"{taxonomy_level}_accuracy"] = genus_acc_epoch / (batch_idx + 1)
+        results[f"{taxonomy_level}_pairs"] = genus_pairs_epoch
 
     return results, total_step, n_samples_seen
 
@@ -1927,6 +2043,43 @@ def get_parser():
         type=int,
         default=6,
         help="Multiplier for the number of CLS tokens in Jumbo CLS model. Default: %(default)s",
+    )
+
+    group.add_argument(
+        "--jumbo-source",
+        "--jumbo_source",
+        dest="jumbo_source",
+        type=str,
+        default="encoder",
+        choices=["encoder", "decoder"],
+        help="Source of jumbo tokens for taxonomy classification: 'encoder' (direct from encoder) or 'decoder' (encoder jumbo tokens after being processed through decoder). Default: %(default)s. Requires --enable-taxonomy-classification and --jumbo."
+    )
+
+    group.add_argument(
+        "--enable-taxonomy-classification",
+        "--enable_taxonomy_classification",
+        dest="enable_genus_classification",
+        action="store_true",
+        help="Enable taxonomy classification head for Jumbo CLS tokens during pretraining. Requires --jumbo flag. Use --taxonomy-level to specify the taxonomic level and --jumbo-source to choose between encoder or decoder-processed jumbo tokens."
+    )
+
+    group.add_argument(
+        "--taxonomy-level",
+        "--taxonomy_level",
+        dest="taxonomy_level_for_classification",
+        type=str,
+        default="genus",
+        choices=["phylum", "class", "order", "family", "genus", "species"],
+        help="Taxonomic level for binary classification task. Default: %(default)s",
+    )
+
+    group.add_argument(
+        "--taxonomy-loss-weight",
+        "--taxonomy_loss_weight",
+        dest="genus_loss_weight",
+        type=float,
+        default=0.1,
+        help="Weight for taxonomy classification loss. Default: %(default)s",
     )
 
     # Output checkpoint args --------------------------------------------------

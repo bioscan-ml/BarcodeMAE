@@ -145,11 +145,11 @@ def run(config):
     # Generate emebddings for the training and test sets
     print("Generating embeddings for test set", flush=True)
     X_unseen, y_unseen, orders = representations_from_df(
-        df_test, config.target_level, model, tokenizer, config.dataset_name, config.mode, config.mask_rate
+        df_test, config.target_level, model, tokenizer, config.dataset_name, config.mode, config.mask_rate, config.jumbo
     )
     print("Generating embeddings for train set", flush=True)
     X, y, train_orders = representations_from_df(
-        df_train, config.target_level, model, tokenizer, config.dataset_name, config.mode, config.mask_rate
+        df_train, config.target_level, model, tokenizer, config.dataset_name, config.mode, config.mask_rate, config.jumbo
     )
     timing_stats["embed"] = time.time() - t_start_embed
 
