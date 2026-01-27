@@ -64,11 +64,8 @@ class MAELMModel(nn.Module):
                 jumbo_dim = decoder_config.hidden_size * jumbo_multiplier
 
             self.taxonomy_classifier = JumboTaxonomyClassifier(jumbo_dim=jumbo_dim)
-            # Keep genus_classifier as alias for backward compatibility
-            self.genus_classifier = self.taxonomy_classifier
         else:
             self.taxonomy_classifier = None
-            self.genus_classifier = None
 
     def forward(self, input_ids, attention_mask, mask_positions, model_type="maelm_v2"):
         if model_type == "maelm_v2":
@@ -243,3 +240,8 @@ class MAELMModel(nn.Module):
         )
 
         return outputs
+
+    @property
+    def genus_classifier(self):
+        """Backward compatibility alias for taxonomy_classifier."""
+        return self.taxonomy_classifier

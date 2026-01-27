@@ -675,6 +675,14 @@ def run(config):
         print(f"  Throughput .........{train_stats['throughput']:11.2f} samples/sec")
         print(f"  Loss ...............{train_stats['loss']:14.5f}")
         print(f"  Accuracy ...........{train_stats['accuracy']:11.2f} %")
+
+        # Print taxonomy classification metrics if available
+        taxonomy_level_display = taxonomy_level.capitalize()
+        if f"{taxonomy_level}_loss" in train_stats:
+            print(f"  {taxonomy_level_display} Loss .........{train_stats[f'{taxonomy_level}_loss']:14.5f}")
+            print(f"  {taxonomy_level_display} Accuracy .....{train_stats[f'{taxonomy_level}_accuracy'] * 100:11.2f} %")
+            print(f"  {taxonomy_level_display} Pairs ........{train_stats[f'{taxonomy_level}_pairs']:8d}")
+
         print(flush=True)
 
         # Validate ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -715,6 +723,12 @@ def run(config):
         print(f"  Throughput .........{eval_stats['throughput']:11.2f} samples/sec")
         print(f"  Loss ...............{eval_stats['loss']:14.5f}")
         print(f"  Accuracy ...........{eval_stats['accuracy']:11.2f} %")
+
+        # Print taxonomy classification metrics if available
+        if f"{taxonomy_level}_loss" in eval_stats:
+            print(f"  {taxonomy_level_display} Loss .........{eval_stats[f'{taxonomy_level}_loss']:14.5f}")
+            print(f"  {taxonomy_level_display} Accuracy .....{eval_stats[f'{taxonomy_level}_accuracy'] * 100:11.2f} %")
+            print(f"  {taxonomy_level_display} Pairs ........{eval_stats[f'{taxonomy_level}_pairs']:8d}")
 
         # Save model ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         t_start_save = time.time()
@@ -2092,7 +2106,7 @@ def get_parser():
         "--jumbo_source",
         dest="jumbo_source",
         type=str,
-        default="encoder",
+        default="decoder",
         choices=["encoder", "decoder"],
         help=(
             "Source of jumbo tokens for taxonomy classification: 'encoder' (direct from encoder) or "

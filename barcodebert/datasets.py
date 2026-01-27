@@ -181,7 +181,18 @@ class DNADataset(Dataset):
             if self.return_taxonomy_level:
                 taxonomy_column = f"{self.return_taxonomy_level}_name"
                 if taxonomy_column in df.columns:
-                    self.taxonomy_labels, self.taxonomy_label_set = pd.factorize(df[taxonomy_column], sort=True)
+                    # Replace empty strings and NaN with 'UNKNOWN'
+                    taxonomy_col = df[taxonomy_column].replace("", "UNKNOWN").fillna("UNKNOWN")
+                    self.taxonomy_labels, self.taxonomy_label_set = pd.factorize(taxonomy_col, sort=True)
+                    # Map 'UNKNOWN' samples to -1 so they're excluded from pair creation
+                    unknown_mask = taxonomy_col == "UNKNOWN"
+                    num_unknown = unknown_mask.sum()
+                    self.taxonomy_labels = [
+                        -1 if is_unknown else label for label, is_unknown in zip(self.taxonomy_labels, unknown_mask)
+                    ]
+                    print(f"Taxonomy labels: {len(self.taxonomy_labels)} total, {num_unknown} marked as UNKNOWN (-1)")
+                    print(f"Unique taxonomy categories: {self.taxonomy_label_set}")
+
                 else:
                     print(f"Warning: Column '{taxonomy_column}' not found. Using dummy labels.")
                     self.taxonomy_labels = [0] * len(self.labels)
@@ -195,7 +206,17 @@ class DNADataset(Dataset):
             if self.return_taxonomy_level:
                 taxonomy_column = f"{self.return_taxonomy_level}_name"
                 if taxonomy_column in df.columns:
-                    self.taxonomy_labels, self.taxonomy_label_set = pd.factorize(df[taxonomy_column], sort=True)
+                    # Replace empty strings and NaN with 'UNKNOWN'
+                    taxonomy_col = df[taxonomy_column].replace("", "UNKNOWN").fillna("UNKNOWN")
+                    self.taxonomy_labels, self.taxonomy_label_set = pd.factorize(taxonomy_col, sort=True)
+                    # Map 'UNKNOWN' samples to -1 so they're excluded from pair creation
+                    unknown_mask = taxonomy_col == "UNKNOWN"
+                    num_unknown = unknown_mask.sum()
+                    self.taxonomy_labels = [
+                        -1 if is_unknown else label for label, is_unknown in zip(self.taxonomy_labels, unknown_mask)
+                    ]
+                    print(f"Taxonomy labels: {len(self.taxonomy_labels)} total, {num_unknown} marked as UNKNOWN (-1)")
+                    print(f"Unique taxonomy categories: {self.taxonomy_label_set}")
                 else:
                     print(f"Warning: Column '{taxonomy_column}' not found. Using dummy labels.")
                     self.taxonomy_labels = [0] * len(self.labels)

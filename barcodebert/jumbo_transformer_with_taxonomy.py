@@ -37,11 +37,8 @@ class JumboTransformerWithTaxonomy(nn.Module):
         if self.enable_taxonomy_classification:
             jumbo_dim = bert_config.hidden_size * jumbo_multiplier
             self.taxonomy_classifier = JumboTaxonomyClassifier(jumbo_dim=jumbo_dim)
-            # Alias for backward compatibility
-            self.genus_classifier = self.taxonomy_classifier
         else:
             self.taxonomy_classifier = None
-            self.genus_classifier = None
 
     def forward(
         self, input_ids=None, attention_mask=None, token_type_ids=None, position_ids=None, inputs_embeds=None, **kwargs
@@ -87,6 +84,11 @@ class JumboTransformerWithTaxonomy(nn.Module):
     def bert(self):
         """Return the BERT model from the underlying transformer for compatibility."""
         return self.transformer.bert
+
+    @property
+    def genus_classifier(self):
+        """Backward compatibility alias for taxonomy_classifier."""
+        return self.taxonomy_classifier
 
 
 def create_jumbo_transformer_with_taxonomy(
