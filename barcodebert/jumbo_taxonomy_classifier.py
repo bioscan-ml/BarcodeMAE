@@ -80,7 +80,7 @@ def create_taxonomy_pairs(taxonomy_labels, same_ratio=0.5, debug_print=False):
     if debug_print:
         num_invalid = (taxonomy_labels < 0).sum().item()
         num_valid = valid_mask.sum().item()
-        print(f"\n[Taxonomy Pairs Debug]")
+        print("\n[Taxonomy Pairs Debug]")
         print(f"  Total sequences in batch: {batch_size}")
         print(f"  Valid genus labels: {num_valid}")
         print(f"  Invalid genus labels (skipped): {num_invalid}")
@@ -90,7 +90,7 @@ def create_taxonomy_pairs(taxonomy_labels, same_ratio=0.5, debug_print=False):
     # If no valid labels, can't create pairs
     if len(valid_indices) == 0:
         if debug_print:
-            print(f"  WARNING: No sequences with valid genus labels in this batch!")
+            print(" WARNING: No sequences with valid genus labels in this batch!")
         return None, None, None, 0, 0
 
     # Work only with valid taxonomy labels
@@ -117,7 +117,7 @@ def create_taxonomy_pairs(taxonomy_labels, same_ratio=0.5, debug_print=False):
         if counts[0] < 2:
             # Single sample, can't make any pairs
             if debug_print:
-                print(f"  WARNING: Only one genus group with single sample. Cannot create pairs.")
+                print("  WARNING: Only one genus group with single sample. Cannot create pairs.")
             return None, None, None, 0, 0
         # Make all pairs from same taxonomic group
         num_pairs = valid_batch_size // 2
@@ -188,7 +188,7 @@ def create_taxonomy_pairs(taxonomy_labels, same_ratio=0.5, debug_print=False):
     # If we couldn't create any pairs, return None
     if len(idx1_list) == 0:
         if debug_print:
-            print(f"  WARNING: Could not create any pairs from valid sequences")
+            print("  WARNING: Could not create any pairs from valid sequences")
         return None, None, None, 0, 0
 
     idx1 = torch.stack(idx1_list).to(device)

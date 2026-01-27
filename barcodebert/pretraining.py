@@ -1155,7 +1155,7 @@ def train_one_epoch(
                 # Get jumbo tokens from output
                 if hasattr(out, "jumbo_tokens") and out.jumbo_tokens is not None:
                     # Enable debug printing for first 3 batches of first epoch
-                    debug_print = (epoch == 1 and batch_idx < 3)
+                    debug_print = epoch == 1 and batch_idx < 3
                     taxonomy_loss, taxonomy_acc, num_taxonomy_pairs, num_same_pairs, num_diff_pairs = (
                         compute_taxonomy_classification_loss(
                             out.jumbo_tokens,
