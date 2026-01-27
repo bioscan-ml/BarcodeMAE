@@ -48,7 +48,7 @@ class JumboTaxonomyClassifier(nn.Module):
         return logits
 
 
-def create_taxonomy_pairs(taxonomy_labels, same_ratio=0.5, debug_print=False):
+def create_taxonomy_pairs(taxonomy_labels, same_ratio=0.5, debug_print=True):
     """
     Create pairs of indices and their labels (same taxonomic group or not).
 
