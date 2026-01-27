@@ -1,6 +1,7 @@
 """
 Datasets.
 """
+
 import json
 import os
 from itertools import product
@@ -217,7 +218,10 @@ class DNADataset(Dataset):
                     ]
                     print(f"Taxonomy labels: {len(self.taxonomy_labels)} total, {num_unknown} marked as UNKNOWN (-1)")
                     print(f"Unique taxonomy categories: {self.taxonomy_label_set.tolist()}")
-                    json.dump(self.taxonomy_label_set.tolist(), open("taxonomy_label_set.json", "w"))
+                    json.dump(
+                        self.taxonomy_label_set.tolist(),
+                        open("/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE/taxonomy_label_set.json", "w"),
+                    )
 
                 else:
                     print(f"Warning: Column '{taxonomy_column}' not found. Using dummy labels.")
