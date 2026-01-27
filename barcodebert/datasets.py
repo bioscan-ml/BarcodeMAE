@@ -193,6 +193,10 @@ class DNADataset(Dataset):
                     ]
                     print(f"Taxonomy labels: {len(self.taxonomy_labels)} total, {num_unknown} marked as UNKNOWN (-1)")
                     print(f"Unique taxonomy categories: {self.taxonomy_label_set}")
+                    json.dump(
+                        self.taxonomy_label_set.tolist(),
+                        open("/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE/taxonomy_label_set.json", "w"),
+                    )
 
                 else:
                     print(f"Warning: Column '{taxonomy_column}' not found. Using dummy labels.")
@@ -218,10 +222,7 @@ class DNADataset(Dataset):
                     ]
                     print(f"Taxonomy labels: {len(self.taxonomy_labels)} total, {num_unknown} marked as UNKNOWN (-1)")
                     print(f"Unique taxonomy categories: {self.taxonomy_label_set.tolist()}")
-                    json.dump(
-                        self.taxonomy_label_set.tolist(),
-                        open("/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE/taxonomy_label_set.json", "w"),
-                    )
+
 
                 else:
                     print(f"Warning: Column '{taxonomy_column}' not found. Using dummy labels.")
