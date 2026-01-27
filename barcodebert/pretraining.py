@@ -1154,9 +1154,15 @@ def train_one_epoch(
             if hasattr(model_deref, "taxonomy_classifier") and model_deref.taxonomy_classifier is not None:
                 # Get jumbo tokens from output
                 if hasattr(out, "jumbo_tokens") and out.jumbo_tokens is not None:
+                    # Enable debug printing for first 3 batches of first epoch
+                    debug_print = (epoch == 1 and batch_idx < 3)
                     taxonomy_loss, taxonomy_acc, num_taxonomy_pairs, num_same_pairs, num_diff_pairs = (
                         compute_taxonomy_classification_loss(
-                            out.jumbo_tokens, genus_labels, model_deref.taxonomy_classifier, same_ratio=0.5
+                            out.jumbo_tokens,
+                            genus_labels,
+                            model_deref.taxonomy_classifier,
+                            same_ratio=0.5,
+                            debug_print=debug_print,
                         )
                     )
 
@@ -1567,12 +1573,23 @@ def evaluate(
         # Default to printing to console every time we log to wandb
         config.print_interval = config.log_interval
 
+    # Check if taxonomy classification is enabled
+    enable_genus_classification = (
+        config.enable_genus_classification if hasattr(config, "enable_genus_classification") else False
+    )
+
     # Set the random seed to be stable for the evaluation
     # (This is stable if you change the batch size, but not if you change the number of GPU workers)
     rng = torch.Generator(device=device).manual_seed(config.global_rank)
 
     with torch.no_grad():
-        for batch_idx, (sequences, _y_true, att_mask) in enumerate(dataloader):
+        for batch_idx, batch_data in enumerate(dataloader):
+            # Unpack batch data (may include genus labels if enabled)
+            if enable_genus_classification:
+                sequences, _y_true, att_mask, _genus_labels = batch_data
+            else:
+                sequences, _y_true, att_mask = batch_data
+
             batch_size_this_gpu = sequences.shape[0]
 
             # Move training inputs and targets to the GPU
