@@ -337,12 +337,15 @@ def representations_from_df(
 
     dna_embeddings = []
 
+    # Get model device robustly (works for all PyTorch models)
+    model_device = next(model.parameters()).device
+
     with torch.no_grad():
         for barcode in df["nucleotides"]:
             x, att_mask = tokenizer(barcode)
 
-            x = x.unsqueeze(0).to(model.device)
-            att_mask = att_mask.unsqueeze(0).to(model.device)
+            x = x.unsqueeze(0).to(model_device)
+            att_mask = att_mask.unsqueeze(0).to(model_device)
 
             # Get model output
             output = model(x, att_mask)
