@@ -9,6 +9,9 @@ import torch
 from transformers import BertConfig, BertForTokenClassification, BertModel
 
 from barcodebert.jumbo_transformer import create_jumbo_transformer_model
+from barcodebert.jumbo_transformer_with_taxonomy import (
+    create_jumbo_transformer_with_taxonomy,
+)
 
 from .utils import remove_extra_pre_fix
 
@@ -82,17 +85,35 @@ def load_pretrained_model(checkpoint_path, device=None):
     print(f"\nLoading model from {checkpoint_path}")
     ckpt = torch.load(checkpoint_path, map_location=device)
     bert_config = BertConfig(**ckpt["bert_config"])
-    if hasattr(ckpt["config"], "jumbo"):
-        if ckpt["config"].jumbo:
-            if hasattr(ckpt["config"], "jumbo_multiplier"):
-                jumbo_multiplier = ckpt["config"].jumbo_multiplier
-            else:
-                jumbo_multiplier = 6
-            model = create_jumbo_transformer_model(bert_config, jumbo_multiplier)
+
+    # Check if this is a jumbo transformer model
+    if hasattr(ckpt["config"], "jumbo") and ckpt["config"].jumbo:
+        # Get jumbo configuration parameters
+        jumbo_multiplier = getattr(ckpt["config"], "jumbo_multiplier", 6)
+        share_jumbo_layers = getattr(ckpt["config"], "share_jumbo_layers", False)
+        enable_genus_classification = getattr(ckpt["config"], "enable_genus_classification", False)
+
+        # Check if taxonomy classification is enabled
+        if enable_genus_classification:
+            print("Loading JumboTransformerWithTaxonomy")
+            model = create_jumbo_transformer_with_taxonomy(
+                bert_config,
+                jumbo_multiplier=jumbo_multiplier,
+                share_jumbo_mlp_across_layers=share_jumbo_layers,
+                enable_taxonomy_classification=True,
+            )
+        else:
+            print("Loading JumboBertForTokenClassification")
+            model = create_jumbo_transformer_model(
+                bert_config, jumbo_multiplier=jumbo_multiplier, share_jumbo_mlp_across_layers=share_jumbo_layers
+            )
     elif ckpt["config"].arch == "maelm":
         model = BertModel(bert_config)
     elif ckpt["config"].arch == "transformer":
         model = BertForTokenClassification(bert_config)
+    else:
+        raise ValueError(f"Unknown model architecture: {ckpt['config'].arch}")
+
     model.load_state_dict(remove_extra_pre_fix(ckpt["model"]))
     model.eval()
     print(f"Loaded model from {checkpoint_path}")
