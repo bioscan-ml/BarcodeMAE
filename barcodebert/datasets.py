@@ -223,7 +223,6 @@ class DNADataset(Dataset):
                     print(f"Taxonomy labels: {len(self.taxonomy_labels)} total, {num_unknown} marked as UNKNOWN (-1)")
                     print(f"Unique taxonomy categories: {self.taxonomy_label_set.tolist()}")
 
-
                 else:
                     print(f"Warning: Column '{taxonomy_column}' not found. Using dummy labels.")
                     self.taxonomy_labels = [0] * len(self.labels)
