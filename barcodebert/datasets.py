@@ -290,8 +290,42 @@ class DNADataset(Dataset):
             return processed_barcode, label, att_mask
 
 
-def representations_from_df(df, target_level, model, tokenizer, dataset_name, mode=None, mask_rate=None):
+def representations_from_df(
+    df, target_level, model, tokenizer, dataset_name, mode=None, mask_rate=None, representation_type="tokens"
+):
+    """
+    Extract representations from DNA sequences in a dataframe.
 
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Dataframe containing DNA sequences
+    target_level : str
+        Taxonomic level to use as labels
+    model : torch.nn.Module
+        Pretrained model
+    tokenizer : Tokenizer
+        Tokenizer for DNA sequences
+    dataset_name : str
+        Dataset name (CANADA-1.5M or BIOSCAN-5M)
+    mode : str, optional
+        Mode (not currently used)
+    mask_rate : float, optional
+        Mask rate (not currently used)
+    representation_type : str, optional
+        Type of representation to extract:
+        - "tokens": Mean pooling of sequence tokens (default, backward compatible)
+        - "jumbo": Jumbo representation from jumbo CLS tokens (if model has jumbo tokens)
+
+    Returns
+    -------
+    latent : np.ndarray
+        Latent representations
+    y : np.ndarray
+        Labels
+    orders : np.ndarray
+        Order names
+    """
     orders = df["order_name"].to_numpy()
     if dataset_name == "CANADA-1.5M":
         _label_set, y = np.unique(df[target_level], return_inverse=True)
@@ -309,25 +343,45 @@ def representations_from_df(df, target_level, model, tokenizer, dataset_name, mo
 
             x = x.unsqueeze(0).to(model.device)
             att_mask = att_mask.unsqueeze(0).to(model.device)
-            x = model(x, att_mask).hidden_states[-1]
-            # previous mean pooling
-            # x = x.mean(1)
-            # dna_embeddings.append(x.cpu().numpy())
 
-            # updated mean pooling to account for the attention mask and padding tokens
-            # sum the embeddings of the tokens (excluding padding tokens)
-            sum_embeddings = (x * att_mask.unsqueeze(-1)).sum(1)  # (batch_size, hidden_size)
-            # sum the attention mask (number of tokens in the sequence without considering the padding tokens)
-            sum_mask = att_mask.sum(1, keepdim=True)
-            # calculate the mean embeddings
-            mean_embeddings = sum_embeddings / sum_mask  # (batch_size, hidden_size)
+            # Get model output
+            output = model(x, att_mask)
 
-            dna_embeddings.append(mean_embeddings.cpu().numpy())
+            # Extract representation based on type
+            if representation_type == "jumbo":
+                # Use jumbo representation if available
+                if hasattr(output, "jumbo_representation"):
+                    embedding = output.jumbo_representation  # (batch_size, J*D)
+                else:
+                    raise ValueError(
+                        "Model does not have jumbo_representation. "
+                        "Use representation_type='tokens' or use a Jumbo transformer model."
+                    )
+            elif representation_type == "tokens":
+                # Use mean pooling of sequence tokens (default behavior)
+                if hasattr(output, "hidden_states"):
+                    hidden_states = output.hidden_states
+                else:
+                    # Fallback for models that return hidden states directly
+                    hidden_states = output[-1] if isinstance(output, tuple) else output
+
+                # Mean pooling accounting for attention mask and padding tokens
+                # Sum the embeddings of the tokens (excluding padding tokens)
+                sum_embeddings = (hidden_states * att_mask.unsqueeze(-1)).sum(1)  # (batch_size, hidden_size)
+                # Sum the attention mask (number of tokens without padding)
+                sum_mask = att_mask.sum(1, keepdim=True)
+                # Calculate the mean embeddings
+                embedding = sum_embeddings / sum_mask  # (batch_size, hidden_size)
+            else:
+                raise ValueError(f"Invalid representation_type: {representation_type}. Must be 'tokens' or 'jumbo'.")
+
+            dna_embeddings.append(embedding.cpu().numpy())
 
     print(f"There are {len(df)} points in the dataset")
+    print(f"Using representation type: {representation_type}")
     latent = np.array(dna_embeddings)
     latent = np.squeeze(latent, 1)
-    print(latent.shape)
+    print(f"Representation shape: {latent.shape}")
     return latent, y, orders
 
 

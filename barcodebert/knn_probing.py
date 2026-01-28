@@ -145,7 +145,14 @@ def run(config):
     # Generate emebddings for the training and test sets
     print("Generating embeddings for test set", flush=True)
     X_unseen, y_unseen, orders = representations_from_df(
-        df_test, config.target_level, model, tokenizer, config.dataset_name, config.mode, config.mask_rate, config.jumbo
+        df_test,
+        config.target_level,
+        model,
+        tokenizer,
+        config.dataset_name,
+        config.mode,
+        config.mask_rate,
+        config.representation_type,
     )
     print("Generating embeddings for train set", flush=True)
     X, y, train_orders = representations_from_df(
@@ -156,7 +163,7 @@ def run(config):
         config.dataset_name,
         config.mode,
         config.mask_rate,
-        config.jumbo,
+        config.representation_type,
     )
     timing_stats["embed"] = time.time() - t_start_embed
 
@@ -329,6 +336,13 @@ def get_parser():
         default=0.5,
         type=float,
         help="Mask rate for masked language model. Default: %(default)s",
+    )
+
+    group.add_argument(
+        "--representation_type",
+        default="tokens",
+        type=str,
+        help="Type of representation to use. Default: %(default)s",
     )
 
     return parser
