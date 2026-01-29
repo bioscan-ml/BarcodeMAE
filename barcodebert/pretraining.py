@@ -17,6 +17,10 @@ from torch.utils.data.distributed import DistributedSampler
 from transformers import BertConfig, BertForTokenClassification
 
 from barcodebert import levenshtein, utils
+from barcodebert.cls_taxonomy_classifier import (
+    CLSTaxonomyClassifier,
+    compute_cls_taxonomy_classification_loss,
+)
 from barcodebert.datasets import DNADataset
 from barcodebert.io import safe_save_model
 from barcodebert.jumbo_taxonomy_classifier import compute_taxonomy_classification_loss
@@ -154,6 +158,16 @@ def run(config):
         config.taxonomy_level_for_classification if hasattr(config, "taxonomy_level_for_classification") else "genus"
     )
 
+    # Check if CLS token taxonomy classification is enabled
+    use_cls_token = config.use_cls_token if hasattr(config, "use_cls_token") else False
+    enable_cls_taxonomy = config.enable_cls_taxonomy if hasattr(config, "enable_cls_taxonomy") else False
+
+    # If CLS taxonomy is enabled, we need the CLS token and taxonomy labels
+    if enable_cls_taxonomy:
+        use_cls_token = True
+        if not enable_genus_classification:
+            enable_genus_classification = True
+
     dataset_args = {
         "k_mer": config.k_mer,
         "stride": config.stride,
@@ -162,7 +176,8 @@ def run(config):
         "bpe_path": config.bpe_path,
         "tokenize_n_nucleotide": config.tokenize_n_nucleotide,
         "dataset_format": config.dataset_name,
-        "return_taxonomy_level": taxonomy_level if enable_genus_classification else None,
+        "return_taxonomy_level": taxonomy_level if (enable_genus_classification or enable_cls_taxonomy) else None,
+        "use_cls_token": use_cls_token,
     }
     if config.dataset_name == "ITS-5M":
         dataset_train = DNADataset(
@@ -358,9 +373,21 @@ def run(config):
         else:
             model = BertForTokenClassification(bert_config)
 
+    # Create CLS taxonomy classifier if enabled -------------------------------
+    cls_taxonomy_classifier = None
+    if enable_cls_taxonomy and use_cls_token:
+        print(f"Creating CLS taxonomy classifier for {taxonomy_level} classification")
+        cls_taxonomy_classifier = CLSTaxonomyClassifier(
+            hidden_dim=bert_config.hidden_size, classifier_hidden_dim=256, dropout=0.1
+        )
+        print(f"CLS taxonomy classifier created with hidden_dim={bert_config.hidden_size}")
+
     # Configure model for distributed training --------------------------------
     print("\nModel architecture:")
     print(model, flush=True)
+    if cls_taxonomy_classifier is not None:
+        print("\nCLS Taxonomy Classifier:")
+        print(cls_taxonomy_classifier, flush=True)
     print()
 
     if not use_cuda:
@@ -372,6 +399,8 @@ def run(config):
         # constructor should always set a single device scope, otherwise
         # DistributedDataParallel will use all available devices.
         model = model.to(device)
+        if cls_taxonomy_classifier is not None:
+            cls_taxonomy_classifier = cls_taxonomy_classifier.to(device)
         torch.cuda.set_device(device)
         model = nn.parallel.DistributedDataParallel(
             model,
@@ -380,6 +409,14 @@ def run(config):
             find_unused_parameters=False,
             static_graph=True,
         )
+        if cls_taxonomy_classifier is not None:
+            cls_taxonomy_classifier = nn.parallel.DistributedDataParallel(
+                cls_taxonomy_classifier,
+                device_ids=[config.local_rank],
+                output_device=config.local_rank,
+                find_unused_parameters=False,
+                static_graph=True,
+            )
         # if hasattr(model, "static_graph"):
         #     model.static_graph = True
         # # Older PyTorch private API:
@@ -390,6 +427,8 @@ def run(config):
         if config.local_rank is not None:
             torch.cuda.set_device(config.local_rank)
         model = model.to(device)
+        if cls_taxonomy_classifier is not None:
+            cls_taxonomy_classifier = cls_taxonomy_classifier.to(device)
 
     # OPTIMIZATION ============================================================
     # Optimizer ---------------------------------------------------------------
@@ -401,9 +440,17 @@ def run(config):
     config.lr = config.lr_relative * config.batch_size / BASE_BATCH_SIZE
 
     # Fetch the constructor of the appropriate optimizer from torch.optim
-    optimizer = getattr(torch.optim, config.optimizer)(
-        model.parameters(), lr=config.lr, weight_decay=config.weight_decay
-    )
+    # Include CLS classifier parameters if it exists
+    if cls_taxonomy_classifier is not None:
+        optimizer_params = [{"params": model.parameters()}, {"params": cls_taxonomy_classifier.parameters()}]
+        optimizer = getattr(torch.optim, config.optimizer)(
+            optimizer_params, lr=config.lr, weight_decay=config.weight_decay
+        )
+        print("Optimizer includes model and CLS taxonomy classifier parameters")
+    else:
+        optimizer = getattr(torch.optim, config.optimizer)(
+            model.parameters(), lr=config.lr, weight_decay=config.weight_decay
+        )
 
     # Scheduler ---------------------------------------------------------------
     # Set up the learning rate scheduler
@@ -559,6 +606,13 @@ def run(config):
         elif scaler is not None:
             print("Scaler state not found in checkpoint, using fresh scaler.")
 
+        # Load CLS taxonomy classifier state if available
+        if cls_taxonomy_classifier is not None and "cls_taxonomy_classifier" in checkpoint:
+            cls_taxonomy_classifier.load_state_dict(checkpoint["cls_taxonomy_classifier"])
+            print("Loaded CLS taxonomy classifier state from checkpoint.")
+        elif cls_taxonomy_classifier is not None:
+            print("CLS taxonomy classifier state not found in checkpoint, using fresh classifier.")
+
         # Verify configs match for MAELM
         if config.arch == "maelm":
             if "decoder_config" in checkpoint:
@@ -650,6 +704,7 @@ def run(config):
             temperature_schedule=temperature_schedule,
             scaler=scaler,
             bert_config=bert_config,
+            cls_taxonomy_classifier=cls_taxonomy_classifier,
             decoder_config=decoder_config,
             best_stats=best_stats,
             start_epoch=start_epoch,
@@ -741,6 +796,14 @@ def run(config):
                 "optimizer": optimizer,
                 "scheduler": scheduler,
             }
+            # Add CLS taxonomy classifier if it exists
+            if cls_taxonomy_classifier is not None:
+                actual_cls_classifier = (
+                    cls_taxonomy_classifier.module
+                    if hasattr(cls_taxonomy_classifier, "module")
+                    else cls_taxonomy_classifier
+                )
+                save_dict["cls_taxonomy_classifier"] = actual_cls_classifier
             # Add scaler state if using mixed precision
             if scaler is not None:
                 save_dict["scaler"] = scaler
@@ -868,6 +931,7 @@ def train_one_epoch(
     best_stats=None,
     start_epoch=0,
     start_step_in_epoch=0,
+    cls_taxonomy_classifier=None,
 ):
     r"""
     Train the encoder and classifier for one epoch.
@@ -976,7 +1040,7 @@ def train_one_epoch(
         # Build the masking on the fly ----------------------------------------
         # t_start_masking = time.time()
 
-        # Create a mask for allowed tokens i.e. that excludes all special tokens [<MASK>, <UNK>]
+        # Create a mask for allowed tokens i.e. that excludes all special tokens [<MASK>, <UNK>, <CLS>]
         special_tokens_mask = sequences > (n_special_tokens - 1)
 
         if config.tokenize_n_nucleotide:
@@ -984,6 +1048,10 @@ def train_one_epoch(
             # Or exclude all tokens containing Ns i.e "bad kamers" whose index in the vocab
             # is greater than 4**k
             special_tokens_mask &= sequences < (n_special_tokens + n_output_tokens - 1)
+
+        # If using CLS token, exclude position 0 from masking
+        if config.use_cls_token:
+            special_tokens_mask[:, 0] = False
 
         special_tokens_mask = special_tokens_mask.to(device)
         masked_input = sequences.clone()
@@ -1185,6 +1253,44 @@ def train_one_epoch(
                         taxonomy_loss_weight = config.genus_loss_weight if hasattr(config, "genus_loss_weight") else 0.1
                         loss = loss + taxonomy_loss_weight * taxonomy_loss
 
+        # CLS token taxonomy classification loss (if enabled) --------------------
+        cls_taxonomy_loss = None
+        cls_taxonomy_acc = None
+        num_cls_taxonomy_pairs = 0
+        num_cls_same_pairs = 0
+        num_cls_diff_pairs = 0
+
+        if (
+            config.enable_cls_taxonomy
+            and config.use_cls_token
+            and cls_taxonomy_classifier is not None
+            and genus_labels is not None
+        ):
+            # Get hidden states from output
+            if hasattr(out, "hidden_states") and out.hidden_states is not None:
+                # Enable debug printing for first 3 batches of first epoch
+                debug_print = epoch == 1 and batch_idx < 3
+
+                # Dereference classifier if wrapped in DDP
+                cls_classifier_deref = cls_taxonomy_classifier.module if config.distributed else cls_taxonomy_classifier
+
+                cls_taxonomy_loss, cls_taxonomy_acc, num_cls_taxonomy_pairs, num_cls_same_pairs, num_cls_diff_pairs = (
+                    compute_cls_taxonomy_classification_loss(
+                        out.hidden_states,
+                        genus_labels,
+                        cls_classifier_deref,
+                        same_ratio=0.5,
+                        debug_print=debug_print,
+                    )
+                )
+
+                # Add CLS taxonomy loss to total loss if valid
+                if cls_taxonomy_loss is not None:
+                    cls_taxonomy_loss_weight = (
+                        config.cls_taxonomy_loss_weight if hasattr(config, "cls_taxonomy_loss_weight") else 0.1
+                    )
+                    loss = loss + cls_taxonomy_loss_weight * cls_taxonomy_loss
+
         # Keep aliases for backward compatibility in logging
         genus_loss = taxonomy_loss
         genus_acc = taxonomy_acc
@@ -1376,6 +1482,14 @@ def train_one_epoch(
                 "optimizer": optimizer,
                 "scheduler": scheduler,
             }
+            # Add CLS taxonomy classifier if it exists
+            if cls_taxonomy_classifier is not None:
+                actual_cls_classifier = (
+                    cls_taxonomy_classifier.module
+                    if hasattr(cls_taxonomy_classifier, "module")
+                    else cls_taxonomy_classifier
+                )
+                save_dict["cls_taxonomy_classifier"] = actual_cls_classifier
             # Add scaler state if using mixed precision
             if scaler is not None:
                 save_dict["scaler"] = scaler
@@ -1613,7 +1727,7 @@ def evaluate(
             # Build the masking on the fly ----------------------------------------
             # t_start_masking = time.time()
 
-            # Create a mask for allowed tokens i.e. that excludes all special tokens [<MASK>, <UNK>]
+            # Create a mask for allowed tokens i.e. that excludes all special tokens [<MASK>, <UNK>, <CLS>]
             special_tokens_mask = sequences > (n_special_tokens - 1)
 
             if config.tokenize_n_nucleotide:
@@ -1621,6 +1735,10 @@ def evaluate(
                 # Or exclude all tokens containing Ns i.e "bad kamers" whose index in the vocab
                 # is greater than 4**k
                 special_tokens_mask &= sequences < (n_special_tokens + n_output_tokens - 1)
+
+            # If using CLS token, exclude position 0 from masking
+            if config.use_cls_token:
+                special_tokens_mask[:, 0] = False
 
             special_tokens_mask = special_tokens_mask.to(device)
             masked_input = sequences.clone()
@@ -2135,6 +2253,40 @@ def get_parser():
         default="genus",
         choices=["phylum", "class", "order", "family", "genus", "species"],
         help="Taxonomic level for binary classification task. Default: %(default)s",
+    )
+
+    group.add_argument(
+        "--use-cls-token",
+        "--use_cls_token",
+        dest="use_cls_token",
+        action="store_true",
+        help=(
+            "Add [CLS] token (token_id=2) to the beginning of each sequence. "
+            "The CLS token is processed through standard transformer layers (not jumbo MLP). "
+            "Can be used independently or with --enable-cls-taxonomy for taxonomy classification."
+        ),
+    )
+
+    group.add_argument(
+        "--enable-cls-taxonomy",
+        "--enable_cls_taxonomy",
+        dest="enable_cls_taxonomy",
+        action="store_true",
+        help=(
+            "Enable taxonomy classification using CLS token representation. "
+            "Automatically enables --use-cls-token. The CLS token at position 0 is used "
+            "for binary taxonomy classification. Unlike jumbo tokens, CLS tokens are processed "
+            "through standard FFN layers. Use --taxonomy-level to specify taxonomic level."
+        ),
+    )
+
+    group.add_argument(
+        "--cls-taxonomy-loss-weight",
+        "--cls_taxonomy_loss_weight",
+        dest="cls_taxonomy_loss_weight",
+        type=float,
+        default=0.1,
+        help="Weight for CLS token taxonomy classification loss. Default: %(default)s",
     )
 
     group.add_argument(

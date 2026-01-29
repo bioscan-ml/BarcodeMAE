@@ -104,11 +104,13 @@ class DNADataset(Dataset):
         label2id=None,
         return_genus=False,  # Deprecated: use return_taxonomy_level instead
         return_taxonomy_level=None,  # Can be: phylum, class, order, family, genus, species
+        use_cls_token=False,  # Whether to prepend [CLS] token to sequences
     ):
         self.k_mer = k_mer
         self.stride = k_mer if stride is None else stride
         self.max_len = max_len
         self.randomize_offset = randomize_offset
+        self.use_cls_token = use_cls_token
         self.barcodes = []
         self.tax_encoder = None
         self.labels = []
@@ -127,8 +129,9 @@ class DNADataset(Dataset):
         if tokenizer == "kmer":
             # Vocabulary
             base_pairs = "ACGT"
-            self.special_tokens = ["[MASK]", "[UNK]"]  # ["[MASK]", "[CLS]", "[SEP]", "[PAD]", "[EOS]", "[UNK]"]
+            self.special_tokens = ["[MASK]", "[UNK]", "[CLS]"]  # Token IDs: 0=[MASK], 1=[UNK], 2=[CLS]
             UNK_TOKEN = "[UNK]"
+            self.CLS_TOKEN_ID = 2  # [CLS] is at index 2
 
             if tokenize_n_nucleotide:
                 # Encode kmers which contain N differently depending on where it is
@@ -281,6 +284,14 @@ class DNADataset(Dataset):
         else:
             offset = 0
         processed_barcode, att_mask = self.tokenizer(self.barcodes[idx], offset=offset)
+
+        # Prepend [CLS] token if enabled
+        if self.use_cls_token:
+            cls_token = torch.tensor([self.CLS_TOKEN_ID], dtype=processed_barcode.dtype)
+            cls_mask = torch.tensor([1], dtype=att_mask.dtype)
+            processed_barcode = torch.cat([cls_token, processed_barcode])
+            att_mask = torch.cat([cls_mask, att_mask])
+
         label = torch.tensor(self.labels[idx], dtype=torch.int64)
 
         if self.return_taxonomy_level:
@@ -314,8 +325,11 @@ def representations_from_df(
         Mask rate (not currently used)
     representation_type : str, optional
         Type of representation to extract:
-        - "tokens": Mean pooling of sequence tokens (default, backward compatible)
-        - "jumbo": Jumbo representation from jumbo CLS tokens (if model has jumbo tokens)
+        - "tokens": Mean pooling of sequence tokens only (default, backward compatible)
+        - "jumbo": Jumbo representation from jumbo CLS tokens (flattened J*D)
+        - "jumbo_avg": Average of jumbo tokens only (averaged over J tokens)
+        - "all_tokens": Average of ALL tokens (jumbo + sequence tokens)
+        - "cls": CLS token representation from position 0
 
     Returns
     -------
@@ -352,7 +366,7 @@ def representations_from_df(
 
             # Extract representation based on type
             if representation_type == "jumbo":
-                # Use jumbo representation if available
+                # Use jumbo representation if available (flattened J*D)
                 if hasattr(output, "jumbo_representation"):
                     embedding = output.jumbo_representation  # (batch_size, J*D)
                 else:
@@ -360,8 +374,66 @@ def representations_from_df(
                         "Model does not have jumbo_representation. "
                         "Use representation_type='tokens' or use a Jumbo transformer model."
                     )
+
+            elif representation_type == "jumbo_avg":
+                # Average of jumbo tokens only
+                if hasattr(output, "jumbo_tokens") and output.jumbo_tokens is not None:
+                    jumbo_tokens = output.jumbo_tokens  # (batch_size, J, D)
+                    embedding = jumbo_tokens.mean(dim=1)  # (batch_size, D)
+                else:
+                    raise ValueError(
+                        "Model does not have jumbo_tokens. "
+                        "Use representation_type='tokens' or use a Jumbo transformer model."
+                    )
+
+            elif representation_type == "all_tokens":
+                # Average of ALL tokens (jumbo + sequence tokens)
+                if hasattr(output, "jumbo_tokens") and output.jumbo_tokens is not None:
+                    # Model has jumbo tokens - combine jumbo and sequence tokens
+                    jumbo_tokens = output.jumbo_tokens  # (batch_size, J, D)
+
+                    # Get sequence tokens
+                    if hasattr(output, "hidden_states"):
+                        hidden_states = output.hidden_states  # (batch_size, seq_len, D)
+                    else:
+                        hidden_states = output[-1] if isinstance(output, tuple) else output
+
+                    # Concatenate jumbo and sequence tokens
+                    all_tokens = torch.cat([jumbo_tokens, hidden_states], dim=1)  # (batch_size, J+seq_len, D)
+
+                    # Create mask for all tokens (jumbo tokens always have mask=1)
+                    batch_size, num_jumbo, _ = jumbo_tokens.shape
+                    jumbo_mask = torch.ones(batch_size, num_jumbo, device=att_mask.device, dtype=att_mask.dtype)
+                    full_mask = torch.cat([jumbo_mask, att_mask], dim=1)  # (batch_size, J+seq_len)
+
+                    # Mean pooling over all tokens
+                    sum_embeddings = (all_tokens * full_mask.unsqueeze(-1)).sum(1)
+                    sum_mask = full_mask.sum(1, keepdim=True)
+                    embedding = sum_embeddings / sum_mask  # (batch_size, D)
+                else:
+                    # Model doesn't have jumbo tokens - just use sequence tokens
+                    if hasattr(output, "hidden_states"):
+                        hidden_states = output.hidden_states
+                    else:
+                        hidden_states = output[-1] if isinstance(output, tuple) else output
+
+                    sum_embeddings = (hidden_states * att_mask.unsqueeze(-1)).sum(1)
+                    sum_mask = att_mask.sum(1, keepdim=True)
+                    embedding = sum_embeddings / sum_mask
+
+            elif representation_type == "cls":
+                # CLS token representation from position 0
+                if hasattr(output, "hidden_states"):
+                    hidden_states = output.hidden_states  # (batch_size, seq_len, D)
+                else:
+                    # Fallback for models that return hidden states directly
+                    hidden_states = output[-1] if isinstance(output, tuple) else output
+
+                # Extract CLS token at position 0
+                embedding = hidden_states[:, 0, :]  # (batch_size, D)
+
             elif representation_type == "tokens":
-                # Use mean pooling of sequence tokens (default behavior)
+                # Use mean pooling of sequence tokens only (default behavior)
                 if hasattr(output, "hidden_states"):
                     hidden_states = output.hidden_states
                 else:
@@ -375,8 +447,12 @@ def representations_from_df(
                 sum_mask = att_mask.sum(1, keepdim=True)
                 # Calculate the mean embeddings
                 embedding = sum_embeddings / sum_mask  # (batch_size, hidden_size)
+
             else:
-                raise ValueError(f"Invalid representation_type: {representation_type}. Must be 'tokens' or 'jumbo'.")
+                raise ValueError(
+                    f"Invalid representation_type: {representation_type}. "
+                    "Must be one of: 'tokens', 'jumbo', 'jumbo_avg', 'all_tokens', 'cls'."
+                )
 
             dna_embeddings.append(embedding.cpu().numpy())
 
