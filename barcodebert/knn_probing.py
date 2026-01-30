@@ -96,7 +96,11 @@ def run(config):
     if config.tokenizer == "kmer":
         base_pairs = "ACGT"
         # specials = ["[MASK]", "[CLS]", "[SEP]", "[PAD]", "[UNK]"]
-        specials = ["[MASK]", "[UNK]"]
+        if hasattr(config, "use_cls_token") and config.use_cls_token:
+            specials = ["[MASK]", "[UNK]", "[CLS]"]
+        else:
+            specials = ["[MASK]", "[UNK]"]
+
         UNK_TOKEN = "[UNK]"
 
         if config.tokenize_n_nucleotide:
