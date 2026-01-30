@@ -129,9 +129,14 @@ class DNADataset(Dataset):
         if tokenizer == "kmer":
             # Vocabulary
             base_pairs = "ACGT"
-            self.special_tokens = ["[MASK]", "[UNK]", "[CLS]"]  # Token IDs: 0=[MASK], 1=[UNK], 2=[CLS]
+            if use_cls_token:
+                self.special_tokens = ["[MASK]", "[UNK]", "[CLS]"]  # Token IDs: 0=[MASK], 1=[UNK], 2=[CLS]
+                self.CLS_TOKEN_ID = 2  # [CLS] is at index 2
+            else:
+                self.special_tokens = ["[MASK]", "[UNK]"]
+
             UNK_TOKEN = "[UNK]"
-            self.CLS_TOKEN_ID = 2  # [CLS] is at index 2
+
 
             if tokenize_n_nucleotide:
                 # Encode kmers which contain N differently depending on where it is
