@@ -94,7 +94,7 @@ def load_pretrained_model(checkpoint_path, device=None):
         enable_genus_classification = getattr(ckpt["config"], "enable_genus_classification", False)
 
         # Check if taxonomy classification is enabled
-        if enable_genus_classification:
+        if enable_genus_classification and ckpt["config"].arch != "maelm":
             print("Loading JumboTransformerWithTaxonomy")
             model = create_jumbo_transformer_with_taxonomy(
                 bert_config,
