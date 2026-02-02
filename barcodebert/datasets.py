@@ -137,7 +137,6 @@ class DNADataset(Dataset):
 
             UNK_TOKEN = "[UNK]"
 
-
             if tokenize_n_nucleotide:
                 # Encode kmers which contain N differently depending on where it is
                 base_pairs += "N"
