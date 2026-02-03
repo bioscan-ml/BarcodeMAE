@@ -152,7 +152,7 @@ def create_taxonomy_pairs(taxonomy_labels, same_ratio=0.5, max_pairs=64, debug_p
 
 
 def compute_taxonomy_classification_loss(
-    jumbo_tokens, taxonomy_labels, classifier, same_ratio=0.5, max_pairs=64, debug_print=False
+    jumbo_tokens, taxonomy_labels, classifier, same_ratio=0.5, max_pairs=32, debug_print=False
 ):
     """
     Compute binary taxonomy classification loss for a batch.
