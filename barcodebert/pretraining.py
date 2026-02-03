@@ -341,7 +341,7 @@ def run(config):
         enable_genus_classification = (
             config.enable_genus_classification if hasattr(config, "enable_genus_classification") else False
         )
-        jumbo_source = config.jumbo_source if hasattr(config, "jumbo_source") else "decoder"
+        jumbo_source = config.ç if hasattr(config, "jumbo_source") else "decoder"
         model = MAELMModel(
             bert_config,
             decoder_config,

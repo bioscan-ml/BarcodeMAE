@@ -48,161 +48,112 @@ class JumboTaxonomyClassifier(nn.Module):
         return logits
 
 
-def create_taxonomy_pairs(taxonomy_labels, same_ratio=0.5, debug_print=True):
+def create_taxonomy_pairs(taxonomy_labels, same_ratio=0.5, max_pairs=64, debug_print=True):
     """
-    Create pairs of indices and their labels (same taxonomic group or not).
+    Create pairs of indices for taxonomy classification.
 
-    Handles edge cases:
-    - When batch has only one taxonomic group (all samples are same)
-    - When some groups have only single samples
-    - Filters out sequences with invalid taxonomy labels (< 0)
-    - Returns None values if pairing is impossible
+    Enumerates all possible positive (same taxon) and negative (different taxon)
+    pairs, then randomly samples up to max_pairs while preserving same_ratio.
+    If one pool has fewer pairs than its target, the remaining budget is given
+    to the other pool.
 
     Args:
-        taxonomy_labels: Tensor of taxonomic labels at specified level (B,)
-        same_ratio: Ratio of same-taxonomy pairs to create
-        debug_print: If True, print first few genus labels for debugging
+        taxonomy_labels: Tensor of taxonomic labels (B,). Negative values are invalid.
+        same_ratio: Target ratio of positive (same-taxon) pairs. Default: 0.5.
+        max_pairs: Maximum total number of pairs to return. Default: 64.
+        debug_print: If True, print debug info.
 
     Returns:
         idx1: First indices in pairs (num_pairs,) or None if no pairs possible
         idx2: Second indices in pairs (num_pairs,) or None if no pairs possible
-        labels: Binary labels (num_pairs,) - 1 if same taxon, 0 if different, or None
-        num_same: Actual number of same-taxonomy pairs created
-        num_diff: Actual number of different-taxonomy pairs created
+        labels: Binary labels - 1 if same taxon, 0 if different (num_pairs,) or None
+        num_same: Number of positive pairs
+        num_diff: Number of negative pairs
     """
-    batch_size = taxonomy_labels.size(0)
     device = taxonomy_labels.device
 
-    # Filter out invalid taxonomy labels (< 0 indicates missing/unknown genus)
+    # Filter out invalid taxonomy labels (< 0)
     valid_mask = taxonomy_labels >= 0
     valid_indices = torch.where(valid_mask)[0]
+    valid_labels = taxonomy_labels[valid_indices]
+    valid_batch_size = len(valid_indices)
 
     if debug_print:
         num_invalid = (taxonomy_labels < 0).sum().item()
-        num_valid = valid_mask.sum().item()
         print("\n[Taxonomy Pairs Debug]")
-        print(f"  Total sequences in batch: {batch_size}")
-        print(f"  Valid genus labels: {num_valid}")
+        print(f"  Total sequences in batch: {taxonomy_labels.size(0)}")
+        print(f"  Valid genus labels: {valid_batch_size}")
         print(f"  Invalid genus labels (skipped): {num_invalid}")
-        if num_valid > 0:
-            print(f"  First 5 valid genus IDs: {taxonomy_labels[valid_indices[:5]].tolist()}")
+        if valid_batch_size > 0:
+            print(f"  First 5 valid genus IDs: {valid_labels[:5].tolist()}")
 
-    # If no valid labels, can't create pairs
-    if len(valid_indices) == 0:
-        if debug_print:
-            print(" WARNING: No sequences with valid genus labels in this batch!")
-        return None, None, None, 0, 0
-
-    # Work only with valid taxonomy labels
-    valid_taxonomy_labels = taxonomy_labels[valid_indices]
-    valid_batch_size = len(valid_indices)
-
-    # Edge case: batch size < 2
     if valid_batch_size < 2:
         if debug_print:
-            print(f"  WARNING: Only {valid_batch_size} sequence(s) with valid genus labels. Need at least 2.")
+            print(f"  WARNING: Only {valid_batch_size} sequence(s) with valid labels. Need at least 2.")
         return None, None, None, 0, 0
 
-    # Count samples per taxonomic group (among valid labels only)
-    unique_taxa, counts = torch.unique(valid_taxonomy_labels, return_counts=True)
-    num_taxa = len(unique_taxa)
+    # Enumerate all possible pairs (i < j) among valid sequences
+    all_pairs = torch.combinations(torch.arange(valid_batch_size, device=device), r=2)  # (num_all_pairs, 2)
+
+    # Split into positive (same taxon) and negative (different taxon) pools
+    same_mask = valid_labels[all_pairs[:, 0]] == valid_labels[all_pairs[:, 1]]
+    pos_pairs = all_pairs[same_mask]   # (num_pos_possible, 2)
+    neg_pairs = all_pairs[~same_mask]  # (num_neg_possible, 2)
 
     if debug_print:
-        print(f"  Unique genera in valid sequences: {num_taxa}")
-        print(f"  Top 5 most common genera (ID: count): {list(zip(unique_taxa[:5].tolist(), counts[:5].tolist()))}")
+        unique_taxa = torch.unique(valid_labels)
+        print(f"  Unique genera: {len(unique_taxa)}")
+        print(f"  Possible positive pairs: {len(pos_pairs)}, negative pairs: {len(neg_pairs)}")
 
-    # Edge case: only one taxonomic group in batch (all same)
-    if num_taxa == 1:
-        # Can only create same-taxonomy pairs
-        if counts[0] < 2:
-            # Single sample, can't make any pairs
-            if debug_print:
-                print("  WARNING: Only one genus group with single sample. Cannot create pairs.")
-            return None, None, None, 0, 0
-        # Make all pairs from same taxonomic group
-        num_pairs = valid_batch_size // 2
-        # Map back to original indices
-        valid_idx1 = torch.arange(0, num_pairs * 2, 2, device=device)
-        valid_idx2 = torch.arange(1, num_pairs * 2, 2, device=device)
-        idx1 = valid_indices[valid_idx1]
-        idx2 = valid_indices[valid_idx2]
-        labels = torch.ones(num_pairs, dtype=torch.long, device=device)
+    if len(pos_pairs) == 0 and len(neg_pairs) == 0:
         if debug_print:
-            print(f"  Created {num_pairs} same-genus pairs (all sequences from same genus)")
-        return idx1, idx2, labels, num_pairs, 0
-
-    # Calculate how many pairs to create (based on valid batch size)
-    num_same_target = int(valid_batch_size * same_ratio)
-    num_diff_target = valid_batch_size - num_same_target
-
-    idx1_list = []
-    idx2_list = []
-    labels_list = []
-
-    # Create same-taxonomy pairs
-    # Identify which taxonomic groups have 2+ samples
-    taxa_with_pairs = unique_taxa[counts >= 2]
-    num_same_actual = 0
-
-    if len(taxa_with_pairs) > 0:
-        for _ in range(num_same_target * 2):  # Try more times to hit target
-            if num_same_actual >= num_same_target:
-                break
-            # Sample a taxonomic group that has pairs
-            taxon = taxa_with_pairs[torch.randint(len(taxa_with_pairs), (1,))].item()
-            # Find valid indices with this taxon
-            same_taxon_mask = valid_taxonomy_labels == taxon
-            same_taxon_valid_indices = torch.where(same_taxon_mask)[0]
-
-            # Sample two different indices from same taxonomic group
-            perm = torch.randperm(len(same_taxon_valid_indices))[:2]
-            # Map back to original batch indices
-            original_idx1 = valid_indices[same_taxon_valid_indices[perm[0]]]
-            original_idx2 = valid_indices[same_taxon_valid_indices[perm[1]]]
-            idx1_list.append(original_idx1)
-            idx2_list.append(original_idx2)
-            labels_list.append(1)
-            num_same_actual += 1
-
-    # Create different-taxonomy pairs
-    num_diff_actual = 0
-    max_attempts = num_diff_target * 3  # Allow multiple attempts
-
-    for _ in range(max_attempts):
-        if num_diff_actual >= num_diff_target:
-            break
-        # Sample two random indices from valid sequences
-        valid_idx1 = torch.randint(valid_batch_size, (1,), device=device).item()
-        valid_idx2 = torch.randint(valid_batch_size, (1,), device=device).item()
-
-        # Only add if they're from different taxonomic groups and not same index
-        if valid_idx1 != valid_idx2 and valid_taxonomy_labels[valid_idx1] != valid_taxonomy_labels[valid_idx2]:
-            # Map back to original batch indices
-            original_idx1 = valid_indices[valid_idx1]
-            original_idx2 = valid_indices[valid_idx2]
-            idx1_list.append(original_idx1)
-            idx2_list.append(original_idx2)
-            labels_list.append(0)
-            num_diff_actual += 1
-
-    # If we couldn't create any pairs, return None
-    if len(idx1_list) == 0:
-        if debug_print:
-            print("  WARNING: Could not create any pairs from valid sequences")
+            print("  WARNING: No pairs possible.")
         return None, None, None, 0, 0
 
-    idx1 = torch.stack(idx1_list).to(device)
-    idx2 = torch.stack(idx2_list).to(device)
-    labels = torch.tensor(labels_list, dtype=torch.long, device=device)
+    # Compute target counts from same_ratio and max_pairs
+    num_pos_target = int(max_pairs * same_ratio)
+    num_neg_target = max_pairs - num_pos_target
+
+    # Cap each pool at its target, then redistribute leftover budget
+    num_pos = min(num_pos_target, len(pos_pairs))
+    num_neg = min(num_neg_target, len(neg_pairs))
+
+    if num_pos < num_pos_target:
+        # Positive pool exhausted — give remaining budget to negative
+        num_neg = min(len(neg_pairs), max_pairs - num_pos)
+    elif num_neg < num_neg_target:
+        # Negative pool exhausted — give remaining budget to positive
+        num_pos = min(len(pos_pairs), max_pairs - num_neg)
+
+    # Randomly sample from each pool
+    if num_pos > 0:
+        sampled_pos = pos_pairs[torch.randperm(len(pos_pairs), device=device)[:num_pos]]
+    else:
+        sampled_pos = torch.empty(0, 2, dtype=torch.long, device=device)
+
+    if num_neg > 0:
+        sampled_neg = neg_pairs[torch.randperm(len(neg_pairs), device=device)[:num_neg]]
+    else:
+        sampled_neg = torch.empty(0, 2, dtype=torch.long, device=device)
+
+    # Combine and map local indices back to original batch indices
+    sampled_local = torch.cat([sampled_pos, sampled_neg], dim=0)
+    idx1 = valid_indices[sampled_local[:, 0]]
+    idx2 = valid_indices[sampled_local[:, 1]]
+    labels = torch.cat([
+        torch.ones(num_pos, dtype=torch.long, device=device),
+        torch.zeros(num_neg, dtype=torch.long, device=device),
+    ])
 
     if debug_print:
-        print(f"  Successfully created {num_same_actual} same-genus pairs and {num_diff_actual} different-genus pairs")
-        print(f"  Total pairs: {len(labels)}")
+        print(f"  Sampled {num_pos} positive pairs, {num_neg} negative pairs (total: {num_pos + num_neg})")
 
-    return idx1, idx2, labels, num_same_actual, num_diff_actual
+    return idx1, idx2, labels, num_pos, num_neg
 
 
-def compute_taxonomy_classification_loss(jumbo_tokens, taxonomy_labels, classifier, same_ratio=0.5, debug_print=False):
+def compute_taxonomy_classification_loss(
+    jumbo_tokens, taxonomy_labels, classifier, same_ratio=0.5, max_pairs=64, debug_print=False
+):
     """
     Compute binary taxonomy classification loss for a batch.
 
@@ -210,7 +161,8 @@ def compute_taxonomy_classification_loss(jumbo_tokens, taxonomy_labels, classifi
         jumbo_tokens: Jumbo token representations from encoder (B, J, D)
         taxonomy_labels: Taxonomic labels for each sequence at specified level (B,)
         classifier: JumboTaxonomyClassifier instance
-        same_ratio: Ratio of same-taxonomy pairs
+        same_ratio: Target ratio of positive (same-taxon) pairs
+        max_pairs: Maximum total number of pairs to sample
         debug_print: If True, print debugging information about pair creation
 
     Returns:
@@ -227,7 +179,7 @@ def compute_taxonomy_classification_loss(jumbo_tokens, taxonomy_labels, classifi
 
     # Create pairs (filtering out invalid genus labels)
     idx1, idx2, labels, num_same, num_diff = create_taxonomy_pairs(
-        taxonomy_labels, same_ratio=same_ratio, debug_print=debug_print
+        taxonomy_labels, same_ratio=same_ratio, max_pairs=max_pairs, debug_print=debug_print
     )
 
     # Handle case where no pairs could be created
