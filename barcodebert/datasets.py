@@ -397,8 +397,10 @@ def representations_from_df(
                     jumbo_tokens = output.jumbo_tokens  # (batch_size, J, D)
 
                     # Get sequence tokens
-                    if hasattr(output, "hidden_states"):
-                        hidden_states = output.hidden_states  # (batch_size, seq_len, D)
+                    if hasattr(output, "last_hidden_state") and output.last_hidden_state is not None:
+                        hidden_states = output.last_hidden_state
+                    elif hasattr(output, "hidden_states") and output.hidden_states is not None:
+                        hidden_states = output.hidden_states
                     else:
                         hidden_states = output[-1] if isinstance(output, tuple) else output
 
@@ -416,7 +418,9 @@ def representations_from_df(
                     embedding = sum_embeddings / sum_mask  # (batch_size, D)
                 else:
                     # Model doesn't have jumbo tokens - just use sequence tokens
-                    if hasattr(output, "hidden_states"):
+                    if hasattr(output, "last_hidden_state") and output.last_hidden_state is not None:
+                        hidden_states = output.last_hidden_state
+                    elif hasattr(output, "hidden_states") and output.hidden_states is not None:
                         hidden_states = output.hidden_states
                     else:
                         hidden_states = output[-1] if isinstance(output, tuple) else output
@@ -427,10 +431,11 @@ def representations_from_df(
 
             elif representation_type == "cls":
                 # CLS token representation from position 0
-                if hasattr(output, "hidden_states"):
-                    hidden_states = output.hidden_states  # (batch_size, seq_len, D)
+                if hasattr(output, "last_hidden_state") and output.last_hidden_state is not None:
+                    hidden_states = output.last_hidden_state
+                elif hasattr(output, "hidden_states") and output.hidden_states is not None:
+                    hidden_states = output.hidden_states
                 else:
-                    # Fallback for models that return hidden states directly
                     hidden_states = output[-1] if isinstance(output, tuple) else output
 
                 # Extract CLS token at position 0
@@ -438,10 +443,11 @@ def representations_from_df(
 
             elif representation_type == "tokens":
                 # Use mean pooling of sequence tokens only (default behavior)
-                if hasattr(output, "hidden_states"):
+                if hasattr(output, "last_hidden_state") and output.last_hidden_state is not None:
+                    hidden_states = output.last_hidden_state
+                elif hasattr(output, "hidden_states") and output.hidden_states is not None:
                     hidden_states = output.hidden_states
                 else:
-                    # Fallback for models that return hidden states directly
                     hidden_states = output[-1] if isinstance(output, tuple) else output
 
                 # Mean pooling accounting for attention mask and padding tokens
