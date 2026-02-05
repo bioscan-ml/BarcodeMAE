@@ -97,7 +97,7 @@ def create_taxonomy_pairs(taxonomy_labels, same_ratio=0.5, max_pairs=64, debug_p
 
     # Split into positive (same taxon) and negative (different taxon) pools
     same_mask = valid_labels[all_pairs[:, 0]] == valid_labels[all_pairs[:, 1]]
-    pos_pairs = all_pairs[same_mask]   # (num_pos_possible, 2)
+    pos_pairs = all_pairs[same_mask]  # (num_pos_possible, 2)
     neg_pairs = all_pairs[~same_mask]  # (num_neg_possible, 2)
 
     if debug_print:
@@ -140,10 +140,12 @@ def create_taxonomy_pairs(taxonomy_labels, same_ratio=0.5, max_pairs=64, debug_p
     sampled_local = torch.cat([sampled_pos, sampled_neg], dim=0)
     idx1 = valid_indices[sampled_local[:, 0]]
     idx2 = valid_indices[sampled_local[:, 1]]
-    labels = torch.cat([
-        torch.ones(num_pos, dtype=torch.long, device=device),
-        torch.zeros(num_neg, dtype=torch.long, device=device),
-    ])
+    labels = torch.cat(
+        [
+            torch.ones(num_pos, dtype=torch.long, device=device),
+            torch.zeros(num_neg, dtype=torch.long, device=device),
+        ]
+    )
 
     if debug_print:
         print(f"  Sampled {num_pos} positive pairs, {num_neg} negative pairs (total: {num_pos + num_neg})")

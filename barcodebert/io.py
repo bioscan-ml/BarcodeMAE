@@ -12,7 +12,6 @@ from barcodebert.jumbo_transformer import create_jumbo_transformer_model
 from barcodebert.jumbo_transformer_with_taxonomy import (
     create_jumbo_transformer_with_taxonomy,
 )
-
 from .utils import remove_extra_pre_fix
 
 PACKAGE_DIR = os.path.dirname(os.path.abspath(getsourcefile(lambda: 0)))
@@ -114,7 +113,13 @@ def load_pretrained_model(checkpoint_path, device=None):
     else:
         raise ValueError(f"Unknown model architecture: {ckpt['config'].arch}")
 
-    model.load_state_dict(remove_extra_pre_fix(ckpt["model"]))
+    state_dict = remove_extra_pre_fix(ckpt["model"])
+
+    # Full MAELMModel checkpoint: extract only encoder weights
+    if ckpt["config"].arch == "maelm" and "decoder_config" in ckpt:
+        state_dict = {k[len("encoder.") :]: v for k, v in state_dict.items() if k.startswith("encoder.")}
+
+    model.load_state_dict(state_dict)
     model.eval()
     print(f"Loaded model from {checkpoint_path}")
     return model, ckpt
