@@ -735,7 +735,7 @@ def run(config):
         taxonomy_level_display = taxonomy_level.capitalize()
         if f"{taxonomy_level}_loss" in train_stats:
             print(f"  {taxonomy_level_display} Loss .........{train_stats[f'{taxonomy_level}_loss']:14.5f}")
-            print(f"  {taxonomy_level_display} Accuracy .....{train_stats[f'{taxonomy_level}_accuracy'] * 100:11.2f} %")
+            print(f"  {taxonomy_level_display} Accuracy .....{train_stats[f'{taxonomy_level}_accuracy']:11.2f} %")
             print(f"  {taxonomy_level_display} Pairs ........{train_stats[f'{taxonomy_level}_pairs']:8d}")
 
         print(flush=True)
