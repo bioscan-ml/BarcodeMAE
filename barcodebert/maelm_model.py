@@ -17,6 +17,8 @@ class MAELMModel(nn.Module):
         share_jumbo_layers,
         enable_genus_classification=False,
         jumbo_source="encoder",
+        pool_jumbo_for_taxonomy=False,
+        taxonomy_pool_type="mean",
     ):
         super(MAELMModel, self).__init__()
         # Encoder BERT model
@@ -26,6 +28,8 @@ class MAELMModel(nn.Module):
         self.share_jumbo_layers = share_jumbo_layers
         self.enable_genus_classification = enable_genus_classification
         self.jumbo_source = jumbo_source  # "encoder" or "decoder"
+        self.pool_jumbo_for_taxonomy = pool_jumbo_for_taxonomy
+        self.taxonomy_pool_type = taxonomy_pool_type
 
         # Validate jumbo_source configuration
         if self.jumbo_source not in ["encoder", "decoder"]:
@@ -59,11 +63,23 @@ class MAELMModel(nn.Module):
             # Determine the hidden size based on jumbo source
             # Both use the same dimension since decoder processes encoder's jumbo tokens
             if self.jumbo_source == "encoder":
-                jumbo_dim = encoder_config.hidden_size * jumbo_multiplier
+                if pool_jumbo_for_taxonomy:
+                    # When pooling, use single token dimension (D), not flattened (J*D)
+                    jumbo_dim = encoder_config.hidden_size
+                else:
+                    # When not pooling, use flattened dimension (J*D)
+                    jumbo_dim = encoder_config.hidden_size * jumbo_multiplier
             else:  # decoder - uses decoder's hidden size since jumbo tokens were projected
-                jumbo_dim = decoder_config.hidden_size * jumbo_multiplier
+                if pool_jumbo_for_taxonomy:
+                    jumbo_dim = decoder_config.hidden_size
+                else:
+                    jumbo_dim = decoder_config.hidden_size * jumbo_multiplier
 
-            self.taxonomy_classifier = JumboTaxonomyClassifier(jumbo_dim=jumbo_dim)
+            self.taxonomy_classifier = JumboTaxonomyClassifier(
+                jumbo_dim=jumbo_dim,
+                pool_jumbo=pool_jumbo_for_taxonomy,
+                pool_type=taxonomy_pool_type,
+            )
         else:
             self.taxonomy_classifier = None
 

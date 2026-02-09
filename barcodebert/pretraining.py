@@ -342,6 +342,9 @@ def run(config):
             config.enable_genus_classification if hasattr(config, "enable_genus_classification") else False
         )
         jumbo_source = config.jumbo_source if hasattr(config, "jumbo_source") else "decoder"
+        pool_jumbo_for_taxonomy = config.pool_jumbo_for_taxonomy if hasattr(config, "pool_jumbo_for_taxonomy") else False
+        taxonomy_pool_type = config.taxonomy_pool_type if hasattr(config, "taxonomy_pool_type") else "mean"
+
         model = MAELMModel(
             bert_config,
             decoder_config,
@@ -350,6 +353,8 @@ def run(config):
             config.share_jumbo_layers,
             enable_genus_classification=enable_genus_classification,
             jumbo_source=jumbo_source,
+            pool_jumbo_for_taxonomy=pool_jumbo_for_taxonomy,
+            taxonomy_pool_type=taxonomy_pool_type,
         )
 
     elif config.arch == "transformer":
@@ -440,17 +445,57 @@ def run(config):
     config.lr = config.lr_relative * config.batch_size / BASE_BATCH_SIZE
 
     # Fetch the constructor of the appropriate optimizer from torch.optim
-    # Include CLS classifier parameters if it exists
-    if cls_taxonomy_classifier is not None:
-        optimizer_params = [{"params": model.parameters()}, {"params": cls_taxonomy_classifier.parameters()}]
-        optimizer = getattr(torch.optim, config.optimizer)(
-            optimizer_params, lr=config.lr, weight_decay=config.weight_decay
-        )
-        print("Optimizer includes model and CLS taxonomy classifier parameters")
+    # Set up parameter groups with potentially different learning rates
+    optimizer_params = []
+
+    # Check if we have a taxonomy classifier inside the model (Jumbo-based)
+    model_deref = model.module if hasattr(model, "module") else model
+    has_model_taxonomy_classifier = (
+        hasattr(model_deref, "taxonomy_classifier") and model_deref.taxonomy_classifier is not None
+    )
+
+    # Determine if we should use separate LR for taxonomy classifier
+    use_separate_taxonomy_lr = (
+        hasattr(config, "taxonomy_classifier_lr")
+        and config.taxonomy_classifier_lr is not None
+        and (has_model_taxonomy_classifier or cls_taxonomy_classifier is not None)
+    )
+
+    if use_separate_taxonomy_lr:
+        # Separate learning rates for main model and taxonomy classifier(s)
+        taxonomy_lr = config.taxonomy_classifier_lr
+
+        if has_model_taxonomy_classifier:
+            # Exclude taxonomy_classifier parameters from main model params
+            main_model_params = [p for n, p in model.named_parameters() if "taxonomy_classifier" not in n]
+            taxonomy_classifier_params = list(model_deref.taxonomy_classifier.parameters())
+
+            optimizer_params.append({"params": main_model_params, "lr": config.lr, "name": "main_model"})
+            optimizer_params.append(
+                {"params": taxonomy_classifier_params, "lr": taxonomy_lr, "name": "taxonomy_classifier"}
+            )
+            print(f"Using separate LR: main_model={config.lr:.2e}, taxonomy_classifier={taxonomy_lr:.2e}")
+        else:
+            # No taxonomy classifier in model, just use main model params
+            optimizer_params.append({"params": model.parameters(), "lr": config.lr, "name": "main_model"})
+
+        # Add CLS taxonomy classifier if it exists
+        if cls_taxonomy_classifier is not None:
+            optimizer_params.append(
+                {"params": cls_taxonomy_classifier.parameters(), "lr": taxonomy_lr, "name": "cls_taxonomy_classifier"}
+            )
+            print(f"CLS taxonomy classifier using LR: {taxonomy_lr:.2e}")
+
     else:
-        optimizer = getattr(torch.optim, config.optimizer)(
-            model.parameters(), lr=config.lr, weight_decay=config.weight_decay
-        )
+        # Same learning rate for all parameters (original behavior)
+        if cls_taxonomy_classifier is not None:
+            optimizer_params = [{"params": model.parameters()}, {"params": cls_taxonomy_classifier.parameters()}]
+            print("Optimizer includes model and CLS taxonomy classifier parameters (same LR)")
+        else:
+            optimizer_params = [{"params": model.parameters()}]
+
+    # Create optimizer
+    optimizer = getattr(torch.optim, config.optimizer)(optimizer_params, lr=config.lr, weight_decay=config.weight_decay)
 
     # Scheduler ---------------------------------------------------------------
     # Set up the learning rate scheduler
@@ -2224,12 +2269,53 @@ def get_parser():
         "--jumbo_source",
         dest="jumbo_source",
         type=str,
-        default="decoder",
+        default="encoder",
         choices=["encoder", "decoder"],
         help=(
             "Source of jumbo tokens for taxonomy classification: 'encoder' (direct from encoder) or "
             "'decoder' (encoder jumbo tokens after being processed through decoder). "
             "Default: %(default)s. Requires --enable-taxonomy-classification and --jumbo."
+        ),
+    )
+
+    group.add_argument(
+        "--pool-jumbo-for-taxonomy",
+        "--pool_jumbo_for_taxonomy",
+        dest="pool_jumbo_for_taxonomy",
+        action="store_true",
+        help=(
+            "Pool jumbo tokens (via mean or max) before taxonomy classification instead of concatenating. "
+            "This dramatically reduces taxonomy classifier parameters (e.g., 393K vs 2.36M for jumbo=6), "
+            "improving training stability with large datasets. Recommended for jumbo_multiplier >= 4. "
+            "Default: False (concatenate all jumbo tokens)"
+        ),
+    )
+
+    group.add_argument(
+        "--taxonomy-pool-type",
+        "--taxonomy_pool_type",
+        dest="taxonomy_pool_type",
+        type=str,
+        default="mean",
+        choices=["mean", "max"],
+        help=(
+            "Pooling type for jumbo tokens when --pool-jumbo-for-taxonomy is enabled. "
+            "'mean' averages across jumbo tokens, 'max' takes maximum. "
+            "Default: %(default)s"
+        ),
+    )
+
+    group.add_argument(
+        "--taxonomy-classifier-lr",
+        "--taxonomy_classifier_lr",
+        dest="taxonomy_classifier_lr",
+        type=float,
+        default=None,
+        help=(
+            "Separate learning rate for taxonomy classifier. If not specified, uses the same LR as "
+            "the main model. Setting a higher LR (e.g., 10x the main LR) can help when taxonomy "
+            "classifier starts from random initialization. Example: if main LR is 1e-4, try 1e-3. "
+            "Default: None (use same LR as model)"
         ),
     )
 

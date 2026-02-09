@@ -14,20 +14,38 @@ class JumboTaxonomyClassifier(nn.Module):
     """
     Binary classifier that takes two jumbo representations and predicts
     if they share the same taxonomic label at a specified level.
+
+    Supports two modes:
+    1. Concatenation mode (default): Takes flattened jumbo reps (B, J*D)
+    2. Pooling mode: Takes un-flattened jumbo tokens (B, J, D) and pools them
     """
 
-    def __init__(self, jumbo_dim, hidden_dim=256, dropout=0.1):
+    def __init__(self, jumbo_dim, hidden_dim=256, dropout=0.1, pool_jumbo=False, pool_type='mean'):
         """
         Args:
             jumbo_dim: Dimension of flattened jumbo representation (J * D)
+                      OR single token dimension (D) if pool_jumbo=True
             hidden_dim: Hidden layer dimension
             dropout: Dropout probability
+            pool_jumbo: If True, expects (B, J, D) and pools across J dimension
+                       If False, expects (B, J*D) flattened (backward compatible)
+            pool_type: Pooling type ('mean' or 'max'), only used if pool_jumbo=True
         """
         super().__init__()
+        self.pool_jumbo = pool_jumbo
+        self.pool_type = pool_type
+
+        # Determine input dimension to classifier
+        if pool_jumbo:
+            # Input will be pooled: (B, D) per sequence
+            classifier_input_dim = jumbo_dim * 2  # Two pooled representations
+        else:
+            # Input is concatenated flattened: (B, J*D) per sequence
+            classifier_input_dim = jumbo_dim * 2
 
         self.classifier = nn.Sequential(
-            # Input is concatenation of two jumbo representations
-            nn.Linear(jumbo_dim * 2, hidden_dim),
+            # Input is concatenation of two representations
+            nn.Linear(classifier_input_dim, hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, 1),  # Binary classification
@@ -36,14 +54,32 @@ class JumboTaxonomyClassifier(nn.Module):
     def forward(self, jumbo_rep1, jumbo_rep2):
         """
         Args:
-            jumbo_rep1: First jumbo representation (B, jumbo_dim)
-            jumbo_rep2: Second jumbo representation (B, jumbo_dim)
+            jumbo_rep1: First jumbo representation
+                       - If pool_jumbo=False: (B, jumbo_dim) flattened
+                       - If pool_jumbo=True: (B, J, D) un-flattened tokens
+            jumbo_rep2: Second jumbo representation (same format as jumbo_rep1)
 
         Returns:
             logits: Binary classification logits (B, 1)
         """
+        # Pool if needed
+        if self.pool_jumbo:
+            # Input: (B, J, D) -> Pool across J dimension -> (B, D)
+            if self.pool_type == 'mean':
+                rep1 = jumbo_rep1.mean(dim=1)
+                rep2 = jumbo_rep2.mean(dim=1)
+            elif self.pool_type == 'max':
+                rep1 = jumbo_rep1.max(dim=1)[0]
+                rep2 = jumbo_rep2.max(dim=1)[0]
+            else:
+                raise ValueError(f"Unknown pool_type: {self.pool_type}")
+        else:
+            # Input is already flattened: (B, J*D)
+            rep1 = jumbo_rep1
+            rep2 = jumbo_rep2
+
         # Concatenate the two representations
-        combined = torch.cat([jumbo_rep1, jumbo_rep2], dim=-1)  # (B, jumbo_dim * 2)
+        combined = torch.cat([rep1, rep2], dim=-1)  # (B, dim * 2)
         logits = self.classifier(combined)  # (B, 1)
         return logits
 
@@ -161,6 +197,7 @@ def compute_taxonomy_classification_loss(
 
     Args:
         jumbo_tokens: Jumbo token representations from encoder (B, J, D)
+                     Will be flattened to (B, J*D) if classifier doesn't use pooling
         taxonomy_labels: Taxonomic labels for each sequence at specified level (B,)
         classifier: JumboTaxonomyClassifier instance
         same_ratio: Target ratio of positive (same-taxon) pairs
@@ -176,8 +213,13 @@ def compute_taxonomy_classification_loss(
     """
     batch_size = jumbo_tokens.size(0)
 
-    # Flatten jumbo tokens to (B, J*D)
-    jumbo_flat = jumbo_tokens.reshape(batch_size, -1)
+    # Prepare jumbo representations based on classifier's pooling mode
+    if classifier.pool_jumbo:
+        # Classifier will pool internally, pass un-flattened tokens (B, J, D)
+        jumbo_rep = jumbo_tokens
+    else:
+        # Classifier expects flattened, so flatten jumbo tokens to (B, J*D)
+        jumbo_rep = jumbo_tokens.reshape(batch_size, -1)
 
     # Create pairs (filtering out invalid genus labels)
     idx1, idx2, labels, num_same, num_diff = create_taxonomy_pairs(
@@ -189,8 +231,8 @@ def compute_taxonomy_classification_loss(
         return None, None, 0, 0, 0
 
     # Get representations for pairs
-    jumbo_rep1 = jumbo_flat[idx1]
-    jumbo_rep2 = jumbo_flat[idx2]
+    jumbo_rep1 = jumbo_rep[idx1]
+    jumbo_rep2 = jumbo_rep[idx2]
 
     # Compute logits
     logits = classifier(jumbo_rep1, jumbo_rep2).squeeze(-1)  # (num_pairs,)
