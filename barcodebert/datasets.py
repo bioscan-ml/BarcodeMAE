@@ -401,8 +401,12 @@ def representations_from_df(
                         hidden_states = output.last_hidden_state
                     elif hasattr(output, "hidden_states") and output.hidden_states is not None:
                         hidden_states = output.hidden_states
+                        if isinstance(hidden_states, tuple):
+                            hidden_states = hidden_states[-1]
                     else:
                         hidden_states = output[-1] if isinstance(output, tuple) else output
+                        if isinstance(hidden_states, tuple):
+                            hidden_states = hidden_states[-1]
 
                     # Concatenate jumbo and sequence tokens
                     all_tokens = torch.cat([jumbo_tokens, hidden_states], dim=1)  # (batch_size, J+seq_len, D)
@@ -422,8 +426,12 @@ def representations_from_df(
                         hidden_states = output.last_hidden_state
                     elif hasattr(output, "hidden_states") and output.hidden_states is not None:
                         hidden_states = output.hidden_states
+                        if isinstance(hidden_states, tuple):
+                            hidden_states = hidden_states[-1]
                     else:
                         hidden_states = output[-1] if isinstance(output, tuple) else output
+                        if isinstance(hidden_states, tuple):
+                            hidden_states = hidden_states[-1]
 
                     sum_embeddings = (hidden_states * att_mask.unsqueeze(-1)).sum(1)
                     sum_mask = att_mask.sum(1, keepdim=True)
@@ -447,8 +455,15 @@ def representations_from_df(
                     hidden_states = output.last_hidden_state
                 elif hasattr(output, "hidden_states") and output.hidden_states is not None:
                     hidden_states = output.hidden_states
+                    # output.hidden_states is a tuple of ALL layer outputs when
+                    # output_hidden_states=True in BertForTokenClassification.
+                    # Take only the last layer (final representations).
+                    if isinstance(hidden_states, tuple):
+                        hidden_states = hidden_states[-1]
                 else:
                     hidden_states = output[-1] if isinstance(output, tuple) else output
+                    if isinstance(hidden_states, tuple):
+                        hidden_states = hidden_states[-1]
 
                 # Mean pooling accounting for attention mask and padding tokens
                 # Sum the embeddings of the tokens (excluding padding tokens)
