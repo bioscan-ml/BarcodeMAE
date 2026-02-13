@@ -1,3 +1,6 @@
 [submodule "barcodebert/bzsl/models/dnabert2"]
 	path = barcodebert/bzsl/models/dnabert2
 	url = https://github.com/3dlg-hcvc/DNABERT_2.git
+[submodule "reproduce_dnabert_2"]
+	path = reproduce_dnabert_2
+	url = https://github.com/millanp95/reproduce_dnabert_2
