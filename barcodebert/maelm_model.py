@@ -19,6 +19,7 @@ class MAELMModel(nn.Module):
         jumbo_source="encoder",
         pool_jumbo_for_taxonomy=False,
         taxonomy_pool_type="mean",
+        mlp_expansion_factor=2,
     ):
         super(MAELMModel, self).__init__()
         # Encoder BERT model
@@ -40,7 +41,10 @@ class MAELMModel(nn.Module):
 
         if self.jumbo:
             self.encoder = create_jumbo_transformer_model(
-                encoder_config, jumbo_multiplier=jumbo_multiplier, share_jumbo_mlp_across_layers=share_jumbo_layers
+                encoder_config,
+                jumbo_multiplier=jumbo_multiplier,
+                share_jumbo_mlp_across_layers=share_jumbo_layers,
+                mlp_expansion_factor=mlp_expansion_factor,
             )
         else:
             self.encoder = BertModel(encoder_config)

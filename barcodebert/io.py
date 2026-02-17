@@ -91,6 +91,7 @@ def load_pretrained_model(checkpoint_path, device=None):
         jumbo_multiplier = getattr(ckpt["config"], "jumbo_multiplier", 6)
         share_jumbo_layers = getattr(ckpt["config"], "share_jumbo_layers", False)
         enable_genus_classification = getattr(ckpt["config"], "enable_genus_classification", False)
+        mlp_expansion_factor = getattr(ckpt["config"], "jumbo_mlp_expansion", 2)
 
         # Check if taxonomy classification is enabled
         if enable_genus_classification and ckpt["config"].arch != "maelm":
@@ -100,11 +101,15 @@ def load_pretrained_model(checkpoint_path, device=None):
                 jumbo_multiplier=jumbo_multiplier,
                 share_jumbo_mlp_across_layers=share_jumbo_layers,
                 enable_taxonomy_classification=True,
+                mlp_expansion_factor=mlp_expansion_factor,
             )
         else:
             print("Loading JumboBertForTokenClassification")
             model = create_jumbo_transformer_model(
-                bert_config, jumbo_multiplier=jumbo_multiplier, share_jumbo_mlp_across_layers=share_jumbo_layers
+                bert_config,
+                jumbo_multiplier=jumbo_multiplier,
+                share_jumbo_mlp_across_layers=share_jumbo_layers,
+                mlp_expansion_factor=mlp_expansion_factor,
             )
     elif ckpt["config"].arch == "maelm":
         model = BertModel(bert_config)

@@ -21,7 +21,12 @@ class JumboTransformerWithTaxonomy(nn.Module):
     """
 
     def __init__(
-        self, bert_config, jumbo_multiplier=6, share_jumbo_mlp_across_layers=False, enable_taxonomy_classification=True
+        self,
+        bert_config,
+        jumbo_multiplier=6,
+        share_jumbo_mlp_across_layers=False,
+        enable_taxonomy_classification=True,
+        mlp_expansion_factor=2,
     ):
         super().__init__()
 
@@ -30,7 +35,10 @@ class JumboTransformerWithTaxonomy(nn.Module):
 
         # Create the jumbo transformer model
         self.transformer = create_jumbo_transformer_model(
-            bert_config, jumbo_multiplier=jumbo_multiplier, share_jumbo_mlp_across_layers=share_jumbo_mlp_across_layers
+            bert_config,
+            jumbo_multiplier=jumbo_multiplier,
+            share_jumbo_mlp_across_layers=share_jumbo_mlp_across_layers,
+            mlp_expansion_factor=mlp_expansion_factor,
         )
 
         # Add taxonomy classifier if enabled
@@ -92,7 +100,11 @@ class JumboTransformerWithTaxonomy(nn.Module):
 
 
 def create_jumbo_transformer_with_taxonomy(
-    bert_config, jumbo_multiplier=6, share_jumbo_mlp_across_layers=False, enable_taxonomy_classification=True
+    bert_config,
+    jumbo_multiplier=6,
+    share_jumbo_mlp_across_layers=False,
+    enable_taxonomy_classification=True,
+    mlp_expansion_factor=2,
 ):
     """
     Factory function to create a jumbo transformer with taxonomy classification.
@@ -102,6 +114,7 @@ def create_jumbo_transformer_with_taxonomy(
         jumbo_multiplier: Number of jumbo CLS tokens (default: 6)
         share_jumbo_mlp_across_layers: Share jumbo MLP across layers (default: False)
         enable_taxonomy_classification: Add taxonomy classifier (default: True)
+        mlp_expansion_factor: Hidden layer expansion ratio in Jumbo MLP (default: 2)
 
     Returns:
         JumboTransformerWithTaxonomy model
@@ -111,6 +124,7 @@ def create_jumbo_transformer_with_taxonomy(
         jumbo_multiplier=jumbo_multiplier,
         share_jumbo_mlp_across_layers=share_jumbo_mlp_across_layers,
         enable_taxonomy_classification=enable_taxonomy_classification,
+        mlp_expansion_factor=mlp_expansion_factor,
     )
 
 

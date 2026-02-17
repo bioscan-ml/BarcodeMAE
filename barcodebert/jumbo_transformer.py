@@ -19,18 +19,20 @@ class JumboTokenHandler(nn.Module):
     with a residual connection.
     """
 
-    def __init__(self, embed_dim: int, jumbo_multiplier: int = 6, dropout: float = 0.1):
+    def __init__(self, embed_dim: int, jumbo_multiplier: int = 6, dropout: float = 0.1, mlp_expansion_factor: int = 2):
         super().__init__()
         self.embed_dim = embed_dim  # D
         self.jumbo_multiplier = jumbo_multiplier  # J
         self.jumbo_width = embed_dim * jumbo_multiplier  # J * D
+        self.mlp_expansion_factor = mlp_expansion_factor
 
+        jumbo_hidden = self.jumbo_width * mlp_expansion_factor
         self.jumbo_mlp = nn.Sequential(
             nn.LayerNorm(self.jumbo_width),
-            nn.Linear(self.jumbo_width, self.jumbo_width * 2),  # Wide hidden layer X2
+            nn.Linear(self.jumbo_width, jumbo_hidden),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(self.jumbo_width * 2, self.jumbo_width),
+            nn.Linear(jumbo_hidden, self.jumbo_width),
             nn.Dropout(dropout),
         )
 
@@ -126,7 +128,13 @@ class JumboBertForTokenClassification(nn.Module):
     - Final Jumbo representation is returned as a flattened vector (B, J*D).
     """
 
-    def __init__(self, config: BertConfig, jumbo_multiplier: int = 6, share_jumbo_mlp_across_layers: bool = False):
+    def __init__(
+        self,
+        config: BertConfig,
+        jumbo_multiplier: int = 6,
+        share_jumbo_mlp_across_layers: bool = False,
+        mlp_expansion_factor: int = 2,
+    ):
         super().__init__()
         self.config = config
         self.jumbo_multiplier = jumbo_multiplier
@@ -141,13 +149,16 @@ class JumboBertForTokenClassification(nn.Module):
                 embed_dim=config.hidden_size,
                 jumbo_multiplier=jumbo_multiplier,
                 dropout=config.hidden_dropout_prob,
+                mlp_expansion_factor=mlp_expansion_factor,
             )
             jumbo_handlers = [shared_jumbo_handler] * len(self.bert.encoder.layer)
         else:
             # Separate handler per layer
             print("Using separate JumboTokenHandler per layer.")
             jumbo_handlers = [
-                JumboTokenHandler(config.hidden_size, jumbo_multiplier, config.hidden_dropout_prob)
+                JumboTokenHandler(
+                    config.hidden_size, jumbo_multiplier, config.hidden_dropout_prob, mlp_expansion_factor
+                )
                 for _ in range(len(self.bert.encoder.layer))
             ]
 
@@ -249,12 +260,17 @@ class JumboBertForTokenClassification(nn.Module):
 
 
 def create_jumbo_transformer_model(
-    original_config: BertConfig, jumbo_multiplier: int = 6, share_jumbo_mlp_across_layers: bool = False
+    original_config: BertConfig,
+    jumbo_multiplier: int = 6,
+    share_jumbo_mlp_across_layers: bool = False,
+    mlp_expansion_factor: int = 2,
 ):
     """
     Factory function to create Jumbo transformer model.
     """
-    return JumboBertForTokenClassification(original_config, jumbo_multiplier, share_jumbo_mlp_across_layers)
+    return JumboBertForTokenClassification(
+        original_config, jumbo_multiplier, share_jumbo_mlp_across_layers, mlp_expansion_factor
+    )
 
 
 # Quick test you can use this to check the implementation

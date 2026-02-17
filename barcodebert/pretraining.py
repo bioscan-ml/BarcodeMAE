@@ -233,13 +233,13 @@ def run(config):
             seed=config.seed if config.seed is not None else 0,
             drop_last=False,
         )
-        dl_train_kwargs["shuffle"] = None
+        dl_train_kwargs["shuffle"] = False
         dl_val_kwargs["sampler"] = DistributedSampler(
             dataset_val,
             shuffle=False,
             drop_last=False,
         )
-        dl_val_kwargs["shuffle"] = None
+        dl_val_kwargs["shuffle"] = False
 
     dataloader_train = torch.utils.data.DataLoader(dataset_train, **dl_train_kwargs)
     dataloader_val = torch.utils.data.DataLoader(dataset_val, **dl_val_kwargs)
@@ -355,6 +355,7 @@ def run(config):
             jumbo_source=jumbo_source,
             pool_jumbo_for_taxonomy=pool_jumbo_for_taxonomy,
             taxonomy_pool_type=taxonomy_pool_type,
+            mlp_expansion_factor=config.jumbo_mlp_expansion,
         )
 
     elif config.arch == "transformer":
@@ -370,11 +371,17 @@ def run(config):
                 )
 
                 model = create_jumbo_transformer_with_taxonomy(
-                    bert_config, config.jumbo_multiplier, config.share_jumbo_layers, enable_taxonomy_classification=True
+                    bert_config,
+                    config.jumbo_multiplier,
+                    config.share_jumbo_layers,
+                    enable_taxonomy_classification=True,
+                    mlp_expansion_factor=config.jumbo_mlp_expansion,
                 )
             else:
                 print("Using JumboBertForTokenClassification")
-                model = create_jumbo_transformer_model(bert_config, config.jumbo_multiplier, config.share_jumbo_layers)
+                model = create_jumbo_transformer_model(
+                    bert_config, config.jumbo_multiplier, config.share_jumbo_layers, config.jumbo_mlp_expansion
+                )
         else:
             model = BertForTokenClassification(bert_config)
 
@@ -1622,8 +1629,16 @@ def train_one_epoch(
                 log_dict[f"Pretraining/stepwise/{taxonomy_level_display}/loss"] = genus_loss_batch_val
                 log_dict[f"Pretraining/stepwise/{taxonomy_level_display}/accuracy"] = genus_acc_batch_val
                 log_dict[f"Pretraining/stepwise/{taxonomy_level_display}/num_pairs"] = num_genus_pairs
-                log_dict[f"Pretraining/stepwise/{taxonomy_level_display}/num_same_pairs"] = num_same_pairs
-                log_dict[f"Pretraining/stepwise/{taxonomy_level_display}/num_diff_pairs"] = num_diff_pairs
+                log_dict[f"Pretraining/stepwise/{taxonomy_level_display}/num_positive_pairs"] = num_same_pairs
+                log_dict[f"Pretraining/stepwise/{taxonomy_level_display}/num_negative_pairs"] = num_diff_pairs
+
+            # Add CLS taxonomy classification metrics if available
+            if cls_taxonomy_loss is not None:
+                log_dict["Pretraining/stepwise/CLS/loss"] = cls_taxonomy_loss.item()
+                log_dict["Pretraining/stepwise/CLS/accuracy"] = cls_taxonomy_acc.item() * 100.0
+                log_dict["Pretraining/stepwise/CLS/num_pairs"] = num_cls_taxonomy_pairs
+                log_dict["Pretraining/stepwise/CLS/num_positive_pairs"] = num_cls_same_pairs
+                log_dict["Pretraining/stepwise/CLS/num_negative_pairs"] = num_cls_diff_pairs
 
             # Track the learning rate of each parameter group
             for lr_idx in range(len(optimizer.param_groups)):
@@ -2262,6 +2277,18 @@ def get_parser():
         type=int,
         default=6,
         help="Multiplier for the number of CLS tokens in Jumbo CLS model. Default: %(default)s",
+    )
+
+    group.add_argument(
+        "--jumbo-mlp-expansion",
+        "--jumbo_mlp_expansion",
+        dest="jumbo_mlp_expansion",
+        type=int,
+        default=2,
+        help=(
+            "Expansion factor for the hidden layer in the Jumbo MLP "
+            "(jumbo_width * expansion_factor). Default: %(default)s"
+        ),
     )
 
     group.add_argument(
