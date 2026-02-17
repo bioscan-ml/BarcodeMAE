@@ -14,6 +14,8 @@ import torch.distributed as dist
 import torch.optim
 from torch import nn
 from torch.utils.data.distributed import DistributedSampler
+
+from barcodebert.Sampler_balanced import DistributedKClassMSampleSampler, KClassMSampleSampler
 from transformers import BertConfig, BertForTokenClassification
 
 from barcodebert import levenshtein, utils
@@ -225,8 +227,70 @@ def run(config):
         dl_train_kwargs.update(cuda_kwargs)
         dl_val_kwargs.update(cuda_kwargs)
 
-    if config.distributed:
-        # The DistributedSampler breaks up the dataset across the GPUs
+    # Decide which sampler to use for training ---------------------------------
+    use_km_sampler = (
+        getattr(config, "k_classes", None) is not None
+        and getattr(config, "m_per_class", None) is not None
+    )
+
+    if use_km_sampler:
+        k = config.k_classes
+        m = config.m_per_class
+        batch_size_per_gpu = config.batch_size_per_gpu
+        if k * m > batch_size_per_gpu:
+            raise ValueError(
+                f"k×m sampler requires k * m <= batch_size_per_gpu, "
+                f"but k={k}, m={m} (k*m={k*m}) > batch_size_per_gpu={batch_size_per_gpu}. "
+                "Increase --batch-size-per-gpu or reduce --k-classes / --m-per-class."
+            )
+        if not hasattr(dataset_train, "taxonomy_labels") or dataset_train.taxonomy_labels is None:
+            raise ValueError(
+                "k×m sampler requires taxonomy labels. "
+                "Enable --enable-genus-classification so the dataset loads labels."
+            )
+        train_labels = dataset_train.taxonomy_labels
+        sampler_seed = config.seed if config.seed is not None else 0
+        n_random = batch_size_per_gpu - k * m
+        print(
+            f"Using k×m hybrid sampler: k={k} classes × m={m} samples "
+            f"+ {n_random} random (incl. unlabelled) per batch "
+            f"→ batch_size={batch_size_per_gpu}, "
+            f"guaranteed positive pairs/batch = {k * m * (m - 1) // 2}"
+        )
+
+        cover_full = getattr(config, "cover_full_dataset", True)
+        if config.distributed:
+            dl_train_kwargs["sampler"] = DistributedKClassMSampleSampler(
+                train_labels,
+                k=k,
+                m=m,
+                batch_size=batch_size_per_gpu,
+                seed=sampler_seed,
+                shuffle=True,
+                cover_full_dataset=cover_full,
+            )
+            dl_train_kwargs["shuffle"] = False
+            # Validation still uses standard DistributedSampler (no need for balance there)
+            dl_val_kwargs["sampler"] = DistributedSampler(
+                dataset_val,
+                shuffle=False,
+                drop_last=False,
+            )
+            dl_val_kwargs["shuffle"] = False
+        else:
+            dl_train_kwargs["sampler"] = KClassMSampleSampler(
+                train_labels,
+                k=k,
+                m=m,
+                batch_size=batch_size_per_gpu,
+                seed=sampler_seed,
+                shuffle=True,
+                cover_full_dataset=cover_full,
+            )
+            dl_train_kwargs["shuffle"] = False
+
+    elif config.distributed:
+        # Standard distributed sampler (original behaviour)
         dl_train_kwargs["sampler"] = DistributedSampler(
             dataset_train,
             shuffle=True,
@@ -2494,6 +2558,45 @@ def get_parser():
         "--no-cuda",
         action="store_true",
         help="Use CPU only, no GPUs.",
+    )
+
+    group.add_argument(
+        "--k-classes",
+        "--k_classes",
+        dest="k_classes",
+        type=int,
+        default=None,
+        help=(
+            "Number of distinct taxonomy classes per batch for k×m balanced sampling. "
+            "When set together with --m-per-class, replaces the standard random sampler. "
+            "batch_size_per_gpu must equal k_classes * m_per_class. "
+            "Requires --enable-taxonomy-classification to be active so labels are loaded. "
+            "Default: None (use standard random sampler)."
+        ),
+    )
+    group.add_argument(
+        "--m-per-class",
+        "--m_per_class",
+        dest="m_per_class",
+        type=int,
+        default=None,
+        help=(
+            "Number of samples per class per batch for k×m balanced sampling. "
+            "See --k-classes. Default: None."
+        ),
+    )
+    group.add_argument(
+        "--no-cover-full-dataset",
+        dest="cover_full_dataset",
+        action="store_false",
+        default=True,
+        help=(
+            "By default the k×m sampler sets num_batches = ceil(N / n_random) "
+            "so every sample (including unlabelled ones) appears in the fill "
+            "at least once per epoch. Pass this flag to use the shorter "
+            "ceil(N / batch_size) epoch instead, at the cost of some samples "
+            "never being seen in an epoch."
+        ),
     )
     group.add_argument(
         "--gpu",
