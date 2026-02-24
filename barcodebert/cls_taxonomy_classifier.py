@@ -61,6 +61,7 @@ def compute_cls_taxonomy_classification_loss(
     debug_print=False,
     bin_labels=None,
     family_labels=None,
+    use_pos_weight=False,
 ):
     """
     Compute binary taxonomy classification loss for a batch using CLS token.
@@ -112,9 +113,12 @@ def compute_cls_taxonomy_classification_loss(
     # Compute logits
     logits = classifier(cls_rep1, cls_rep2).squeeze(-1)  # (num_pairs,)
 
-    # Compute loss with pos_weight to normalize for imbalanced pos/neg pair counts
-    pos_weight = torch.tensor(num_diff / num_same, dtype=torch.float, device=logits.device)
-    loss = nn.functional.binary_cross_entropy_with_logits(logits, labels.float(), pos_weight=pos_weight)
+    # Compute loss, optionally with pos_weight to normalize for imbalanced pos/neg pair counts
+    if use_pos_weight and num_same > 0:
+        pos_weight = torch.tensor(num_diff / num_same, dtype=torch.float, device=logits.device)
+        loss = nn.functional.binary_cross_entropy_with_logits(logits, labels.float(), pos_weight=pos_weight)
+    else:
+        loss = nn.functional.binary_cross_entropy_with_logits(logits, labels.float())
 
     # Compute accuracy
     predictions = (torch.sigmoid(logits) > 0.5).long()

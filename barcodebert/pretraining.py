@@ -1400,6 +1400,7 @@ def train_one_epoch(
                             debug_print=debug_print,
                             bin_labels=bin_labels,
                             family_labels=family_labels,
+                            use_pos_weight=getattr(config, "taxonomy_use_pos_weight", False),
                         )
                     )
 
@@ -1440,6 +1441,7 @@ def train_one_epoch(
                         debug_print=debug_print,
                         bin_labels=bin_labels,
                         family_labels=family_labels,
+                        use_pos_weight=getattr(config, "taxonomy_use_pos_weight", False),
                     )
                 )
 
@@ -2456,6 +2458,20 @@ def get_parser():
             "the main model. Setting a higher LR (e.g., 10x the main LR) can help when taxonomy "
             "classifier starts from random initialization. Example: if main LR is 1e-4, try 1e-3. "
             "Default: None (use same LR as model)"
+        ),
+    )
+
+    group.add_argument(
+        "--taxonomy-use-pos-weight",
+        "--taxonomy_use_pos_weight",
+        dest="taxonomy_use_pos_weight",
+        action="store_true",
+        default=False,
+        help=(
+            "Use pos_weight in BCE loss to normalize for imbalanced positive/negative pair counts. "
+            "When enabled, each positive pair is weighted by num_diff/num_same so that positives and "
+            "negatives contribute equally to the gradient regardless of batch composition. "
+            "Helps reduce loss spikes caused by batches with few positive pairs. Default: False"
         ),
     )
 
