@@ -53,7 +53,14 @@ class CLSTaxonomyClassifier(nn.Module):
 
 
 def compute_cls_taxonomy_classification_loss(
-    hidden_states, taxonomy_labels, classifier, same_ratio=0.5, debug_print=False, bin_labels=None, family_labels=None
+    hidden_states,
+    taxonomy_labels,
+    classifier,
+    same_ratio=0.5,
+    max_pairs=32,
+    debug_print=False,
+    bin_labels=None,
+    family_labels=None,
 ):
     """
     Compute binary taxonomy classification loss for a batch using CLS token.
@@ -64,6 +71,7 @@ def compute_cls_taxonomy_classification_loss(
         taxonomy_labels: Taxonomic labels for each sequence at specified level (B,)
         classifier: CLSTaxonomyClassifier instance
         same_ratio: Ratio of same-taxonomy pairs
+        max_pairs: Maximum number of pairs to sample
         debug_print: If True, print debugging information about pair creation
         bin_labels: Optional BIN labels (B,) for augmenting pairs (BIOSCAN-5M)
         family_labels: Optional family labels (B,) for augmenting pairs (BIOSCAN-5M)
@@ -87,6 +95,7 @@ def compute_cls_taxonomy_classification_loss(
     idx1, idx2, labels, num_same, num_diff = create_taxonomy_pairs(
         taxonomy_labels,
         same_ratio=same_ratio,
+        max_pairs=max_pairs,
         debug_print=debug_print,
         bin_labels=bin_labels,
         family_labels=family_labels,

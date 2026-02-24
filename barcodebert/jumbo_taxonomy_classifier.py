@@ -185,6 +185,9 @@ def create_taxonomy_pairs(
             bin_pos_pairs = valid_bin_indices[bin_pos_pairs_local]
 
             if debug_print:
+                unique_bins = torch.unique(valid_bin_labels)
+                print(f"  Sequences without genus but with valid BIN: {len(valid_bin_indices)}")
+                print(f"  Unique BINs (in sequences without genus): {len(unique_bins)}")
                 print(f"  BIN-based positive pairs (no genus label): {len(bin_pos_pairs)}")
 
     # === Step 3: Augment with family-based negative pairs (for sequences without genus labels) ===

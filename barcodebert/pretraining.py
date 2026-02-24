@@ -615,6 +615,18 @@ def run(config):
     # LOGGING =================================================================
     # Setup logging and saving
 
+    # SLURM job array support: Use shared run_id for all tasks in the same array
+    # This makes all array tasks log to the same wandb run
+    if config.run_id is None:
+        slurm_array_job_id = os.environ.get("SLURM_ARRAY_JOB_ID")
+        slurm_array_task_id = os.environ.get("SLURM_ARRAY_TASK_ID")
+        if slurm_array_job_id is not None:
+            # We're in a SLURM job array - use array job ID as run_id so all tasks share the same run
+            config.run_id = f"slurm_array_{slurm_array_job_id}"
+            if config.global_rank == 0:
+                print(f"SLURM job array detected: Array Job ID={slurm_array_job_id}, Task ID={slurm_array_task_id}")
+                print(f"All tasks in this array will log to wandb run_id: {config.run_id}")
+
     # If we're using wandb, initialize the run, or resume it if the job was preempted.
     if config.log_wandb and config.global_rank == 0:
         wandb_run_name = config.run_name
@@ -630,6 +642,13 @@ def run(config):
             "run_id",
             "model_output_dir",
         ]
+
+        # Add SLURM array task info to tags if in job array
+        wandb_tags = ["pretrain"]
+        slurm_array_task_id = os.environ.get("SLURM_ARRAY_TASK_ID")
+        if slurm_array_task_id is not None:
+            wandb_tags.append(f"array_task_{slurm_array_task_id}")
+
         wandb.init(
             name=wandb_run_name,
             id=config.run_id,
@@ -639,7 +658,7 @@ def run(config):
             project=config.wandb_project,
             config=wandb.helper.parse_config(config, exclude=EXCLUDED_WANDB_CONFIG_KEYS),
             job_type="pretrain",
-            tags=["pretrain"],
+            tags=wandb_tags,
         )
         # If a run_id was not supplied at the command prompt, wandb will
         # generate a name. Let's use that as the run_name.
@@ -1370,12 +1389,14 @@ def train_one_epoch(
                 if hasattr(out, "jumbo_tokens") and out.jumbo_tokens is not None:
                     # Enable debug printing for first 3 batches of first epoch
                     debug_print = epoch == 1 and batch_idx < 3
+                    max_pairs = getattr(config, "taxonomy_max_pairs", 32)
                     taxonomy_loss, taxonomy_acc, num_taxonomy_pairs, num_same_pairs, num_diff_pairs = (
                         compute_taxonomy_classification_loss(
                             out.jumbo_tokens,
                             genus_labels,
                             model_deref.taxonomy_classifier,
                             same_ratio=0.5,
+                            max_pairs=max_pairs,
                             debug_print=debug_print,
                             bin_labels=bin_labels,
                             family_labels=family_labels,
@@ -1408,12 +1429,14 @@ def train_one_epoch(
                 # Dereference classifier if wrapped in DDP
                 cls_classifier_deref = cls_taxonomy_classifier.module if config.distributed else cls_taxonomy_classifier
 
+                max_pairs = getattr(config, "taxonomy_max_pairs", 32)
                 cls_taxonomy_loss, cls_taxonomy_acc, num_cls_taxonomy_pairs, num_cls_same_pairs, num_cls_diff_pairs = (
                     compute_cls_taxonomy_classification_loss(
                         out.hidden_states,
                         genus_labels,
                         cls_classifier_deref,
                         same_ratio=0.5,
+                        max_pairs=max_pairs,
                         debug_print=debug_print,
                         bin_labels=bin_labels,
                         family_labels=family_labels,
@@ -2499,6 +2522,17 @@ def get_parser():
         type=float,
         default=0.1,
         help="Weight for taxonomy classification loss. Default: %(default)s",
+    )
+
+    group.add_argument(
+        "--taxonomy-max-pairs",
+        "--taxonomy_max_pairs",
+        type=int,
+        default=64,
+        help=(
+            "Maximum number of pairs to sample for taxonomy classification loss. "
+            "Higher values = more pairs = better gradients but slower. Default: %(default)s"
+        ),
     )
 
     # Output checkpoint args --------------------------------------------------
