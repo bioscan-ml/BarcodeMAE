@@ -342,8 +342,9 @@ def compute_taxonomy_classification_loss(
     # Compute logits
     logits = classifier(jumbo_rep1, jumbo_rep2).squeeze(-1)  # (num_pairs,)
 
-    # Compute loss
-    loss = nn.functional.binary_cross_entropy_with_logits(logits, labels.float())
+    # Compute loss with pos_weight to normalize for imbalanced pos/neg pair counts
+    pos_weight = torch.tensor(num_diff / num_same, dtype=torch.float, device=logits.device)
+    loss = nn.functional.binary_cross_entropy_with_logits(logits, labels.float(), pos_weight=pos_weight)
 
     # Compute accuracy
     predictions = (torch.sigmoid(logits) > 0.5).long()
