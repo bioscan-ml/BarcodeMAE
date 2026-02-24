@@ -105,6 +105,8 @@ class DNADataset(Dataset):
         return_genus=False,  # Deprecated: use return_taxonomy_level instead
         return_taxonomy_level=None,  # Can be: phylum, class, order, family, genus, species
         use_cls_token=False,  # Whether to prepend [CLS] token to sequences
+        return_bin_labels=False,  # Return BIN labels for BIOSCAN-5M (augments pair creation)
+        return_family_labels=False,  # Return family labels for BIOSCAN-5M (augments pair creation)
     ):
         self.k_mer = k_mer
         self.stride = k_mer if stride is None else stride
@@ -115,12 +117,16 @@ class DNADataset(Dataset):
         self.tax_encoder = None
         self.labels = []
         self.taxonomy_labels = []  # For any taxonomic level
+        self.bin_labels = []  # BIN labels for BIOSCAN-5M
+        self.family_labels = []  # Family labels for BIOSCAN-5M
         self.label2id = label2id
 
         # Handle backward compatibility: return_genus -> return_taxonomy_level
         if return_genus and return_taxonomy_level is None:
             return_taxonomy_level = "genus"
         self.return_taxonomy_level = return_taxonomy_level
+        self.return_bin_labels = return_bin_labels
+        self.return_family_labels = return_family_labels
 
         # Check that the dataframe contains a valid format
         if dataset_format not in ["CANADA-1.5M", "BIOSCAN-5M", "ITS-5M"]:
@@ -230,6 +236,33 @@ class DNADataset(Dataset):
                     self.taxonomy_labels = [0] * len(self.labels)
             else:
                 self.taxonomy_labels = [0] * len(self.labels)  # Dummy labels
+
+            # Load BIN labels if requested (BIOSCAN-5M only)
+            if self.return_bin_labels:
+                if "dna_bin_index" in df.columns:
+                    # BIN labels are already integers; use -1 for missing
+                    self.bin_labels = df["dna_bin_index"].fillna(-1).astype(int).tolist()
+                    num_valid_bin = sum(1 for b in self.bin_labels if b >= 0)
+                    print(f"BIN labels: {len(self.bin_labels)} total, {num_valid_bin} valid")
+                else:
+                    print("Warning: Column 'dna_bin_index' not found. Using dummy BIN labels.")
+                    self.bin_labels = [-1] * len(self.labels)
+            else:
+                self.bin_labels = [-1] * len(self.labels)  # Dummy labels
+
+            # Load family labels if requested (BIOSCAN-5M only)
+            if self.return_family_labels:
+                if "family_index" in df.columns:
+                    # Family labels are already integers; use -1 for missing
+                    self.family_labels = df["family_index"].fillna(-1).astype(int).tolist()
+                    num_valid_family = sum(1 for f in self.family_labels if f >= 0)
+                    print(f"Family labels: {len(self.family_labels)} total, {num_valid_family} valid")
+                else:
+                    print("Warning: Column 'family_index' not found. Using dummy family labels.")
+                    self.family_labels = [-1] * len(self.labels)
+            else:
+                self.family_labels = [-1] * len(self.labels)  # Dummy labels
+
         elif dataset_format == "ITS-5M":
             labels_file = file_path.replace(".fasta", "_labels.csv")
             if os.path.isfile(labels_file):
@@ -300,7 +333,19 @@ class DNADataset(Dataset):
 
         if self.return_taxonomy_level:
             taxonomy_label = torch.tensor(self.taxonomy_labels[idx], dtype=torch.int64)
-            return processed_barcode, label, att_mask, taxonomy_label
+            # Optionally include BIN and family labels for BIOSCAN-5M pair augmentation
+            if self.return_bin_labels and self.return_family_labels:
+                bin_label = torch.tensor(self.bin_labels[idx], dtype=torch.int64)
+                family_label = torch.tensor(self.family_labels[idx], dtype=torch.int64)
+                return processed_barcode, label, att_mask, taxonomy_label, bin_label, family_label
+            elif self.return_bin_labels:
+                bin_label = torch.tensor(self.bin_labels[idx], dtype=torch.int64)
+                return processed_barcode, label, att_mask, taxonomy_label, bin_label
+            elif self.return_family_labels:
+                family_label = torch.tensor(self.family_labels[idx], dtype=torch.int64)
+                return processed_barcode, label, att_mask, taxonomy_label, family_label
+            else:
+                return processed_barcode, label, att_mask, taxonomy_label
         else:
             return processed_barcode, label, att_mask
 

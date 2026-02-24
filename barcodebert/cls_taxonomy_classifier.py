@@ -53,7 +53,7 @@ class CLSTaxonomyClassifier(nn.Module):
 
 
 def compute_cls_taxonomy_classification_loss(
-    hidden_states, taxonomy_labels, classifier, same_ratio=0.5, debug_print=False
+    hidden_states, taxonomy_labels, classifier, same_ratio=0.5, debug_print=False, bin_labels=None, family_labels=None
 ):
     """
     Compute binary taxonomy classification loss for a batch using CLS token.
@@ -65,6 +65,8 @@ def compute_cls_taxonomy_classification_loss(
         classifier: CLSTaxonomyClassifier instance
         same_ratio: Ratio of same-taxonomy pairs
         debug_print: If True, print debugging information about pair creation
+        bin_labels: Optional BIN labels (B,) for augmenting pairs (BIOSCAN-5M)
+        family_labels: Optional family labels (B,) for augmenting pairs (BIOSCAN-5M)
 
     Returns:
         loss: Binary cross-entropy loss (None if no pairs could be created)
@@ -81,9 +83,13 @@ def compute_cls_taxonomy_classification_loss(
     # Import create_taxonomy_pairs from jumbo_taxonomy_classifier
     from barcodebert.jumbo_taxonomy_classifier import create_taxonomy_pairs
 
-    # Create pairs (filtering out invalid taxonomy labels)
+    # Create pairs (filtering out invalid taxonomy labels, augmenting with BIN/family if available)
     idx1, idx2, labels, num_same, num_diff = create_taxonomy_pairs(
-        taxonomy_labels, same_ratio=same_ratio, debug_print=debug_print
+        taxonomy_labels,
+        same_ratio=same_ratio,
+        debug_print=debug_print,
+        bin_labels=bin_labels,
+        family_labels=family_labels,
     )
 
     # Handle case where no pairs could be created

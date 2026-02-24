@@ -180,6 +180,10 @@ def run(config):
         "dataset_format": config.dataset_name,
         "return_taxonomy_level": taxonomy_level if (enable_genus_classification or enable_cls_taxonomy) else None,
         "use_cls_token": use_cls_token,
+        # For BIOSCAN-5M: return BIN and family labels to augment pair creation
+        "return_bin_labels": config.dataset_name == "BIOSCAN-5M" and (enable_genus_classification or enable_cls_taxonomy),
+        "return_family_labels": config.dataset_name == "BIOSCAN-5M"
+        and (enable_genus_classification or enable_cls_taxonomy),
     }
     if config.dataset_name == "ITS-5M":
         dataset_train = DNADataset(
@@ -1133,9 +1137,17 @@ def train_one_epoch(
     taxonomy_level_display = taxonomy_level.capitalize()
 
     for batch_idx, batch_data in enumerate(dataloader):
-        # Unpack batch data (may include genus labels if enabled)
+        # Unpack batch data (may include genus/BIN/family labels if enabled for BIOSCAN-5M)
+        bin_labels = None
+        family_labels = None
         if enable_genus_classification:
-            sequences, y_true, att_mask, genus_labels = batch_data
+            # Check if BIN and family labels are being returned (BIOSCAN-5M only)
+            if config.dataset_name == "BIOSCAN-5M" and len(batch_data) == 6:
+                sequences, y_true, att_mask, genus_labels, bin_labels, family_labels = batch_data
+            elif len(batch_data) == 4:
+                sequences, y_true, att_mask, genus_labels = batch_data
+            else:
+                raise ValueError(f"Unexpected batch data length: {len(batch_data)}")
         else:
             sequences, y_true, att_mask = batch_data
             genus_labels = None
@@ -1152,6 +1164,10 @@ def train_one_epoch(
         att_mask = att_mask.to(device)
         if genus_labels is not None:
             genus_labels = genus_labels.to(device)
+        if bin_labels is not None:
+            bin_labels = bin_labels.to(device)
+        if family_labels is not None:
+            family_labels = family_labels.to(device)
 
         # Build the masking on the fly ----------------------------------------
         # t_start_masking = time.time()
@@ -1361,6 +1377,8 @@ def train_one_epoch(
                             model_deref.taxonomy_classifier,
                             same_ratio=0.5,
                             debug_print=debug_print,
+                            bin_labels=bin_labels,
+                            family_labels=family_labels,
                         )
                     )
 
@@ -1397,6 +1415,8 @@ def train_one_epoch(
                         cls_classifier_deref,
                         same_ratio=0.5,
                         debug_print=debug_print,
+                        bin_labels=bin_labels,
+                        family_labels=family_labels,
                     )
                 )
 
@@ -1836,9 +1856,15 @@ def evaluate(
 
     with torch.no_grad():
         for batch_idx, batch_data in enumerate(dataloader):
-            # Unpack batch data (may include genus labels if enabled)
+            # Unpack batch data (may include genus/BIN/family labels if enabled for BIOSCAN-5M)
             if enable_genus_classification:
-                sequences, _y_true, att_mask, _genus_labels = batch_data
+                # Handle BIOSCAN-5M with BIN/family labels (discard them in validation)
+                if config.dataset_name == "BIOSCAN-5M" and len(batch_data) == 6:
+                    sequences, _y_true, att_mask, _genus_labels, _bin_labels, _family_labels = batch_data
+                elif len(batch_data) == 4:
+                    sequences, _y_true, att_mask, _genus_labels = batch_data
+                else:
+                    raise ValueError(f"Unexpected batch data length in validation: {len(batch_data)}")
             else:
                 sequences, _y_true, att_mask = batch_data
 
