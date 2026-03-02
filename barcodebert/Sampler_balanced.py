@@ -533,10 +533,25 @@ class KClassMSampleSampler(Sampler):
                     rep = torch.randint(n, (self.m,), generator=g) if self.shuffle else torch.arange(self.m) % n
                     labeled_part.append(idx[rep])
 
-            # --- fill from pre-shuffled pool ---
+            # --- fill from pre-shuffled pool, excluding already-selected labeled indices ---
             if fill_pool is not None:
-                fill = fill_pool[fill_offset : fill_offset + self.n_random]
+                labeled_set = {idx.item() for t in labeled_part for idx in t}
+                fill_slice = fill_pool[fill_offset : fill_offset + self.n_random]
                 fill_offset += self.n_random
+
+                fill_list = [x.item() for x in fill_slice if x.item() not in labeled_set]
+
+                # Patch any slots removed due to overlap with the labeled block
+                if len(fill_list) < self.n_random:
+                    fill_set = set(fill_list)
+                    for c in torch.randperm(self.N, generator=g).tolist():
+                        if c not in labeled_set and c not in fill_set:
+                            fill_list.append(c)
+                            fill_set.add(c)
+                            if len(fill_list) == self.n_random:
+                                break
+
+                fill = torch.tensor(fill_list, dtype=torch.long)
                 all_blocks.append(torch.cat(labeled_part + [fill]))
             else:
                 all_blocks.append(torch.cat(labeled_part))
@@ -688,8 +703,23 @@ class DistributedKClassMSampleSampler(KClassMSampleSampler):
                     labeled_part.append(idx[rep])
 
             if rank_fill is not None:
-                fill = rank_fill[fill_offset : fill_offset + self.n_random]
+                labeled_set = {idx.item() for t in labeled_part for idx in t}
+                fill_slice = rank_fill[fill_offset : fill_offset + self.n_random]
                 fill_offset += self.n_random
+
+                fill_list = [x.item() for x in fill_slice if x.item() not in labeled_set]
+
+                # Patch any slots removed due to overlap with the labeled block
+                if len(fill_list) < self.n_random:
+                    fill_set = set(fill_list)
+                    for c in torch.randperm(self.N, generator=g_labeled).tolist():
+                        if c not in labeled_set and c not in fill_set:
+                            fill_list.append(c)
+                            fill_set.add(c)
+                            if len(fill_list) == self.n_random:
+                                break
+
+                fill = torch.tensor(fill_list, dtype=torch.long)
                 all_blocks.append(torch.cat(labeled_part + [fill]))
             else:
                 all_blocks.append(torch.cat(labeled_part))
