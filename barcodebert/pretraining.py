@@ -1133,6 +1133,7 @@ def train_one_epoch(
     genus_loss_epoch = 0
     genus_acc_epoch = 0
     genus_pairs_epoch = 0
+    n_batches_processed = 0
 
     base_pairs = "ACGT"
     if config.predict_n_nucleotide:
@@ -1175,6 +1176,7 @@ def train_one_epoch(
         if epoch == start_epoch and batch_idx < start_step_in_epoch:
             continue
 
+        n_batches_processed += 1
         t_start_batch = time.time()
         batch_size_this_gpu = sequences.shape[0]
 
@@ -1684,13 +1686,14 @@ def train_one_epoch(
                 )
 
         # Compute mask ratio actually used
-        actual_masking = masked_unseen_tokens.sum() / masked_unseen_tokens.nelement()
-        actual_random_token = masked_random_tokens.sum() / masked_random_tokens.nelement()
-        actual_original_token = masked_original_tokens.sum() / masked_original_tokens.nelement()
+        actual_masking = (masked_unseen_tokens.sum() / masked_unseen_tokens.nelement()).item()
+        actual_random_token = (masked_random_tokens.sum() / masked_random_tokens.nelement()).item()
+        actual_original_token = (masked_original_tokens.sum() / masked_original_tokens.nelement()).item()
 
         mask_ratio_actual = input_maskout.sum() / input_maskout.nelement()
         if config.distributed:
             dist.reduce(mask_ratio_actual, 0, op=dist.ReduceOp.AVG)
+        mask_ratio_actual = mask_ratio_actual.item()
 
         # Log to wandb
         if config.log_wandb and config.global_rank == 0 and batch_idx % config.log_interval == 0:
@@ -1784,26 +1787,26 @@ def train_one_epoch(
 
     if config.separate_loss:
         results = {
-            "loss": loss_epoch / (batch_idx + 1),
-            "loss_masked": masked_loss_epoch / (batch_idx + 1),
-            "loss_non_masked": non_masked_loss_epoch / (batch_idx + 1),
-            "accuracy": acc_epoch / (batch_idx + 1),
-            "accuracy_unmasked": acc_kpt_epoch / (batch_idx + 1),
-            "accuracy_overall": acc_all_epoch / (batch_idx + 1),
+            "loss": loss_epoch / n_batches_processed,
+            "loss_masked": masked_loss_epoch / n_batches_processed,
+            "loss_non_masked": non_masked_loss_epoch / n_batches_processed,
+            "accuracy": acc_epoch / n_batches_processed,
+            "accuracy_unmasked": acc_kpt_epoch / n_batches_processed,
+            "accuracy_overall": acc_all_epoch / n_batches_processed,
         }
     else:
         results = {
-            "loss": loss_epoch / (batch_idx + 1),
-            "accuracy": acc_epoch / (batch_idx + 1),
-            "accuracy_unmasked": acc_kpt_epoch / (batch_idx + 1),
-            "accuracy_overall": acc_all_epoch / (batch_idx + 1),
+            "loss": loss_epoch / n_batches_processed,
+            "accuracy": acc_epoch / n_batches_processed,
+            "accuracy_unmasked": acc_kpt_epoch / n_batches_processed,
+            "accuracy_overall": acc_all_epoch / n_batches_processed,
         }
 
     # Add taxonomy classification metrics if any pairs were created
     if genus_pairs_epoch > 0:
         # Use dynamic taxonomy level in result keys
-        results[f"{taxonomy_level}_loss"] = genus_loss_epoch / (batch_idx + 1)
-        results[f"{taxonomy_level}_accuracy"] = genus_acc_epoch / (batch_idx + 1)
+        results[f"{taxonomy_level}_loss"] = genus_loss_epoch / n_batches_processed
+        results[f"{taxonomy_level}_accuracy"] = genus_acc_epoch / n_batches_processed
         results[f"{taxonomy_level}_pairs"] = genus_pairs_epoch
 
     return results, total_step, n_samples_seen
