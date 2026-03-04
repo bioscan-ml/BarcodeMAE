@@ -615,6 +615,16 @@ def run(config):
     # LOGGING =================================================================
     # Setup logging and saving
 
+    # If resuming from a checkpoint, restore run_id/run_name so all jobs log to the same wandb run
+    if checkpoint is not None and config.run_id is None:
+        ckpt_config = checkpoint.get("config")
+        if ckpt_config is not None and hasattr(ckpt_config, "run_id") and ckpt_config.run_id is not None:
+            config.run_id = ckpt_config.run_id
+            print(f"Restored run_id from checkpoint: {config.run_id}")
+        if config.run_name is None and ckpt_config is not None and hasattr(ckpt_config, "run_name") and ckpt_config.run_name is not None:
+            config.run_name = ckpt_config.run_name
+            print(f"Restored run_name from checkpoint: {config.run_name}")
+
     # SLURM job array support: Use shared run_id for all tasks in the same array
     # This makes all array tasks log to the same wandb run
     if config.run_id is None:
@@ -1064,7 +1074,7 @@ def train_one_epoch(
     biological_masker=None,
     temperature_schedule=None,
     scaler=None,
-    save_every_steps=2000,
+    save_every_steps=500,
     bert_config=None,
     decoder_config=None,
     best_stats=None,
@@ -1482,12 +1492,12 @@ def train_one_epoch(
         if scaler is not None:
             # Mixed precision optimizer step
             scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.max_norm)
             scaler.step(optimizer)
             scaler.update()
         else:
             # Standard optimizer step
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.max_norm)
             optimizer.step()
 
         # Reset gradients
@@ -2317,6 +2327,14 @@ def get_parser():
         type=str,
         default="OneCycle",
         help="Learning rate scheduler. Default: %(default)s",
+    )
+    group.add_argument(
+        "--max-norm",
+        "--max_norm",
+        dest="max_norm",
+        type=float,
+        default=1.0,
+        help="Maximum gradient norm for gradient clipping. Default: %(default)s",
     )
     parser.add_argument(
         "--tokenize-n-nucleotide",
