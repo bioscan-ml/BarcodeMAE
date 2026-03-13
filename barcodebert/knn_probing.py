@@ -228,7 +228,7 @@ def run(config):
 
     with open("KNN_RESULTS.txt", "a") as f:
         model_name = os.path.join(*os.path.split(config.pretrained_checkpoint_path)[-2:])
-        f.write(f"\n{model_name}_{config.mask_rate}_{config.mode} \t {acc:.4f}")
+        f.write(f"\n{config.run_name}_{model_name}\t {acc:.4f}")
 
     timing_stats["overall"] = time.time() - t_start
 
