@@ -20,6 +20,8 @@ class MAELMModel(nn.Module):
         pool_jumbo_for_taxonomy=False,
         taxonomy_pool_type="mean",
         mlp_expansion_factor=2,
+        use_cls_token=False,
+        n_registers=0,
     ):
         super(MAELMModel, self).__init__()
         # Encoder BERT model
@@ -31,6 +33,8 @@ class MAELMModel(nn.Module):
         self.jumbo_source = jumbo_source  # "encoder" or "decoder"
         self.pool_jumbo_for_taxonomy = pool_jumbo_for_taxonomy
         self.taxonomy_pool_type = taxonomy_pool_type
+        self.use_cls_token = use_cls_token
+        self.n_registers = n_registers
 
         # Validate jumbo_source configuration
         if self.jumbo_source not in ["encoder", "decoder"]:
@@ -48,6 +52,13 @@ class MAELMModel(nn.Module):
             )
         else:
             self.encoder = BertModel(encoder_config)
+
+        # Learnable register tokens (only for non-jumbo; no special MLP, just extra tokens)
+        if n_registers > 0 and not jumbo:
+            self.register_tokens = nn.Parameter(torch.zeros(1, n_registers, encoder_config.hidden_size))
+            nn.init.trunc_normal_(self.register_tokens, mean=0.0, std=0.02)
+        else:
+            self.register_tokens = None
 
         # Decoder BERT model with token classification head (always standard, never jumbo)
         self.decoder = BertForTokenClassification(decoder_config)
@@ -129,25 +140,65 @@ class MAELMModel(nn.Module):
         padded_encoder_position_ids[~seen_indices] = 0
 
         # Pass the encoder inputs through the encoder model
-        encoder_outputs = self.encoder(
-            input_ids=padded_encoder_input_ids,
-            attention_mask=padded_encoder_attention_mask,
-            position_ids=padded_encoder_position_ids,
-        )
+        register_outputs = None
+        if self.n_registers > 0 and not self.jumbo:
+            # Get sequence embeddings with position information
+            seq_embeds = self.encoder.embeddings(
+                input_ids=padded_encoder_input_ids,
+                position_ids=padded_encoder_position_ids,
+            )  # (B, N', D)
 
-        # Handle Jumbo vs standard output
-        if self.jumbo:
-            encoder_sequence_output = encoder_outputs.hidden_states
-            jumbo_tokens = encoder_outputs.jumbo_tokens  # (B, J, D)
-        else:
-            encoder_sequence_output = encoder_outputs.last_hidden_state
+            # Prepend learnable register tokens (no position embedding added to them)
+            registers = self.register_tokens.expand(batch_size, -1, -1)  # (B, R, D)
+            combined_embeds = torch.cat([registers, seq_embeds], dim=1)  # (B, R+N', D)
+
+            # Build attention mask for R+N' tokens
+            reg_mask = torch.ones(
+                batch_size, self.n_registers,
+                device=input_ids.device, dtype=padded_encoder_attention_mask.dtype,
+            )
+            combined_mask = torch.cat([reg_mask, padded_encoder_attention_mask], dim=1)  # (B, R+N')
+            extended_mask = self.encoder.get_extended_attention_mask(
+                combined_mask,
+                (batch_size, combined_mask.size(1)),
+                device=input_ids.device,
+            )
+
+            # Run through encoder transformer layers directly
+            encoder_out = self.encoder.encoder(combined_embeds, attention_mask=extended_mask)
+            all_hidden = encoder_out.last_hidden_state  # (B, R+N', D)
+
+            register_outputs = all_hidden[:, : self.n_registers, :]  # (B, R, D)
+            encoder_sequence_output = all_hidden[:, self.n_registers :, :]  # (B, N', D)
             jumbo_tokens = None
+        else:
+            encoder_outputs = self.encoder(
+                input_ids=padded_encoder_input_ids,
+                attention_mask=padded_encoder_attention_mask,
+                position_ids=padded_encoder_position_ids,
+            )
+
+            # Handle Jumbo vs standard output
+            if self.jumbo:
+                encoder_sequence_output = encoder_outputs.hidden_states
+                jumbo_tokens = encoder_outputs.jumbo_tokens  # (B, J, D)
+            else:
+                encoder_sequence_output = encoder_outputs.last_hidden_state
+                jumbo_tokens = None
+
+        # Extract CLS token from encoder output (encoder-source, analogous to jumbo_source="encoder")
+        # CLS is always the first seen token (position 0, never masked)
+        cls_token = None
+        if self.use_cls_token:
+            cls_token = encoder_sequence_output[:, 0:1, :]  # (B, 1, D_encoder) — before projection
 
         # If the encoder and decoder have different hidden states, project the encoder hidden states
         if self.encoder.config.hidden_size != self.decoder.config.hidden_size:
             encoder_sequence_output = self.projection_layer(encoder_sequence_output)
             if jumbo_tokens is not None:
                 jumbo_tokens = self.projection_layer(jumbo_tokens)
+            if register_outputs is not None:
+                register_outputs = self.projection_layer(register_outputs)
 
         # Map encoder outputs back to the original sequence positions
         # Use decoder hidden size since we may have projected encoder outputs
@@ -175,9 +226,6 @@ class MAELMModel(nn.Module):
 
         # Prepend Jumbo tokens to decoder input (if encoder has jumbo tokens)
         if jumbo_tokens is not None:
-            # print(f"jumbo_tokens shape: {jumbo_tokens.shape}")
-            # print(f"decoder_input_embeddings before cat: {decoder_input_embeddings.shape}")
-
             decoder_input_embeddings = torch.cat([jumbo_tokens, decoder_input_embeddings], dim=1)
             jumbo_mask = torch.ones(
                 batch_size, self.jumbo_multiplier, device=input_ids.device, dtype=attention_mask.dtype
@@ -188,8 +236,17 @@ class MAELMModel(nn.Module):
             )
             decoder_position_ids = torch.cat([jumbo_pos, position_ids], dim=1)
 
-            # print(f"decoder_input_embeddings after cat: {decoder_input_embeddings.shape}")
-            # print(f"decoder_position_ids after cat: {decoder_position_ids.shape}")
+        # Prepend register tokens to decoder input (mutually exclusive with jumbo)
+        if register_outputs is not None:
+            decoder_input_embeddings = torch.cat([register_outputs, decoder_input_embeddings], dim=1)
+            reg_mask = torch.ones(
+                batch_size, self.n_registers, device=input_ids.device, dtype=attention_mask.dtype
+            )
+            decoder_attention_mask = torch.cat([reg_mask, decoder_attention_mask], dim=1)
+            reg_pos = torch.zeros(
+                batch_size, self.n_registers, device=input_ids.device, dtype=position_ids.dtype
+            )
+            decoder_position_ids = torch.cat([reg_pos, position_ids], dim=1)
 
         # Pass through the decoder (standard BertForTokenClassification)
         # Request hidden states if we need decoder-processed jumbo tokens for classification
@@ -216,6 +273,10 @@ class MAELMModel(nn.Module):
             # Remove jumbo positions from logits (they shouldn't be used for token prediction)
             outputs.logits = outputs.logits[:, self.jumbo_multiplier :, :].contiguous()
 
+        # Strip register positions from logits (they shouldn't be used for token prediction)
+        if register_outputs is not None:
+            outputs.logits = outputs.logits[:, self.n_registers :, :].contiguous()
+
         # Attach jumbo_tokens to outputs based on jumbo_source
         if self.jumbo_source == "encoder":
             outputs.jumbo_tokens = jumbo_tokens  # Direct from encoder
@@ -224,7 +285,12 @@ class MAELMModel(nn.Module):
         else:
             outputs.jumbo_tokens = None
 
-        # print(outputs.logits.shape)
+        # Attach encoder CLS token for CLS taxonomy classification (analogous to jumbo_source="encoder")
+        outputs.cls_token = cls_token  # (B, 1, D_encoder) or None
+
+        # Attach register token outputs (B, R, D) or None
+        outputs.register_tokens = register_outputs
+
         return outputs
 
     def forward_baseline(self, input_ids, attention_mask):

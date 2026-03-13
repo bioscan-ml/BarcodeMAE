@@ -38,7 +38,7 @@ from torch.cuda.amp import autocast
 from barcodebert.jumbo_transformer import create_jumbo_transformer_model
 from barcodebert.maelm_model import MAELMModel
 
-BASE_BATCH_SIZE = 64
+BASE_BATCH_SIZE = 128
 
 
 def run(config):
@@ -164,11 +164,9 @@ def run(config):
     use_cls_token = config.use_cls_token if hasattr(config, "use_cls_token") else False
     enable_cls_taxonomy = config.enable_cls_taxonomy if hasattr(config, "enable_cls_taxonomy") else False
 
-    # If CLS taxonomy is enabled, we need the CLS token and taxonomy labels
+    # If CLS taxonomy is enabled, we need the CLS token (taxonomy labels come from the dataset)
     if enable_cls_taxonomy:
         use_cls_token = True
-        if not enable_genus_classification:
-            enable_genus_classification = True
 
     dataset_args = {
         "k_mer": config.k_mer,
@@ -413,6 +411,7 @@ def run(config):
         pool_jumbo_for_taxonomy = config.pool_jumbo_for_taxonomy if hasattr(config, "pool_jumbo_for_taxonomy") else False
         taxonomy_pool_type = config.taxonomy_pool_type if hasattr(config, "taxonomy_pool_type") else "mean"
 
+        n_registers = getattr(config, "n_registers", 0)
         model = MAELMModel(
             bert_config,
             decoder_config,
@@ -424,6 +423,8 @@ def run(config):
             pool_jumbo_for_taxonomy=pool_jumbo_for_taxonomy,
             taxonomy_pool_type=taxonomy_pool_type,
             mlp_expansion_factor=config.jumbo_mlp_expansion,
+            use_cls_token=use_cls_token,
+            n_registers=n_registers,
         )
 
     elif config.arch == "transformer":
@@ -1160,6 +1161,8 @@ def train_one_epoch(
     enable_genus_classification = (
         config.enable_genus_classification if hasattr(config, "enable_genus_classification") else False
     )
+    enable_cls_taxonomy = getattr(config, "enable_cls_taxonomy", False)
+    use_taxonomy_labels = enable_genus_classification or enable_cls_taxonomy
     taxonomy_level = (
         config.taxonomy_level_for_classification if hasattr(config, "taxonomy_level_for_classification") else "genus"
     )
@@ -1170,7 +1173,7 @@ def train_one_epoch(
         # Unpack batch data (may include genus/BIN/family labels if enabled for BIOSCAN-5M)
         bin_labels = None
         family_labels = None
-        if enable_genus_classification:
+        if use_taxonomy_labels:
             # Check if BIN and family labels are being returned (BIOSCAN-5M only)
             if config.dataset_name == "BIOSCAN-5M" and len(batch_data) == 6:
                 sequences, y_true, att_mask, genus_labels, bin_labels, family_labels = batch_data
@@ -1290,7 +1293,7 @@ def train_one_epoch(
                     # print("MAELM is implemented")
                     out = model(masked_input, att_mask, masked_unseen_tokens, config.maelm_version)
                 elif config.arch == "transformer":
-                    out = model(masked_input, attention_mask=att_mask)
+                    out = model(masked_input, attention_mask=att_mask, output_hidden_states=enable_cls_taxonomy)
 
                 logits = out.logits.view(-1, n_output_tokens)
 
@@ -1347,7 +1350,7 @@ def train_one_epoch(
             if config.arch == "maelm":
                 out = model(masked_input, att_mask, masked_unseen_tokens, config.maelm_version)
             elif config.arch == "transformer":
-                out = model(masked_input, attention_mask=att_mask)
+                out = model(masked_input, attention_mask=att_mask, output_hidden_states=enable_cls_taxonomy)
 
             logits = out.logits.view(-1, n_output_tokens)
 
@@ -1434,8 +1437,18 @@ def train_one_epoch(
             and cls_taxonomy_classifier is not None
             and genus_labels is not None
         ):
-            # Get hidden states from output
-            if hasattr(out, "hidden_states") and out.hidden_states is not None:
+            # Get the CLS representation:
+            # - MAELM: use out.cls_token (encoder output at position 0, before decoder/projection)
+            # - Transformer: use out.hidden_states (last layer, CLS at position 0)
+            if config.arch == "maelm":
+                cls_hidden = getattr(out, "cls_token", None)  # (B, 1, D_encoder)
+            else:
+                hs = getattr(out, "hidden_states", None)
+                if isinstance(hs, tuple):
+                    hs = hs[-1]  # last layer → (B, seq_len, D)
+                cls_hidden = hs  # CLS at position 0
+
+            if cls_hidden is not None:
                 # Enable debug printing for first 3 batches of first epoch
                 debug_print = epoch == 1 and batch_idx < 3
 
@@ -1445,7 +1458,7 @@ def train_one_epoch(
                 max_pairs = getattr(config, "taxonomy_max_pairs", 32)
                 cls_taxonomy_loss, cls_taxonomy_acc, num_cls_taxonomy_pairs, num_cls_same_pairs, num_cls_diff_pairs = (
                     compute_cls_taxonomy_classification_loss(
-                        out.hidden_states,
+                        cls_hidden,
                         genus_labels,
                         cls_classifier_deref,
                         same_ratio=0.5,
@@ -1887,6 +1900,8 @@ def evaluate(
     enable_genus_classification = (
         config.enable_genus_classification if hasattr(config, "enable_genus_classification") else False
     )
+    enable_cls_taxonomy = getattr(config, "enable_cls_taxonomy", False)
+    use_taxonomy_labels = enable_genus_classification or enable_cls_taxonomy
 
     # Set the random seed to be stable for the evaluation
     # (This is stable if you change the batch size, but not if you change the number of GPU workers)
@@ -1895,7 +1910,7 @@ def evaluate(
     with torch.no_grad():
         for batch_idx, batch_data in enumerate(dataloader):
             # Unpack batch data (may include genus/BIN/family labels if enabled for BIOSCAN-5M)
-            if enable_genus_classification:
+            if use_taxonomy_labels:
                 # Handle BIOSCAN-5M with BIN/family labels (discard them in validation)
                 if config.dataset_name == "BIOSCAN-5M" and len(batch_data) == 6:
                     sequences, _y_true, att_mask, _genus_labels, _bin_labels, _family_labels = batch_data
@@ -2527,6 +2542,21 @@ def get_parser():
             "Add [CLS] token (token_id=2) to the beginning of each sequence. "
             "The CLS token is processed through standard transformer layers (not jumbo MLP). "
             "Can be used independently or with --enable-cls-taxonomy for taxonomy classification."
+        ),
+    )
+
+    group.add_argument(
+        "--n-registers",
+        "--n_registers",
+        dest="n_registers",
+        type=int,
+        default=0,
+        help=(
+            "Number of register tokens to prepend to the sequence in the encoder. "
+            "Register tokens are learnable embeddings that flow through standard transformer layers "
+            "with no special MLP or classification task (unlike Jumbo CLS tokens). "
+            "Can be combined with --use-cls-token to get [CLS][reg...][seq...]. "
+            "Only supported for --arch=maelm without --jumbo. Default: %(default)s"
         ),
     )
 
