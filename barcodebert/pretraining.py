@@ -168,6 +168,12 @@ def run(config):
     if enable_cls_taxonomy:
         use_cls_token = True
 
+    # Labels are needed for the k×m balanced sampler even without any classification task
+    use_km_sampler = (
+        getattr(config, "k_classes", None) is not None and getattr(config, "m_per_class", None) is not None
+    )
+    need_taxonomy_labels = enable_genus_classification or enable_cls_taxonomy or use_km_sampler
+
     dataset_args = {
         "k_mer": config.k_mer,
         "stride": config.stride,
@@ -176,12 +182,11 @@ def run(config):
         "bpe_path": config.bpe_path,
         "tokenize_n_nucleotide": config.tokenize_n_nucleotide,
         "dataset_format": config.dataset_name,
-        "return_taxonomy_level": taxonomy_level if (enable_genus_classification or enable_cls_taxonomy) else None,
+        "return_taxonomy_level": taxonomy_level if need_taxonomy_labels else None,
         "use_cls_token": use_cls_token,
         # For BIOSCAN-5M: return BIN and family labels to augment pair creation
-        "return_bin_labels": config.dataset_name == "BIOSCAN-5M" and (enable_genus_classification or enable_cls_taxonomy),
-        "return_family_labels": config.dataset_name == "BIOSCAN-5M"
-        and (enable_genus_classification or enable_cls_taxonomy),
+        "return_bin_labels": config.dataset_name == "BIOSCAN-5M" and need_taxonomy_labels,
+        "return_family_labels": config.dataset_name == "BIOSCAN-5M" and need_taxonomy_labels,
     }
     if config.dataset_name == "ITS-5M":
         dataset_train = DNADataset(
@@ -230,11 +235,6 @@ def run(config):
         dl_val_kwargs.update(cuda_kwargs)
 
     # Decide which sampler to use for training ---------------------------------
-    use_km_sampler = (
-        getattr(config, "k_classes", None) is not None
-        and getattr(config, "m_per_class", None) is not None
-    )
-
     if use_km_sampler:
         k = config.k_classes
         m = config.m_per_class
@@ -247,8 +247,8 @@ def run(config):
             )
         if not hasattr(dataset_train, "taxonomy_labels") or dataset_train.taxonomy_labels is None:
             raise ValueError(
-                "k×m sampler requires taxonomy labels. "
-                "Enable --enable-genus-classification so the dataset loads labels."
+                "k×m sampler requires taxonomy labels but none were found. "
+                "Check that --taxonomy-level matches a labeled column in your dataset."
             )
         train_labels = dataset_train.taxonomy_labels
         sampler_seed = config.seed if config.seed is not None else 0
