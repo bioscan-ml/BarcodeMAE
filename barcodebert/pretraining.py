@@ -1162,7 +1162,9 @@ def train_one_epoch(
         config.enable_genus_classification if hasattr(config, "enable_genus_classification") else False
     )
     enable_cls_taxonomy = getattr(config, "enable_cls_taxonomy", False)
-    use_taxonomy_labels = enable_genus_classification or enable_cls_taxonomy
+    use_taxonomy_labels = enable_genus_classification or enable_cls_taxonomy or (
+        getattr(config, "k_classes", None) is not None and getattr(config, "m_per_class", None) is not None
+    )
     taxonomy_level = (
         config.taxonomy_level_for_classification if hasattr(config, "taxonomy_level_for_classification") else "genus"
     )
@@ -1901,7 +1903,9 @@ def evaluate(
         config.enable_genus_classification if hasattr(config, "enable_genus_classification") else False
     )
     enable_cls_taxonomy = getattr(config, "enable_cls_taxonomy", False)
-    use_taxonomy_labels = enable_genus_classification or enable_cls_taxonomy
+    use_taxonomy_labels = enable_genus_classification or enable_cls_taxonomy or (
+        getattr(config, "k_classes", None) is not None and getattr(config, "m_per_class", None) is not None
+    )
 
     # Set the random seed to be stable for the evaluation
     # (This is stable if you change the batch size, but not if you change the number of GPU workers)
