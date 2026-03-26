@@ -1075,7 +1075,7 @@ def train_one_epoch(
     biological_masker=None,
     temperature_schedule=None,
     scaler=None,
-    save_every_steps=500,
+    save_every_steps=5000,
     bert_config=None,
     decoder_config=None,
     best_stats=None,
@@ -1642,6 +1642,11 @@ def train_one_epoch(
                         f" {taxonomy_level_display}Loss:{{:7.4f}} "
                         f"{taxonomy_level_display}Acc:{{:5.1f}}% Pairs:{{}}({{}}/{{}}same/diff)"
                     ).format(genus_loss_batch_val, genus_acc_batch_val, num_genus_pairs, num_same_pairs, num_diff_pairs)
+                if cls_taxonomy_loss is not None:
+                    log_msg += " CLSLoss:{:7.4f} CLSAcc:{:5.1f}% CLSPairs:{}({}/{} same/diff)".format(
+                        cls_taxonomy_loss.item(), cls_taxonomy_acc.item() * 100.0,
+                        num_cls_taxonomy_pairs, num_cls_same_pairs, num_cls_diff_pairs,
+                    )
                 log_msg += " LR: {}".format(scheduler.get_last_lr())
                 print(log_msg, flush=True)
             else:
@@ -1658,6 +1663,11 @@ def train_one_epoch(
                         f" {taxonomy_level_display}Loss:{{:7.4f}} "
                         f"{taxonomy_level_display}Acc:{{:5.1f}}% Pairs:{{}}({{}}/{{}}same/diff)"
                     ).format(genus_loss_batch_val, genus_acc_batch_val, num_genus_pairs, num_same_pairs, num_diff_pairs)
+                if cls_taxonomy_loss is not None:
+                    log_msg += " CLSLoss:{:7.4f} CLSAcc:{:5.1f}% CLSPairs:{}({}/{} same/diff)".format(
+                        cls_taxonomy_loss.item(), cls_taxonomy_acc.item() * 100.0,
+                        num_cls_taxonomy_pairs, num_cls_same_pairs, num_cls_diff_pairs,
+                    )
                 log_msg += " LR: {}".format(scheduler.get_last_lr())
                 print(log_msg, flush=True)
 
