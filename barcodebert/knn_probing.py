@@ -349,10 +349,11 @@ def get_parser():
         "--representation_type",
         default="tokens",
         type=str,
-        choices=["tokens", "jumbo", "jumbo_avg", "all_tokens", "cls"],
+        choices=["tokens", "tokens_with_cls", "jumbo", "jumbo_avg", "all_tokens", "cls"],
         help=(
             "Type of representation to extract. Options: "
-            "'tokens' (mean of sequence tokens only), "
+            "'tokens' (mean of k-mer sequence tokens, excluding CLS), "
+            "'tokens_with_cls' (mean of all tokens including CLS at position 0), "
             "'jumbo' (flattened jumbo tokens, J*D dim), "
             "'jumbo_avg' (average of jumbo tokens), "
             "'all_tokens' (average of jumbo + sequence tokens), "

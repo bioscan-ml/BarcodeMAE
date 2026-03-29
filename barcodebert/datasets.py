@@ -515,7 +515,7 @@ def representations_from_df(
                 embedding = hidden_states[:, 0, :]  # (batch_size, D)
 
             elif representation_type == "tokens":
-                # Use mean pooling of sequence tokens only (default behavior)
+                # Mean pooling of k-mer sequence tokens only, excluding the CLS token.
                 if hasattr(output, "last_hidden_state") and output.last_hidden_state is not None:
                     hidden_states = output.last_hidden_state
                 elif hasattr(output, "hidden_states") and output.hidden_states is not None:
@@ -530,18 +530,36 @@ def representations_from_df(
                     if isinstance(hidden_states, tuple):
                         hidden_states = hidden_states[-1]
 
-                # Mean pooling accounting for attention mask and padding tokens
-                # Sum the embeddings of the tokens (excluding padding tokens)
-                sum_embeddings = (hidden_states * att_mask.unsqueeze(-1)).sum(1)  # (batch_size, hidden_size)
-                # Sum the attention mask (number of tokens without padding)
+                # When CLS is at position 0, exclude it from the mean by zeroing its mask entry.
+                seq_mask = att_mask.clone()
+                if use_cls_token:
+                    seq_mask[:, 0] = 0
+
+                sum_embeddings = (hidden_states * seq_mask.unsqueeze(-1)).sum(1)
+                sum_mask = seq_mask.sum(1, keepdim=True)
+                embedding = sum_embeddings / sum_mask
+
+            elif representation_type == "tokens_with_cls":
+                # Mean pooling of all tokens including the CLS token at position 0.
+                if hasattr(output, "last_hidden_state") and output.last_hidden_state is not None:
+                    hidden_states = output.last_hidden_state
+                elif hasattr(output, "hidden_states") and output.hidden_states is not None:
+                    hidden_states = output.hidden_states
+                    if isinstance(hidden_states, tuple):
+                        hidden_states = hidden_states[-1]
+                else:
+                    hidden_states = output[-1] if isinstance(output, tuple) else output
+                    if isinstance(hidden_states, tuple):
+                        hidden_states = hidden_states[-1]
+
+                sum_embeddings = (hidden_states * att_mask.unsqueeze(-1)).sum(1)
                 sum_mask = att_mask.sum(1, keepdim=True)
-                # Calculate the mean embeddings
-                embedding = sum_embeddings / sum_mask  # (batch_size, hidden_size)
+                embedding = sum_embeddings / sum_mask
 
             else:
                 raise ValueError(
                     f"Invalid representation_type: {representation_type}. "
-                    "Must be one of: 'tokens', 'jumbo', 'jumbo_avg', 'all_tokens', 'cls'."
+                    "Must be one of: 'tokens', 'tokens_with_cls', 'jumbo', 'jumbo_avg', 'all_tokens', 'cls'."
                 )
 
             dna_embeddings.append(embedding.cpu().numpy())
