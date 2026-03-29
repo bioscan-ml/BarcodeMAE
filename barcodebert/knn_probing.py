@@ -71,6 +71,7 @@ def run(config):
         "n_layers",
         "n_heads",
         "dataset_name",
+        "use_cls_token"
     ]
     default_kwargs = vars(get_parser().parse_args(["--pretrained_checkpoint=dummy.pt", "--dataset=foo_bar"]))
     for key in keys_to_reuse:
@@ -123,7 +124,7 @@ def run(config):
         kmer_dict = dict.fromkeys(kmers, 1)
         vocab = build_vocab_from_dict(kmer_dict, specials=specials)
         vocab.set_default_index(vocab[UNK_TOKEN])
-        tokenizer = KmerTokenizer(config.k_mer, vocab, stride=config.k_mer, padding=True, max_len=config.max_len)
+        tokenizer = KmerTokenizer(config.k_mer, vocab, stride=config.stride, padding=True, max_len=config.max_len)
 
     elif config.tokenizer == "bpe":
         tokenizer = BPETokenizer(padding=True, max_tokenized_len=config.max_len, bpe_path=config.bpe_path)
@@ -157,6 +158,7 @@ def run(config):
         config.mode,
         config.mask_rate,
         config.representation_type,
+        use_cls_token=getattr(config, "use_cls_token", False),
     )
     print("Generating embeddings for train set", flush=True)
     X, y, train_orders = representations_from_df(
@@ -168,6 +170,7 @@ def run(config):
         config.mode,
         config.mask_rate,
         config.representation_type,
+        use_cls_token=getattr(config, "use_cls_token", False),
     )
     timing_stats["embed"] = time.time() - t_start_embed
 

@@ -84,6 +84,7 @@ def load_pretrained_model(checkpoint_path, device=None):
     print(f"\nLoading model from {checkpoint_path}")
     ckpt = torch.load(checkpoint_path, map_location=device)
     bert_config = BertConfig(**ckpt["bert_config"])
+    print(bert_config)
 
     # Check if this is a jumbo transformer model
     if hasattr(ckpt["config"], "jumbo") and ckpt["config"].jumbo:
@@ -92,7 +93,6 @@ def load_pretrained_model(checkpoint_path, device=None):
         share_jumbo_layers = getattr(ckpt["config"], "share_jumbo_layers", False)
         enable_genus_classification = getattr(ckpt["config"], "enable_genus_classification", False)
         mlp_expansion_factor = getattr(ckpt["config"], "jumbo_mlp_expansion", 2)
-
         # Check if taxonomy classification is enabled
         if enable_genus_classification and ckpt["config"].arch != "maelm":
             print("Loading JumboTransformerWithTaxonomy")
@@ -127,4 +127,25 @@ def load_pretrained_model(checkpoint_path, device=None):
     model.load_state_dict(state_dict)
     model.eval()
     print(f"Loaded model from {checkpoint_path}")
+
+    cfg = ckpt["config"]
+    total_step = ckpt.get("total_step", "N/A")
+    steps_per_epoch = getattr(cfg, "steps_per_epoch", None)
+    if total_step != "N/A" and steps_per_epoch:
+        epochs_trained = total_step / steps_per_epoch
+    else:
+        epochs_trained = "N/A"
+    print("\n--- Checkpoint Diagnostics ---")
+    print(f"  Total steps trained:       {total_step}")
+    print(f"  Epochs trained:            {epochs_trained}")
+    print(f"  use_cls_token:             {getattr(cfg, 'use_cls_token', False)}")
+    print(f"  enable_genus_classification:      {getattr(cfg, 'enable_genus_classification', False)}")
+    print(f"  enable_taxonomy_classification:   {getattr(cfg, 'enable_taxonomy_classification', False)}")
+    print(f"  enable_cls_taxonomy:              {getattr(cfg, 'enable_cls_taxonomy', False)}")
+    jumbo = getattr(cfg, "jumbo", False)
+    n_registers = getattr(cfg, "jumbo_multiplier", 0) if jumbo else 0
+    print(f"  jumbo (registers):         {jumbo}")
+    print(f"  number of registers (J):   {n_registers}")
+    print("------------------------------\n")
+
     return model, ckpt

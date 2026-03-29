@@ -351,7 +351,8 @@ class DNADataset(Dataset):
 
 
 def representations_from_df(
-    df, target_level, model, tokenizer, dataset_name, mode=None, mask_rate=None, representation_type="tokens"
+    df, target_level, model, tokenizer, dataset_name, mode=None, mask_rate=None, representation_type="tokens",
+    use_cls_token=False,
 ):
     """
     Extract representations from DNA sequences in a dataframe.
@@ -379,6 +380,8 @@ def representations_from_df(
         - "jumbo_avg": Average of jumbo tokens only (averaged over J tokens)
         - "all_tokens": Average of ALL tokens (jumbo + sequence tokens)
         - "cls": CLS token representation from position 0
+    use_cls_token : bool, optional
+        Whether to prepend [CLS] token (ID=2) to the sequence, matching training behaviour.
 
     Returns
     -------
@@ -406,6 +409,14 @@ def representations_from_df(
     with torch.no_grad():
         for barcode in df["nucleotides"]:
             x, att_mask = tokenizer(barcode)
+
+            # Prepend [CLS] token (ID=2) if the model was trained with use_cls_token.
+            # DNADataset does this in __getitem__; replicate it here without offset.
+            if use_cls_token:
+                cls_token = torch.tensor([2], dtype=x.dtype)
+                cls_mask = torch.tensor([1], dtype=att_mask.dtype)
+                x = torch.cat([cls_token, x])
+                att_mask = torch.cat([cls_mask, att_mask])
 
             x = x.unsqueeze(0).to(model_device)
             att_mask = att_mask.unsqueeze(0).to(model_device)
