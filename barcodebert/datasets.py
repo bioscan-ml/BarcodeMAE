@@ -403,6 +403,15 @@ def representations_from_df(
 
     dna_embeddings = []
 
+    # Validate that the tokenizer vocabulary contains [CLS] when use_cls_token is True
+    if use_cls_token and isinstance(tokenizer, KmerTokenizer):
+        vocab_tokens = tokenizer.vocabulary_mapper.get_itos()
+        if "[CLS]" not in vocab_tokens:
+            raise ValueError(
+                "use_cls_token=True but the tokenizer vocabulary does not contain '[CLS]'. "
+                "Ensure the vocabulary was built with specials=['[MASK]', '[UNK]', '[CLS]']."
+            )
+
     # Get model device robustly (works for all PyTorch models)
     model_device = next(model.parameters()).device
 
