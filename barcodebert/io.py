@@ -200,9 +200,11 @@ def load_pretrained_model(checkpoint_path, device=None):
     print(f"  enable_taxonomy_classification:   {getattr(cfg, 'enable_taxonomy_classification', False)}")
     print(f"  enable_cls_taxonomy:              {getattr(cfg, 'enable_cls_taxonomy', False)}")
     jumbo = getattr(cfg, "jumbo", False)
-    n_registers = getattr(cfg, "jumbo_multiplier", 0) if jumbo else 0
-    print(f"  jumbo (registers):         {jumbo}")
-    print(f"  number of registers (J):   {n_registers}")
+    jumbo_multiplier = getattr(cfg, "jumbo_multiplier", 0) if jumbo else 0
+    n_registers = getattr(cfg, "n_registers", 0) if not jumbo else 0
+    print(f"  jumbo:                     {jumbo}")
+    print(f"  number of jumbo tokens (J):{jumbo_multiplier}")
+    print(f"  number of register tokens: {n_registers}")
     print("------------------------------\n")
 
     return model, ckpt
