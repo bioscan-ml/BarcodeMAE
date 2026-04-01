@@ -556,10 +556,59 @@ def representations_from_df(
                 sum_mask = att_mask.sum(1, keepdim=True)
                 embedding = sum_embeddings / sum_mask
 
+            elif representation_type == "tokens_with_registers":
+                # Mean of sequence tokens + register tokens, excluding CLS.
+                # Requires a RegisterBertModel that exposes register_hidden_states.
+                if not hasattr(output, "register_hidden_states") or output.register_hidden_states is None:
+                    raise ValueError(
+                        "representation_type='tokens_with_registers' requires a model with register tokens "
+                        "(RegisterBertModel). Use 'tokens' for a plain BertModel."
+                    )
+                register_states = output.register_hidden_states  # (B, R, D)
+                hidden_states = output.last_hidden_state          # (B, seq_len, D)
+
+                # Exclude CLS (position 0) from sequence tokens
+                seq_mask = att_mask.clone()
+                if use_cls_token:
+                    seq_mask[:, 0] = 0
+
+                # Registers always attend (mask = 1)
+                reg_mask = torch.ones(
+                    register_states.shape[0], register_states.shape[1],
+                    device=att_mask.device, dtype=att_mask.dtype,
+                )
+                combined = torch.cat([register_states, hidden_states], dim=1)       # (B, R+seq, D)
+                combined_mask = torch.cat([reg_mask, seq_mask], dim=1)              # (B, R+seq)
+                sum_embeddings = (combined * combined_mask.unsqueeze(-1)).sum(1)
+                sum_mask = combined_mask.sum(1, keepdim=True)
+                embedding = sum_embeddings / sum_mask
+
+            elif representation_type == "all_with_registers":
+                # Mean of all tokens: sequence tokens + register tokens + CLS.
+                # Requires a RegisterBertModel that exposes register_hidden_states.
+                if not hasattr(output, "register_hidden_states") or output.register_hidden_states is None:
+                    raise ValueError(
+                        "representation_type='all_with_registers' requires a model with register tokens "
+                        "(RegisterBertModel). Use 'tokens_with_cls' for a plain BertModel."
+                    )
+                register_states = output.register_hidden_states  # (B, R, D)
+                hidden_states = output.last_hidden_state          # (B, seq_len, D)
+
+                reg_mask = torch.ones(
+                    register_states.shape[0], register_states.shape[1],
+                    device=att_mask.device, dtype=att_mask.dtype,
+                )
+                combined = torch.cat([register_states, hidden_states], dim=1)       # (B, R+seq, D)
+                combined_mask = torch.cat([reg_mask, att_mask], dim=1)              # (B, R+seq)
+                sum_embeddings = (combined * combined_mask.unsqueeze(-1)).sum(1)
+                sum_mask = combined_mask.sum(1, keepdim=True)
+                embedding = sum_embeddings / sum_mask
+
             else:
                 raise ValueError(
                     f"Invalid representation_type: {representation_type}. "
-                    "Must be one of: 'tokens', 'tokens_with_cls', 'jumbo', 'jumbo_avg', 'all_tokens', 'cls'."
+                    "Must be one of: 'tokens', 'tokens_with_cls', 'jumbo', 'jumbo_avg', 'all_tokens', 'cls', "
+                    "'tokens_with_registers', 'all_with_registers'."
                 )
 
             dna_embeddings.append(embedding.cpu().numpy())
