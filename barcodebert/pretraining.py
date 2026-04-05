@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 import builtins
+import contextlib
 import math
 import os
 import shutil
@@ -956,7 +957,7 @@ def run(config):
                 save_dict["cls_taxonomy_classifier"] = actual_cls_classifier
             # Add scaler state if using mixed precision
             if scaler is not None:
-                save_dict["scaler"] = scaler
+                save_dict["scaler"] = scaler.state_dict()
 
             if config.arch == "maelm":
                 # Get the actual model (handle distributed wrapper)
@@ -970,7 +971,7 @@ def run(config):
                     }
                     # Add scaler state if using mixed precision
                     if scaler is not None:
-                        save_dict_encoder["scaler"] = scaler
+                        save_dict_encoder["scaler"] = scaler.state_dict()
 
                     safe_save_model(
                         save_dict_encoder,
@@ -1407,19 +1408,20 @@ def train_one_epoch(
                     # Enable debug printing for first 3 batches of first epoch
                     debug_print = epoch == 1 and batch_idx < 3
                     max_pairs = getattr(config, "taxonomy_max_pairs", 32)
-                    taxonomy_loss, taxonomy_acc, num_taxonomy_pairs, num_same_pairs, num_diff_pairs = (
-                        compute_taxonomy_classification_loss(
-                            out.jumbo_tokens,
-                            genus_labels,
-                            model_deref.taxonomy_classifier,
-                            same_ratio=0.5,
-                            max_pairs=max_pairs,
-                            debug_print=debug_print,
-                            bin_labels=bin_labels,
-                            family_labels=family_labels,
-                            use_pos_weight=getattr(config, "taxonomy_use_pos_weight", False),
+                    with autocast() if scaler is not None else contextlib.nullcontext():
+                        taxonomy_loss, taxonomy_acc, num_taxonomy_pairs, num_same_pairs, num_diff_pairs = (
+                            compute_taxonomy_classification_loss(
+                                out.jumbo_tokens,
+                                genus_labels,
+                                model_deref.taxonomy_classifier,
+                                same_ratio=0.5,
+                                max_pairs=max_pairs,
+                                debug_print=debug_print,
+                                bin_labels=bin_labels,
+                                family_labels=family_labels,
+                                use_pos_weight=getattr(config, "taxonomy_use_pos_weight", False),
+                            )
                         )
-                    )
 
                     # Add taxonomy loss to total loss if valid
                     if taxonomy_loss is not None:
@@ -1458,19 +1460,20 @@ def train_one_epoch(
                 cls_classifier_deref = cls_taxonomy_classifier.module if config.distributed else cls_taxonomy_classifier
 
                 max_pairs = getattr(config, "taxonomy_max_pairs", 32)
-                cls_taxonomy_loss, cls_taxonomy_acc, num_cls_taxonomy_pairs, num_cls_same_pairs, num_cls_diff_pairs = (
-                    compute_cls_taxonomy_classification_loss(
-                        cls_hidden,
-                        genus_labels,
-                        cls_classifier_deref,
-                        same_ratio=0.5,
-                        max_pairs=max_pairs,
-                        debug_print=debug_print,
-                        bin_labels=bin_labels,
-                        family_labels=family_labels,
-                        use_pos_weight=getattr(config, "taxonomy_use_pos_weight", False),
+                with autocast() if scaler is not None else contextlib.nullcontext():
+                    cls_taxonomy_loss, cls_taxonomy_acc, num_cls_taxonomy_pairs, num_cls_same_pairs, num_cls_diff_pairs = (
+                        compute_cls_taxonomy_classification_loss(
+                            cls_hidden,
+                            genus_labels,
+                            cls_classifier_deref,
+                            same_ratio=0.5,
+                            max_pairs=max_pairs,
+                            debug_print=debug_print,
+                            bin_labels=bin_labels,
+                            family_labels=family_labels,
+                            use_pos_weight=getattr(config, "taxonomy_use_pos_weight", False),
+                        )
                     )
-                )
 
                 # Add CLS taxonomy loss to total loss if valid
                 if cls_taxonomy_loss is not None:
@@ -1690,7 +1693,7 @@ def train_one_epoch(
                 save_dict["cls_taxonomy_classifier"] = actual_cls_classifier
             # Add scaler state if using mixed precision
             if scaler is not None:
-                save_dict["scaler"] = scaler
+                save_dict["scaler"] = scaler.state_dict()
 
             print(f"[Resuming] saving checkpoint at global step {total_step}", flush=True)
             if config.arch == "maelm":
