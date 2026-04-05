@@ -39,7 +39,7 @@ from torch.cuda.amp import autocast
 from barcodebert.jumbo_transformer import create_jumbo_transformer_model
 from barcodebert.maelm_model import MAELMModel
 
-BASE_BATCH_SIZE = 64
+BASE_BATCH_SIZE = 128
 
 
 def run(config):

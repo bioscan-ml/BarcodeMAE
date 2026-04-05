@@ -114,11 +114,12 @@ def compute_cls_taxonomy_classification_loss(
     logits = classifier(cls_rep1, cls_rep2).squeeze(-1)  # (num_pairs,)
 
     # Compute loss, optionally with pos_weight to normalize for imbalanced pos/neg pair counts
+    target_dtype = logits.dtype
     if use_pos_weight and num_same > 0:
-        pos_weight = torch.tensor(num_diff / num_same, dtype=torch.float, device=logits.device)
-        loss = nn.functional.binary_cross_entropy_with_logits(logits, labels.float(), pos_weight=pos_weight)
+        pos_weight = torch.tensor(num_diff / num_same, dtype=target_dtype, device=logits.device)
+        loss = nn.functional.binary_cross_entropy_with_logits(logits, labels.to(target_dtype), pos_weight=pos_weight)
     else:
-        loss = nn.functional.binary_cross_entropy_with_logits(logits, labels.float())
+        loss = nn.functional.binary_cross_entropy_with_logits(logits, labels.to(target_dtype))
 
     # Compute accuracy
     predictions = (torch.sigmoid(logits) > 0.5).long()
