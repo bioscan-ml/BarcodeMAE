@@ -103,7 +103,7 @@ def safe_save_model(modules, checkpoint_path=None, config=None, decoder_config=N
     # whereas moving the file is an atomic operation.
     tmp_a, tmp_b = os.path.split(checkpoint_path)
     tmp_fname = os.path.join(tmp_a, ".tmp." + tmp_b)
-    data = {k: v.state_dict() for k, v in modules.items()}
+    data = {k: v.state_dict() if hasattr(v, "state_dict") else v for k, v in modules.items()}
     data.update(kwargs)
     if config is not None:
         data["config"] = config
