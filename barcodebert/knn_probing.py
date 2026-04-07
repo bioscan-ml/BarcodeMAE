@@ -192,34 +192,55 @@ def run(config):
     # kNN =====================================================================
     print("Computing Nearest Neighbors", flush=True)
 
-    # Fit ---------------------------------------------------------------------
+    n_neighbors_list = config.n_neighbors  # already a list
+
+    # Fit once with the largest k (reuse for all smaller k via kneighbors())
     t_start_train = time.time()
-    clf = KNeighborsClassifier(n_neighbors=config.n_neighbors, metric=config.metric)
+    max_k = max(n_neighbors_list)
+    clf = KNeighborsClassifier(n_neighbors=max_k, metric=config.metric)
     clf.fit(X, y)
     timing_stats["train"] = time.time() - t_start_train
 
-    # Evaluate ----------------------------------------------------------------
+    # Precompute distances once for both partitions
     t_start_test = time.time()
-    # Create results dictionary
-    results = {}
-    for partition_name, X_part, y_part in [("Train", X, y), ("Unseen", X_unseen, y_unseen)]:
-        y_pred = clf.predict(X_part)
-        res_part = {}
-        res_part["count"] = len(y_part)
-        # Note that these evaluation metrics have all been converted to percentages
-        res_part["accuracy"] = 100.0 * sklearn.metrics.accuracy_score(y_part, y_pred)
-        res_part["accuracy-balanced"] = 100.0 * sklearn.metrics.balanced_accuracy_score(y_part, y_pred)
-        res_part["f1-micro"] = 100.0 * sklearn.metrics.f1_score(y_part, y_pred, average="micro")
-        res_part["f1-macro"] = 100.0 * sklearn.metrics.f1_score(y_part, y_pred, average="macro")
-        res_part["f1-support"] = 100.0 * sklearn.metrics.f1_score(y_part, y_pred, average="weighted")
-        results[partition_name] = res_part
-        print(f"\n{partition_name} evaluation results:")
-        for k, v in res_part.items():
-            if k == "count":
-                print(f"  {k + ' ':.<21s}{v:7d}")
-            else:
-                print(f"  {k + ' ':.<24s} {v:6.2f} %")
-    acc = results["Unseen"]["accuracy"]
+    partitions = [("Train", X, y), ("Unseen", X_unseen, y_unseen)]
+    neigh_dist = {}
+    neigh_ind = {}
+    for partition_name, X_part, _ in partitions:
+        neigh_dist[partition_name], neigh_ind[partition_name] = clf.kneighbors(X_part, n_neighbors=max_k)
+
+    # Evaluate for each k
+    all_results = {}  # k -> {partition -> metrics}
+    for k in n_neighbors_list:
+        print(f"\n{'='*50}")
+        print(f"k = {k}")
+        print(f"{'='*50}")
+        results = {}
+        for partition_name, X_part, y_part in partitions:
+            # Use the k closest neighbors from precomputed distances
+            ind_k = neigh_ind[partition_name][:, :k]
+            # Majority vote
+            neighbor_labels = y[ind_k] if partition_name == "Train" else y[ind_k]
+            # For train partition neighbors come from train set (same clf)
+            neighbor_labels = clf._y[ind_k]
+            from scipy import stats as scipy_stats
+            y_pred = scipy_stats.mode(neighbor_labels, axis=1, keepdims=False).mode
+            res_part = {}
+            res_part["count"] = len(y_part)
+            res_part["accuracy"] = 100.0 * sklearn.metrics.accuracy_score(y_part, y_pred)
+            res_part["accuracy-balanced"] = 100.0 * sklearn.metrics.balanced_accuracy_score(y_part, y_pred)
+            res_part["f1-micro"] = 100.0 * sklearn.metrics.f1_score(y_part, y_pred, average="micro")
+            res_part["f1-macro"] = 100.0 * sklearn.metrics.f1_score(y_part, y_pred, average="macro")
+            res_part["f1-support"] = 100.0 * sklearn.metrics.f1_score(y_part, y_pred, average="weighted")
+            results[partition_name] = res_part
+            print(f"\n{partition_name} evaluation results (k={k}):")
+            for metric_name, v in res_part.items():
+                if metric_name == "count":
+                    print(f"  {metric_name + ' ':.<21s}{v:7d}")
+                else:
+                    print(f"  {metric_name + ' ':.<24s} {v:6.2f} %")
+        all_results[k] = results
+
     timing_stats["test"] = time.time() - t_start_test
 
     # Save results -------------------------------------------------------------
@@ -227,17 +248,17 @@ def run(config):
     hour = dt // 3600
     minutes = (dt - (3600 * hour)) // 60
     seconds = dt - (hour * 3600) - (minutes * 60)
-    print(f"The code finished after: {int(hour)}:{int(minutes):02d}:{seconds:02.0f} (hh:mm:ss)\n")
+    print(f"\nThe code finished after: {int(hour)}:{int(minutes):02d}:{seconds:02.0f} (hh:mm:ss)\n")
 
+    model_name = os.path.join(*os.path.split(config.pretrained_checkpoint_path)[-2:])
     with open("KNN_RESULTS.txt", "a") as f:
-        model_name = os.path.join(*os.path.split(config.pretrained_checkpoint_path)[-2:])
-        f.write(f"\n{config.run_name}_{model_name}\t {acc:.4f}")
+        for k, results in all_results.items():
+            acc = results["Unseen"]["accuracy"]
+            f.write(f"\n{config.run_name}_{model_name}_k{k}\t {acc:.4f}")
 
     timing_stats["overall"] = time.time() - t_start
 
     # LOGGING =================================================================
-    # Setup logging and saving
-
     if config.log_wandb:
         wandb_run_name = config.run_name
         if wandb_run_name is not None and config.run_id is not None:
@@ -264,13 +285,13 @@ def run(config):
             tags=["evaluate", job_type],
         )
 
-        # Log results to wandb ----------------------------------------------------
-        wandb.log(
-            {
-                **{f"knn/duration/{k}": v for k, v in timing_stats.items()},
-                **{f"knn/{partition}/{k}": v for partition, res in results.items() for k, v in res.items()},
-            },
-        )
+        # Log results for all k values to wandb
+        log_dict = {**{f"knn/duration/{k}": v for k, v in timing_stats.items()}}
+        for k, results in all_results.items():
+            for partition, res in results.items():
+                for metric_name, v in res.items():
+                    log_dict[f"knn_k{k}/{partition}/{metric_name}"] = v
+        wandb.log(log_dict)
 
 
 def get_parser():
@@ -319,9 +340,10 @@ def get_parser():
     group.add_argument(
         "--n-neighbors",
         "--n_neighbors",
-        default=1,
+        default=[1],
         type=int,
-        help="Neighborhood size for kNN. Default: %(default)s",
+        nargs="+",
+        help="Neighborhood size(s) for kNN. Pass one or more values. Default: %(default)s",
     )
     group.add_argument(
         "--metric",
