@@ -5,6 +5,7 @@ import resource
 import time
 from itertools import product
 
+import numpy as np
 import pandas as pd
 import sklearn.metrics
 import torch
@@ -197,6 +198,9 @@ def run(config):
     # Fit once with the largest k (reuse for all smaller k via kneighbors())
     t_start_train = time.time()
     max_k = max(n_neighbors_list)
+    # Convert to numpy to support 2D indexing
+    y = y.to_numpy() if hasattr(y, "to_numpy") else y
+    y_unseen = y_unseen.to_numpy() if hasattr(y_unseen, "to_numpy") else y_unseen
     clf = KNeighborsClassifier(n_neighbors=max_k, metric=config.metric)
     clf.fit(X, y)
     timing_stats["train"] = time.time() - t_start_train
@@ -219,12 +223,9 @@ def run(config):
         for partition_name, X_part, y_part in partitions:
             # Use the k closest neighbors from precomputed distances
             ind_k = neigh_ind[partition_name][:, :k]
-            # Majority vote
-            neighbor_labels = y[ind_k] if partition_name == "Train" else y[ind_k]
-            # For train partition neighbors come from train set (same clf)
-            neighbor_labels = clf._y[ind_k]
-            from scipy import stats as scipy_stats
-            y_pred = scipy_stats.mode(neighbor_labels, axis=1, keepdims=False).mode
+            neighbor_labels = clf._y[ind_k]  # encoded class indices, shape (N, k)
+            majority_idx = np.array([np.bincount(row).argmax() for row in neighbor_labels])
+            y_pred = clf.classes_[majority_idx]  # map back to original labels
             res_part = {}
             res_part["count"] = len(y_part)
             res_part["accuracy"] = 100.0 * sklearn.metrics.accuracy_score(y_part, y_pred)
