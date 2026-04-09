@@ -508,6 +508,8 @@ def representations_from_df(
                     hidden_states = output.last_hidden_state
                 elif hasattr(output, "hidden_states") and output.hidden_states is not None:
                     hidden_states = output.hidden_states
+                    if isinstance(hidden_states, tuple):
+                        hidden_states = hidden_states[-1]
                 else:
                     hidden_states = output[-1] if isinstance(output, tuple) else output
 
@@ -607,7 +609,7 @@ def representations_from_df(
             else:
                 raise ValueError(
                     f"Invalid representation_type: {representation_type}. "
-                    "Must be one of: 'tokens', 'tokens_with_cls', 'jumbo', 'jumbo_avg', 'all_tokens', 'cls', "
+                    "Must be one of: 'tokens', 'tokens_only', 'tokens_with_cls', 'jumbo', 'jumbo_avg', 'all_tokens', 'cls', "
                     "'tokens_with_registers', 'all_with_registers'."
                 )
 
