@@ -25,20 +25,71 @@ BASE_BATCH_SIZE = 64
 
 
 class ClassificationModel(nn.Module):
-    def __init__(self, base_model, num_labels):
+    def __init__(self, base_model, num_labels, representation_type="tokens"):
+        """
+        Args:
+            representation_type: How to extract the sequence embedding.
+                "tokens"    – mean-pool sequence hidden states (default, backward-compatible)
+                "jumbo_avg" – mean of jumbo CLS tokens; best when encoder was Jumbo-pretrained
+                "jumbo"     – flattened jumbo tokens (J*D); larger but richest jumbo signal
+                "cls"       – hidden state at position 0 (requires use_cls_token=True)
+        """
         super(ClassificationModel, self).__init__()
         self.num_labels = num_labels
         self.base_model = base_model
-        self.hidden_size = self.base_model.config.hidden_size
-        self.classifier = nn.Linear(self.hidden_size, self.num_labels)
+        self.representation_type = representation_type
+
+        if representation_type == "jumbo":
+            # Flattened jumbo representation: J * D
+            # We infer J*D at the first forward pass; use a lazy Linear via a flag.
+            self.hidden_size = None
+            self._classifier_initialized = False
+            self._jumbo_flat_dim = None
+        else:
+            self.hidden_size = self.base_model.config.hidden_size
+
+        if representation_type != "jumbo":
+            self.classifier = nn.Linear(self.hidden_size, self.num_labels)
+
+    def _get_embedding(self, outputs, mask):
+        rtype = self.representation_type
+
+        if rtype == "jumbo_avg":
+            if not (hasattr(outputs, "jumbo_tokens") and outputs.jumbo_tokens is not None):
+                raise ValueError("representation_type='jumbo_avg' requires a Jumbo encoder.")
+            return outputs.jumbo_tokens.mean(dim=1)  # (B, D)
+
+        if rtype == "jumbo":
+            if not (hasattr(outputs, "jumbo_tokens") and outputs.jumbo_tokens is not None):
+                raise ValueError("representation_type='jumbo' requires a Jumbo encoder.")
+            B = outputs.jumbo_tokens.size(0)
+            return outputs.jumbo_tokens.reshape(B, -1)  # (B, J*D)
+
+        if rtype == "cls":
+            hidden = outputs.last_hidden_state if hasattr(outputs, "last_hidden_state") \
+                else outputs.hidden_states[-1]
+            return hidden[:, 0, :]  # (B, D)
+
+        # default: "tokens" — mean-pool sequence tokens
+        hidden = outputs.last_hidden_state if hasattr(outputs, "last_hidden_state") \
+            else outputs.hidden_states[-1]
+        seq_mask = mask.clone().float()
+        sum_emb = (hidden * seq_mask.unsqueeze(-1)).sum(1)
+        embedding = sum_emb / seq_mask.sum(1, keepdim=True).clamp(min=1)
+        return embedding  # (B, D)
 
     def forward(self, input_ids=None, mask=None, labels=None):
-        # Getting the embedding
         outputs = self.base_model(input_ids=input_ids, attention_mask=mask)
-        embeddings = outputs.hidden_states[-1]
-        GAP_embeddings = embeddings.mean(1)  # TODO: Swap between GAP and CLS
-        # calculate losses
-        logits = self.classifier(GAP_embeddings.view(-1, self.hidden_size))
+        embedding = self._get_embedding(outputs, mask)
+
+        # Lazy-initialize classifier for "jumbo" mode (J*D not known at __init__ time)
+        if self.representation_type == "jumbo" and not self._classifier_initialized:
+            flat_dim = embedding.size(-1)
+            self.classifier = nn.Linear(flat_dim, self.num_labels).to(embedding.device)
+            self.hidden_size = flat_dim
+            self._classifier_initialized = True
+
+        logits = self.classifier(embedding)
         loss = None
         if labels is not None:
             loss = F.cross_entropy(logits.view(-1, self.num_labels), labels.view(-1))
@@ -174,6 +225,7 @@ def run(config):
         "n_layers",
         "n_heads",
         "dataset_name",
+        "use_cls_token",
     ]
     default_kwargs = vars(get_parser().parse_args(["--pretrained_checkpoint=dummy.pt", "--dataset=foo_bar"]))
     for key in keys_to_reuse:
@@ -211,23 +263,28 @@ def run(config):
         "bpe_path": config.bpe_path,
         "tokenize_n_nucleotide": config.tokenize_n_nucleotide,
         "dataset_format": config.dataset_name,
+        "use_cls_token": getattr(config, "use_cls_token", False),
     }
     if config.dataset_name == "ITS-5M":
+        # filter_unknown_labels=True: only keep samples with a known label at the
+        # requested taxonomic level. label2id is shared from train → val/test so
+        # all splits use the same class indices.
         dataset_train = DNADataset(
             file_path=os.path.join(config.data_dir, "trainset.fasta"),
             randomize_offset=True,
             **dataset_args,
             taxonomic_level=config.taxonomic_level,
+            filter_unknown_labels=True,
         )
-        # share mapping
-        # label2id = getattr(dataset_train, "label2id", None)
+        shared_label2id = dataset_train.label2id
 
         dataset_val = DNADataset(
             file_path=os.path.join(config.data_dir, "trainset_valid.fasta"),
             randomize_offset=False,
             **dataset_args,
             taxonomic_level=config.taxonomic_level,
-            label2id=None,
+            label2id=shared_label2id,
+            filter_unknown_labels=True,
         )
 
         dataset_test1 = DNADataset(
@@ -235,21 +292,24 @@ def run(config):
             randomize_offset=False,
             **dataset_args,
             taxonomic_level=config.taxonomic_level,
-            label2id=None,
+            label2id=shared_label2id,
+            filter_unknown_labels=True,
         )
         dataset_test2 = DNADataset(
             file_path=os.path.join(config.data_dir, "test2.fasta"),
             randomize_offset=False,
             **dataset_args,
             taxonomic_level=config.taxonomic_level,
-            label2id=None,
+            label2id=shared_label2id,
+            filter_unknown_labels=True,
         )
         dataset_test3 = DNADataset(
             file_path=os.path.join(config.data_dir, "test3.fasta"),
             randomize_offset=False,
             **dataset_args,
             taxonomic_level=config.taxonomic_level,
-            label2id=None,
+            label2id=shared_label2id,
+            filter_unknown_labels=True,
         )
 
         distinct_val_test = True
@@ -335,8 +395,10 @@ def run(config):
 
     # MODEL ===================================================================
 
-    model = ClassificationModel(pre_model, dataset_train.num_labels)
+    representation_type = getattr(config, "representation_type", "tokens")
+    model = ClassificationModel(pre_model, dataset_train.num_labels, representation_type=representation_type)
     print(dataset_train.num_labels, "num labels")
+    print(f"Using representation_type='{representation_type}' for classification head")
 
     # Mark frozen parameters
     if config.freeze_encoder:
@@ -1035,6 +1097,20 @@ def get_parser():
         "--freeze-encoder",
         "--freeze_encoder",
         action="store_true",
+    )
+    group.add_argument(
+        "--representation-type",
+        "--representation_type",
+        dest="representation_type",
+        default="tokens",
+        choices=["tokens", "jumbo_avg", "jumbo", "cls"],
+        help=(
+            "How to extract the embedding for the classification head. "
+            "'tokens': mean-pool sequence tokens (default). "
+            "'jumbo_avg': mean of jumbo CLS tokens (use with Jumbo-pretrained model). "
+            "'jumbo': flattened J*D jumbo representation. "
+            "'cls': hidden state at position 0."
+        ),
     )
     return parser
 

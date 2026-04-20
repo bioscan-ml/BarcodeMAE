@@ -939,7 +939,11 @@ def run(config):
         # Save model ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         t_start_save = time.time()
 
-        if config.model_output_dir and (not config.distributed or config.global_rank == 0):
+        # When --lambda-save is set, only save at epochs 25, 30, 35 (each to a separate file)
+        lambda_save_epochs = {25, 30, 35}
+        skip_save = getattr(config, "lambda_save", False) and epoch not in lambda_save_epochs
+
+        if config.model_output_dir and (not config.distributed or config.global_rank == 0) and not skip_save:
             actual_model = model.module if hasattr(model, "module") else model
 
             save_dict = {
@@ -959,6 +963,13 @@ def run(config):
             if scaler is not None:
                 save_dict["scaler"] = scaler.state_dict()
 
+            # When --lambda-save is set, each target epoch gets its own file
+            def _epoch_ckpt_path(base_path, ep):
+                if getattr(config, "lambda_save", False):
+                    root, ext = os.path.splitext(base_path)
+                    return f"{root}_epoch{ep}{ext}"
+                return base_path
+
             if config.arch == "maelm":
                 # Get the actual model (handle distributed wrapper)
 
@@ -975,7 +986,7 @@ def run(config):
 
                     safe_save_model(
                         save_dict_encoder,
-                        config.checkpoint_path_encoder,
+                        _epoch_ckpt_path(config.checkpoint_path_encoder, epoch),
                         config=config,
                         epoch=epoch,
                         total_step=total_step,
@@ -987,7 +998,7 @@ def run(config):
                 # Save full model checkpoint (for resuming training)
                 safe_save_model(
                     save_dict,
-                    config.checkpoint_path,
+                    _epoch_ckpt_path(config.checkpoint_path, epoch),
                     config=config,
                     epoch=epoch,
                     total_step=total_step,
@@ -1000,7 +1011,7 @@ def run(config):
             elif config.arch == "transformer":
                 safe_save_model(
                     save_dict,
-                    config.checkpoint_path,
+                    _epoch_ckpt_path(config.checkpoint_path, epoch),
                     config=config,
                     epoch=epoch,
                     total_step=total_step,
@@ -2574,6 +2585,19 @@ def get_parser():
             "with no special MLP or classification task (unlike Jumbo CLS tokens). "
             "Can be combined with --use-cls-token to get [CLS][reg...][seq...]. "
             "Only supported for --arch=maelm without --jumbo. Default: %(default)s"
+        ),
+    )
+
+    group.add_argument(
+        "--lambda-save",
+        "--lambda_save",
+        dest="lambda_save",
+        action="store_true",
+        default=False,
+        help=(
+            "When set, skip regular per-epoch checkpointing and only save separate checkpoints "
+            "at epochs 25, 30, and 35 (e.g. checkpoint_epoch25.pt, checkpoint_epoch30.pt, "
+            "checkpoint_epoch35.pt). Useful for ablation studies."
         ),
     )
 

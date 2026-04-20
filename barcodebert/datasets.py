@@ -107,6 +107,7 @@ class DNADataset(Dataset):
         use_cls_token=False,  # Whether to prepend [CLS] token to sequences
         return_bin_labels=False,  # Return BIN labels for BIOSCAN-5M (augments pair creation)
         return_family_labels=False,  # Return family labels for BIOSCAN-5M (augments pair creation)
+        filter_unknown_labels=False,  # ITS-5M finetuning: drop samples whose target label is unknown
     ):
         self.k_mer = k_mer
         self.stride = k_mer if stride is None else stride
@@ -267,50 +268,74 @@ class DNADataset(Dataset):
             labels_file = file_path.replace(".fasta", "_labels.csv")
             if os.path.isfile(labels_file):
                 labels_df = pd.read_csv(labels_file)
-                self.labels = labels_df[taxonomic_level].to_list()
             else:
                 raise FileNotFoundError("Labels file not found for ITS-5M. Expected: " + labels_file)
 
-            if len(self.labels) != len(self.barcodes):
+            if len(labels_df) != len(self.barcodes):
                 raise ValueError(
-                    f"Mismatch between barcodes ({len(self.barcodes)}) and labels ({len(self.labels)}). "
+                    f"Mismatch between barcodes ({len(self.barcodes)}) and labels ({len(labels_df)}). "
                     "Ensure the labels CSV matches the FASTA order."
                 )
 
-            labels_np = np.asarray(self.labels)
-            valid_mask = labels_np != 9999999  # label for unknown labels
-            n_before = len(self.labels)
-            if not valid_mask.any():
-                raise ValueError("All ITS-5M labels are invalid.")
-            # apply mask
-            self.barcodes = [b for b, keep in zip(self.barcodes, valid_mask) if keep]
-            self.labels = labels_np[valid_mask].tolist()
-            print("max labels before change", max(self.labels))
-            self.num_labels = len(self.label_set)
-            print(f"[DNADataset][ITS-5M] Removed {n_before - len(self.labels)} samples with unknown labels.")
-            # Reindex to contiguous [0..C-1] and keep mappings
-            # if self.label2id is None:
-            #     self.labels, self.label_set = pd.factorize(self.labels, sort=True)  # self.labels now 0..C-1
-            #     self.num_labels = len(self.label_set)
-            #     print("max labels after change",max(self.labels))
-            #     self.id2label = {i: lab for i, lab in enumerate(self.label_set)}
-            #     self.label2id = {lab: i for i, lab in enumerate(self.label_set)}
-            # else:
-            #     mapped = []
-            #     kept_barcodes = []
-            #     dropped = 0
-            #     for b, lab in zip(self.barcodes, self.labels):
-            #         if lab in self.label2id:
-            #             mapped.append(self.label2id[lab])
-            #             kept_barcodes.append(b)
-            #         else:
-            #             dropped += 1
-            #     if dropped:
-            #         print(f"[DNADataset][ITS-5M] Dropped {dropped} samples with taxa unseen in train.")
-            #     self.barcodes = kept_barcodes
-            #     self.labels = mapped
-            #     self.num_labels = len(self.label2id)
-            #     self.id2label = {i: lab for lab, i in self.label2id.items()}
+            # Reindex the target taxonomic level to contiguous [0..C-1]; keep 9999999 rows
+            # in the dataset (they contribute to pretraining) but map them to -1 so pair
+            # creation skips them gracefully.
+            raw_labels = labels_df[taxonomic_level].to_numpy()
+            known_mask = raw_labels != 9999999
+            n_before = len(raw_labels)
+
+            if self.label2id is None:
+                known_vals = raw_labels[known_mask]
+                factorized, self.label_set = pd.factorize(known_vals, sort=True)
+                self.label2id = {lab: i for i, lab in enumerate(self.label_set)}
+                self.id2label = {i: lab for lab, i in self.label2id.items()}
+            else:
+                self.label_set = np.array(sorted(self.label2id.keys()))
+
+            self.num_labels = len(self.label2id)
+
+            # Map every row: known label → contiguous id, unknown → -1
+            mapped = np.where(known_mask, np.vectorize(lambda x: self.label2id.get(x, -1))(raw_labels), -1)
+            self.labels = mapped.tolist()
+
+            n_unknown = int((~known_mask).sum())
+            print(f"[DNADataset][ITS-5M] {n_before} sequences total, "
+                  f"{n_unknown} with unknown '{taxonomic_level}' label (mapped to -1), "
+                  f"{self.num_labels} known classes.")
+
+            # Populate taxonomy_labels for jumbo taxonomy classification.
+            # Uses the same column requested via return_taxonomy_level (typically "genus").
+            # Unknown entries (9999999) are mapped to -1 so pair creation skips them.
+            if self.return_taxonomy_level:
+                tax_col = labels_df[self.return_taxonomy_level].to_numpy()
+                tax_known = tax_col != 9999999
+                if self.return_taxonomy_level == taxonomic_level:
+                    # Already factorized above — reuse the same mapping
+                    self.taxonomy_labels = mapped.tolist()
+                else:
+                    known_tax_vals = tax_col[tax_known]
+                    _, tax_label_set = pd.factorize(known_tax_vals, sort=True)
+                    tax_label2id = {lab: i for i, lab in enumerate(tax_label_set)}
+                    self.taxonomy_labels = [
+                        tax_label2id.get(v, -1) if tax_known[i] else -1
+                        for i, v in enumerate(tax_col)
+                    ]
+                n_tax_known = sum(1 for t in self.taxonomy_labels if t >= 0)
+                print(f"[DNADataset][ITS-5M] Taxonomy labels ('{self.return_taxonomy_level}'): "
+                      f"{n_tax_known} known, {len(self.taxonomy_labels) - n_tax_known} unknown (-1).")
+            else:
+                self.taxonomy_labels = [0] * len(self.labels)
+
+            # For finetuning: drop samples whose classification target is unknown (-1).
+            # Pretraining should NOT set this flag — all sequences contribute to MAE loss.
+            if filter_unknown_labels:
+                valid = [i for i, lab in enumerate(self.labels) if lab >= 0]
+                n_before = len(self.barcodes)
+                self.barcodes = [self.barcodes[i] for i in valid]
+                self.labels = [self.labels[i] for i in valid]
+                self.taxonomy_labels = [self.taxonomy_labels[i] for i in valid]
+                print(f"[DNADataset][ITS-5M] filter_unknown_labels: kept {len(self.barcodes):,} / {n_before:,} "
+                      f"samples with known '{taxonomic_level}' label.")
 
     def __len__(self):
         return len(self.barcodes)
