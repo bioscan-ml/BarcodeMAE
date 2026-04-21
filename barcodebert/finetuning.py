@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 import builtins
+import contextlib
 import copy
 import os
 import shutil
@@ -465,6 +466,17 @@ def run(config):
     # Set up loss function
     criterion = nn.CrossEntropyLoss()
 
+    # Mixed Precision ---------------------------------------------------------
+    scaler = None
+    use_cuda = device != "cpu" and torch.cuda.is_available()
+    if config.mixed_precision and use_cuda:
+        from torch.cuda.amp import GradScaler
+
+        scaler = GradScaler()
+        print("Mixed precision training enabled with GradScaler.")
+    elif config.mixed_precision:
+        print("Warning: Mixed precision requested but CUDA is not available. Running in full precision.")
+
     # LOGGING =================================================================
     # Setup logging and saving
 
@@ -548,6 +560,8 @@ def run(config):
         scheduler.load_state_dict(checkpoint["scheduler"])
         best_stats["max_accuracy"] = checkpoint.get("max_accuracy", 0)
         best_stats["best_epoch"] = checkpoint.get("best_epoch", 0)
+        if scaler is not None and "scaler" in checkpoint:
+            scaler.load_state_dict(checkpoint["scaler"])
 
     # TRAIN ===================================================================
     print()
@@ -612,6 +626,7 @@ def run(config):
             n_epoch=config.epochs,
             total_step=total_step,
             n_samples_seen=n_samples_seen,
+            scaler=scaler,
         )
         t_end_train = time.time()
 
@@ -669,12 +684,11 @@ def run(config):
         # Save model ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         t_start_save = time.time()
         if config.model_output_dir and (not config.distributed or config.global_rank == 0):
+            save_dict = {"model": model, "optimizer": optimizer, "scheduler": scheduler}
+            if scaler is not None:
+                save_dict["scaler"] = scaler.state_dict()
             safe_save_model(
-                {
-                    "model": model,
-                    "optimizer": optimizer,
-                    "scheduler": scheduler,
-                },
+                save_dict,
                 config.checkpoint_path,
                 config=config,
                 epoch=epoch,
@@ -841,6 +855,7 @@ def train_one_epoch(
     n_epoch=None,
     total_step=0,
     n_samples_seen=0,
+    scaler=None,
 ):
     r"""
     Train the encoder and classifier for one epoch.
@@ -913,8 +928,9 @@ def train_one_epoch(
         ct_forward = torch.cuda.Event(enable_timing=True)
         ct_forward.record()
         # Perform the forward pass through the model
-        out = model(sequences, mask=att_mask, labels=y_true)
-        loss = out.loss
+        with torch.cuda.amp.autocast() if scaler is not None else contextlib.nullcontext():
+            out = model(sequences, mask=att_mask, labels=y_true)
+            loss = out.loss
 
         # Backward pass -------------------------------------------------------
         # Reset gradients
@@ -922,13 +938,20 @@ def train_one_epoch(
         # Now the backward pass
         ct_backward = torch.cuda.Event(enable_timing=True)
         ct_backward.record()
-        loss.backward()
+        if scaler is not None:
+            scaler.scale(loss).backward()
+        else:
+            loss.backward()
 
         # Update --------------------------------------------------------------
         # Use our optimizer to update the model parameters
         ct_optimizer = torch.cuda.Event(enable_timing=True)
         ct_optimizer.record()
-        optimizer.step()
+        if scaler is not None:
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            optimizer.step()
 
         # Step the scheduler each batch
         scheduler.step()
