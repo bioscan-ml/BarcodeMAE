@@ -85,12 +85,13 @@ PRETRAIN_EXIT=$?
 [ ${PRETRAIN_EXIT} -ne 0 ] && echo "Pretraining did not complete — skipping finetuning." && exit ${PRETRAIN_EXIT}
 
 # ── Finetuning ────────────────────────────────────────────────────────────────
+for TAXA_FT in genus species family; do
 for REPR in tokens cls; do
-    FINETUNE_RUN_NAME="${RUN_NAME}_ft_genus_${REPR}"
+    FINETUNE_RUN_NAME="${RUN_NAME}_ft_${TAXA_FT}_${REPR}"
     FINETUNE_CHECKPOINT="${CHECKPOINT_DIR}/finetune/${FINETUNE_RUN_NAME}.pt"
-    FINETUNE_DONE_FLAG="${CHECKPOINT_DIR}/finetune/.done_${REPR}"
+    FINETUNE_DONE_FLAG="${CHECKPOINT_DIR}/finetune/.done_${TAXA_FT}_${REPR}"
 
-    [ -f "${FINETUNE_DONE_FLAG}" ] && echo "Finetuning (${REPR}) already done — skipping." && continue
+    [ -f "${FINETUNE_DONE_FLAG}" ] && echo "Finetuning (${TAXA_FT}/${REPR}) already done — skipping." && continue
 
     torchrun --standalone --nproc_per_node=1 barcodebert/finetuning.py \
         --run-name              ${FINETUNE_RUN_NAME}   \
@@ -98,7 +99,7 @@ for REPR in tokens cls; do
         --data-dir              ${DATA_DIR}            \
         --pretrained-checkpoint ${CHECKPOINT}          \
         --checkpoint            ${FINETUNE_CHECKPOINT} \
-        --taxonomic-level       genus                  \
+        --taxonomic-level       ${TAXA_FT}             \
         --representation-type   ${REPR}                \
         --batch-size            64                     \
         --lr                    0.00008                \
@@ -110,7 +111,8 @@ for REPR in tokens cls; do
 
     FINETUNE_EXIT=$?
     [ ${FINETUNE_EXIT} -eq 0 ] && touch "${FINETUNE_DONE_FLAG}"
-    [ ${FINETUNE_EXIT} -ne 0 ] && echo "Finetuning (${REPR}) failed." && exit ${FINETUNE_EXIT}
+    [ ${FINETUNE_EXIT} -ne 0 ] && echo "Finetuning (${TAXA_FT}/${REPR}) failed." && exit ${FINETUNE_EXIT}
+done
 done
 
 echo "Done at: $(date)" && exit 0
