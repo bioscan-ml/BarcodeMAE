@@ -821,7 +821,8 @@ def run(config):
     print("\nEvaluating final model on train set under test conditions (no augmentation, dropout, etc)...", flush=True)
     dataset_train_eval = dataset_train
     dataset_train_eval.randomize_offset = False
-    dl_train_eval_kwargs = copy.deepcopy(dl_test_kwargs)
+    _base_eval_kwargs = dl_test_kwargs if config.dataset_name != "ITS-5M" else dl_val_kwargs
+    dl_train_eval_kwargs = copy.deepcopy(_base_eval_kwargs)
     if config.distributed:
         # The DistributedSampler breaks up the dataset across the GPUs
         dl_train_eval_kwargs["sampler"] = DistributedSampler(
