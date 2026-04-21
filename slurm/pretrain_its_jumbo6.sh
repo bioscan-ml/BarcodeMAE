@@ -80,7 +80,6 @@ WD=0.00001
 MASK_TOKEN_RATIO=1.0
 RANDOM_TOKEN_RATIO=0.0
 MASKED_LOSS_WEIGHT=0.999
-REG_NUM=0
 
 # ── Derived names ─────────────────────────────────────────────────────────────
 RUN_NAME="run_k${K_MER}_${N_LAYERS}L_${N_HEADS}H_${N_DEC_LAYERS}DL_${N_DEC_HEADS}DH_jumbo${JUMBO_M}_${ARCH}_${SOURCE}_${TAXA_LOSS_W}_${TAXA}_km${K_CLASSES}x${M_PER_CLASS}_${NUM_PAIRS}_${EXPAN_FACTOR}_${BATCH_SIZE}_${LR}_${MASKED_LOSS_WEIGHT}_ITS"
@@ -89,7 +88,7 @@ CHECKPOINT="${CHECKPOINT_DIR}/${RUN_NAME}.pt"
 CHECKPOINT_E="${CHECKPOINT_DIR}/${RUN_NAME}_encoder.pt"
 DATA_DIR="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE/data/${DATASET}"
 
-mkdir -p "${CHECKPOINT_DIR}"
+mkdir -p "${CHECKPOINT_DIR}/finetune"
 mkdir -p logs
 
 echo "=========================================="
@@ -97,20 +96,6 @@ echo "Run name : $RUN_NAME"
 echo "Data dir : $DATA_DIR"
 echo "Checkpoint: $CHECKPOINT"
 echo "=========================================="
-
-# Finetuning config
-FINETUNE_LR=0.00008
-FINETUNE_BATCH=64
-FINETUNE_EPOCHS=12
-FINETUNE_TAXA="genus"                  # change to "species" if desired
-FINETUNE_REPR="jumbo_avg"              # use jumbo token mean from Jumbo-pretrained encoder
-
-FINETUNE_RUN_NAME="${RUN_NAME}_ft_${FINETUNE_TAXA}_${FINETUNE_REPR}"
-FINETUNE_CHECKPOINT_DIR="${CHECKPOINT_DIR}/finetune"
-FINETUNE_CHECKPOINT="${FINETUNE_CHECKPOINT_DIR}/${FINETUNE_RUN_NAME}.pt"
-FINETUNE_DONE_FLAG="${FINETUNE_CHECKPOINT_DIR}/.done"
-
-mkdir -p "${FINETUNE_CHECKPOINT_DIR}"
 
 # ── Pretraining ───────────────────────────────────────────────────────────────
 echo "=========================================="
@@ -131,7 +116,7 @@ torchrun --standalone --nproc_per_node=1 barcodebert/pretraining.py \
     --batch-size         ${BATCH_SIZE}          \
     --lr                 ${LR}                  \
     --weight-decay       ${WD}                  \
-    --epochs             35                     \
+    --epochs             15                     \
     --mask-token-ratio   ${MASK_TOKEN_RATIO}    \
     --random-token-ratio ${RANDOM_TOKEN_RATIO}  \
     --masked-loss-weight ${MASKED_LOSS_WEIGHT}  \
@@ -156,55 +141,46 @@ torchrun --standalone --nproc_per_node=1 barcodebert/pretraining.py \
 
 PRETRAIN_EXIT=$?
 echo "Pretraining exit code: ${PRETRAIN_EXIT}"
+[ ${PRETRAIN_EXIT} -ne 0 ] && echo "Pretraining did not complete — skipping finetuning." && exit ${PRETRAIN_EXIT}
 
 # ── Finetuning ────────────────────────────────────────────────────────────────
-# Only run finetuning if:
-#   (1) pretraining completed successfully (exit code 0), AND
-#   (2) finetuning has not already been done in a previous array task
-if [ ${PRETRAIN_EXIT} -ne 0 ]; then
-    echo "Pretraining did not complete — skipping finetuning."
-    exit ${PRETRAIN_EXIT}
-fi
-
-if [ -f "${FINETUNE_DONE_FLAG}" ]; then
-    echo "Finetuning already completed (found ${FINETUNE_DONE_FLAG}) — skipping."
-    exit 0
-fi
-
 echo "=========================================="
 echo "Pretraining done. Starting finetuning..."
-echo "  Taxonomic level : ${FINETUNE_TAXA}"
-echo "  Representation  : ${FINETUNE_REPR}"
-echo "  LR              : ${FINETUNE_LR}"
-echo "  Epochs          : ${FINETUNE_EPOCHS}"
 echo "=========================================="
 
-torchrun --standalone --nproc_per_node=1 barcodebert/finetuning.py \
-    --run-name                ${FINETUNE_RUN_NAME}       \
-    --dataset                 ${DATASET}                 \
-    --data-dir                ${DATA_DIR}                \
-    --pretrained-checkpoint   ${CHECKPOINT}              \
-    --checkpoint              ${FINETUNE_CHECKPOINT}     \
-    --taxonomic-level         ${FINETUNE_TAXA}           \
-    --representation-type     ${FINETUNE_REPR}           \
-    --batch-size              ${FINETUNE_BATCH}          \
-    --lr-relative             ${FINETUNE_LR}             \
-    --weight-decay            ${WD}                      \
-    --epochs                  ${FINETUNE_EPOCHS}         \
-    --mixed-precision                                    \
-    --save-best-model                                    \
-    --log-wandb
+for REPR in tokens jumbo_avg jumbo; do
+    FINETUNE_RUN_NAME="${RUN_NAME}_ft_genus_${REPR}"
+    FINETUNE_CHECKPOINT="${CHECKPOINT_DIR}/finetune/${FINETUNE_RUN_NAME}.pt"
+    FINETUNE_DONE_FLAG="${CHECKPOINT_DIR}/finetune/.done_${REPR}"
 
-FINETUNE_EXIT=$?
-echo "Finetuning exit code: ${FINETUNE_EXIT}"
+    [ -f "${FINETUNE_DONE_FLAG}" ] && echo "Finetuning (${REPR}) already done — skipping." && continue
 
-if [ ${FINETUNE_EXIT} -eq 0 ]; then
-    touch "${FINETUNE_DONE_FLAG}"
-    echo "Finetuning completed. Flag written to ${FINETUNE_DONE_FLAG}"
-fi
+    echo "  Representation: ${REPR}"
+
+    torchrun --standalone --nproc_per_node=1 barcodebert/finetuning.py \
+        --run-name              ${FINETUNE_RUN_NAME}   \
+        --dataset               ${DATASET}             \
+        --data-dir              ${DATA_DIR}            \
+        --pretrained-checkpoint ${CHECKPOINT}          \
+        --checkpoint            ${FINETUNE_CHECKPOINT} \
+        --taxonomic-level       genus                  \
+        --representation-type   ${REPR}                \
+        --batch-size            64                     \
+        --lr                    0.00008                \
+        --weight-decay          ${WD}                  \
+        --epochs                12                     \
+        --mixed-precision                              \
+        --save-best-model                              \
+        --log-wandb
+
+    FINETUNE_EXIT=$?
+    echo "Finetuning (${REPR}) exit code: ${FINETUNE_EXIT}"
+    [ ${FINETUNE_EXIT} -eq 0 ] && touch "${FINETUNE_DONE_FLAG}"
+    [ ${FINETUNE_EXIT} -ne 0 ] && echo "Finetuning (${REPR}) failed." && exit ${FINETUNE_EXIT}
+done
 
 echo "=========================================="
 echo "Job finished at: $(date)"
 echo "=========================================="
 
-exit ${FINETUNE_EXIT}
+exit 0
