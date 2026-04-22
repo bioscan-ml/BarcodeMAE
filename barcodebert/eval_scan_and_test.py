@@ -119,8 +119,19 @@ def evaluate_checkpoint(ckpt_path, ckpt, taxa, repr_type, data_dir, batch_size, 
         )
         dataloaders[name] = torch.utils.data.DataLoader(ds, **dl_kwargs)
 
-    # Build model
-    pre_model, _ = load_pretrained_model(ckpt_path, device=device)
+    # Build model — load pretrained encoder architecture, then overlay finetuned weights
+    pretrained_path = getattr(ft_config, "pretrained_checkpoint_path", None)
+    if pretrained_path and os.path.exists(pretrained_path):
+        pre_model, _ = load_pretrained_model(pretrained_path, device=device)
+    else:
+        # Fall back: reconstruct architecture from the finetuned checkpoint's bert_config
+        bert_config = ckpt.get("bert_config")
+        if bert_config is None:
+            raise ValueError(
+                f"No pretrained checkpoint path found in config and no bert_config in checkpoint. "
+                f"Please ensure ft_config.pretrained_checkpoint_path is set."
+            )
+        pre_model, _ = load_pretrained_model(ckpt_path, device=device)
     pre_model.classifier = nn.Identity()
     model = ClassificationModel(pre_model, num_labels, representation_type=repr_type)
     model.load_state_dict(ckpt["model"])
