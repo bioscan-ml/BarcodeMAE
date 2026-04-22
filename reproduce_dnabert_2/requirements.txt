@@ -1,0 +1,20 @@
+# Core
+torch>=2.1.1
+transformers==4.29.2
+numpy
+tqdm
+
+# Mosaic BERT / bert_layers.py (ALiBi, unpadding, GLU)
+einops
+
+# WebDataset pipeline (write_shards.py + train.py)
+webdataset
+
+# Finetuning evaluation / monitoring
+scikit-learn
+matplotlib
+
+# Flash Attention (optional but recommended on Ampere+ GPUs: A100, H100)
+# The code uses the v1.x API (flash_attn_triton) — install with:
+# pip install flash-attn==1.0.9 --no-build-isolation
+# Omitting it falls back to standard attention automatically.
