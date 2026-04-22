@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+
 """
 Scan model_checkpoints/<dataset>/*/finetune/*.pt, find checkpoints that have
 completed at least --min-epochs epochs of finetuning, infer the taxonomic level
@@ -134,7 +135,11 @@ def evaluate_checkpoint(ckpt_path, ckpt, taxa, repr_type, data_dir, batch_size, 
         pre_model, _ = load_pretrained_model(ckpt_path, device=device)
     pre_model.classifier = nn.Identity()
     model = ClassificationModel(pre_model, num_labels, representation_type=repr_type)
-    model.load_state_dict(ckpt["model"])
+    state_dict = ckpt["model"]
+    # Strip DDP 'module.' prefix if present
+    if any(k.startswith("module.") for k in state_dict):
+        state_dict = {k[len("module."):]: v for k, v in state_dict.items()}
+    model.load_state_dict(state_dict)
     model = model.to(device)
     model.eval()
 
