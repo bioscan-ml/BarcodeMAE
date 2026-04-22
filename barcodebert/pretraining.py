@@ -1685,37 +1685,37 @@ def train_one_epoch(
                 log_msg += " LR: {}".format(scheduler.get_last_lr())
                 print(log_msg, flush=True)
 
-        # Mid-epoch checkpoint every save_every_steps — disabled (save at epoch end only)
-        # if total_step > 0 and (total_step % save_every_steps == 0) and config.global_rank == 0:
-        #     actual_model = model.module if hasattr(model, "module") else model
-        #     save_dict = {
-        #         "model": actual_model,
-        #         "optimizer": optimizer,
-        #         "scheduler": scheduler,
-        #     }
-        #     if cls_taxonomy_classifier is not None:
-        #         actual_cls_classifier = (
-        #             cls_taxonomy_classifier.module
-        #             if hasattr(cls_taxonomy_classifier, "module")
-        #             else cls_taxonomy_classifier
-        #         )
-        #         save_dict["cls_taxonomy_classifier"] = actual_cls_classifier
-        #     if scaler is not None:
-        #         save_dict["scaler"] = scaler.state_dict()
-        #     print(f"[Resuming] saving checkpoint at global step {total_step}", flush=True)
-        #     if config.arch == "maelm":
-        #         safe_save_model(
-        #             save_dict, config.checkpoint_path, config=config,
-        #             epoch=epoch, total_step=total_step, n_samples_seen=n_samples_seen,
-        #             bert_config=bert_config.to_dict(), decoder_config=decoder_config.to_dict(),
-        #             **best_stats,
-        #         )
-        #     elif config.arch == "transformer":
-        #         safe_save_model(
-        #             save_dict, config.checkpoint_path, config=config,
-        #             epoch=epoch, total_step=total_step, n_samples_seen=n_samples_seen,
-        #             bert_config=bert_config.to_dict(), **best_stats,
-        #         )
+        # Mid-epoch checkpoint every save_every_steps
+        if total_step > 0 and (total_step % save_every_steps == 0) and config.global_rank == 0:
+            actual_model = model.module if hasattr(model, "module") else model
+            save_dict = {
+                "model": actual_model,
+                "optimizer": optimizer,
+                "scheduler": scheduler,
+            }
+            if cls_taxonomy_classifier is not None:
+                actual_cls_classifier = (
+                    cls_taxonomy_classifier.module
+                    if hasattr(cls_taxonomy_classifier, "module")
+                    else cls_taxonomy_classifier
+                )
+                save_dict["cls_taxonomy_classifier"] = actual_cls_classifier
+            if scaler is not None:
+                save_dict["scaler"] = scaler.state_dict()
+            print(f"[Resuming] saving checkpoint at global step {total_step}", flush=True)
+            if config.arch == "maelm":
+                safe_save_model(
+                    save_dict, config.checkpoint_path, config=config,
+                    epoch=epoch, total_step=total_step, n_samples_seen=n_samples_seen,
+                    bert_config=bert_config.to_dict(), decoder_config=decoder_config.to_dict(),
+                    **best_stats,
+                )
+            elif config.arch == "transformer":
+                safe_save_model(
+                    save_dict, config.checkpoint_path, config=config,
+                    epoch=epoch, total_step=total_step, n_samples_seen=n_samples_seen,
+                    bert_config=bert_config.to_dict(), **best_stats,
+                )
 
         # Compute mask ratio actually used
         actual_masking = (masked_unseen_tokens.sum() / masked_unseen_tokens.nelement()).item()
