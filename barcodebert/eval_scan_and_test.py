@@ -132,16 +132,30 @@ def evaluate_checkpoint(ckpt_path, ckpt, taxa, repr_type, data_dir, batch_size, 
     else:
         ckpt_num_labels = num_labels
 
-    # Build model — load pretrained encoder architecture, then overlay finetuned weights.
+    # Detect whether the finetuned model used a jumbo encoder — ground truth from state_dict.
+    is_jumbo = "base_model.jumbo_cls_tokens" in state_dict
+
+    # Build the encoder (pre_model).  Try the pretrained path first; if it either doesn't
+    # exist or returns the wrong architecture (e.g. non-jumbo when the finetuned weights
+    # have jumbo keys), fall back to reconstructing the encoder from the bert_config stored
+    # in the finetuned checkpoint plus jumbo params inferred directly from tensor shapes.
     pretrained_path = getattr(ft_config, "pretrained_checkpoint_path", None)
+    pre_model = None
     if pretrained_path and os.path.exists(pretrained_path):
-        pre_model, _ = load_pretrained_model(pretrained_path, device=device)
-    else:
-        # Fallback: reconstruct the encoder architecture from bert_config + jumbo params
-        # stored in the finetuning config.  Do NOT call load_pretrained_model() on the
-        # finetuned checkpoint — that file holds the full ClassificationModel state dict,
-        # not a pretrained encoder checkpoint, so load_pretrained_model would try to load
-        # base_model.* keys into a bare model and fail.
+        try:
+            pre_model, _ = load_pretrained_model(pretrained_path, device=device)
+            # Sanity-check: if the checkpoint has jumbo weights the encoder must also be jumbo.
+            if is_jumbo and not hasattr(pre_model, "jumbo_cls_tokens"):
+                print(
+                    "  WARNING: pretrained path returned a non-jumbo encoder but the "
+                    "finetuned state dict has jumbo weights — rebuilding encoder from config."
+                )
+                pre_model = None
+        except Exception as exc:
+            print(f"  WARNING: load_pretrained_model failed ({exc}); rebuilding encoder from config.")
+            pre_model = None
+
+    if pre_model is None:
         bert_config_dict = ckpt.get("bert_config")
         if bert_config_dict is None:
             raise ValueError(
@@ -153,12 +167,22 @@ def evaluate_checkpoint(ckpt_path, ckpt, taxa, repr_type, data_dir, batch_size, 
         from barcodebert.jumbo_transformer import create_jumbo_transformer_model
 
         _bert_cfg = BertConfig(**bert_config_dict)
-        if getattr(ft_config, "jumbo", False):
+        if is_jumbo:
+            # Infer jumbo params directly from state_dict tensor shapes — more reliable
+            # than trusting the finetuning config, which may not have --jumbo set.
+            jumbo_multiplier = state_dict["base_model.jumbo_cls_tokens"].shape[1]
+            mlp_w_key = "base_model.bert.encoder.layer.0.jumbo_handler.jumbo_mlp.1.weight"
+            if mlp_w_key in state_dict:
+                jumbo_width = jumbo_multiplier * _bert_cfg.hidden_size
+                mlp_expansion_factor = state_dict[mlp_w_key].shape[0] // jumbo_width
+            else:
+                mlp_expansion_factor = getattr(ft_config, "jumbo_mlp_expansion", 2)
+            share_jumbo_layers = getattr(ft_config, "share_jumbo_layers", False)
             pre_model = create_jumbo_transformer_model(
                 _bert_cfg,
-                jumbo_multiplier=getattr(ft_config, "jumbo_multiplier", 6),
-                share_jumbo_mlp_across_layers=getattr(ft_config, "share_jumbo_layers", False),
-                mlp_expansion_factor=getattr(ft_config, "jumbo_mlp_expansion", 2),
+                jumbo_multiplier=jumbo_multiplier,
+                share_jumbo_mlp_across_layers=share_jumbo_layers,
+                mlp_expansion_factor=mlp_expansion_factor,
             )
         elif getattr(ft_config, "arch", "maelm") == "maelm":
             pre_model = BertModel(_bert_cfg)
@@ -168,7 +192,7 @@ def evaluate_checkpoint(ckpt_path, ckpt, taxa, repr_type, data_dir, batch_size, 
     pre_model.classifier = nn.Identity()
     model = ClassificationModel(pre_model, ckpt_num_labels, representation_type=repr_type)
 
-    # For "jumbo" repr_type the classifier is lazy-initialized on first forward pass,
+    # For "jumbo" repr_type the classifier is lazy-initialized on the first forward pass,
     # so it is absent from model.state_dict().  Pre-create it from the checkpoint shape
     # so that load_state_dict() has a matching key to write into.
     if repr_type == "jumbo" and "classifier.weight" in state_dict:
