@@ -184,7 +184,7 @@ def main():
             if not fname.endswith(".pt"):
                 continue
             # Skip encoder-only or best-copy checkpoints
-            if "best_finetune" in fname or "_encoder" in fname:
+            if "best_finetune" in fname or fname.endswith("_encoder.pt"):
                 continue
             ckpt_path = os.path.join(finetune_dir, fname)
             taxa, repr_type = infer_taxa_repr(fname)
