@@ -120,25 +120,63 @@ def evaluate_checkpoint(ckpt_path, ckpt, taxa, repr_type, data_dir, batch_size, 
         )
         dataloaders[name] = torch.utils.data.DataLoader(ds, **dl_kwargs)
 
-    # Build model — load pretrained encoder architecture, then overlay finetuned weights
+    # Strip DDP 'module.' prefix from state dict up front
+    state_dict = ckpt["model"]
+    if any(k.startswith("module.") for k in state_dict):
+        state_dict = {k[len("module."):]: v for k, v in state_dict.items()}
+
+    # Read num_labels from the saved classifier head so we don't depend on the local
+    # dataset having identical label coverage to the training run.
+    if "classifier.weight" in state_dict:
+        ckpt_num_labels = state_dict["classifier.weight"].shape[0]
+    else:
+        ckpt_num_labels = num_labels
+
+    # Build model — load pretrained encoder architecture, then overlay finetuned weights.
     pretrained_path = getattr(ft_config, "pretrained_checkpoint_path", None)
     if pretrained_path and os.path.exists(pretrained_path):
         pre_model, _ = load_pretrained_model(pretrained_path, device=device)
     else:
-        # Fall back: reconstruct architecture from the finetuned checkpoint's bert_config
-        bert_config = ckpt.get("bert_config")
-        if bert_config is None:
+        # Fallback: reconstruct the encoder architecture from bert_config + jumbo params
+        # stored in the finetuning config.  Do NOT call load_pretrained_model() on the
+        # finetuned checkpoint — that file holds the full ClassificationModel state dict,
+        # not a pretrained encoder checkpoint, so load_pretrained_model would try to load
+        # base_model.* keys into a bare model and fail.
+        bert_config_dict = ckpt.get("bert_config")
+        if bert_config_dict is None:
             raise ValueError(
-                f"No pretrained checkpoint path found in config and no bert_config in checkpoint. "
-                f"Please ensure ft_config.pretrained_checkpoint_path is set."
+                "No pretrained checkpoint path found in config and no bert_config in "
+                "checkpoint. Cannot reconstruct encoder architecture."
             )
-        pre_model, _ = load_pretrained_model(ckpt_path, device=device)
+        from transformers import BertConfig, BertForTokenClassification, BertModel
+
+        from barcodebert.jumbo_transformer import create_jumbo_transformer_model
+
+        _bert_cfg = BertConfig(**bert_config_dict)
+        if getattr(ft_config, "jumbo", False):
+            pre_model = create_jumbo_transformer_model(
+                _bert_cfg,
+                jumbo_multiplier=getattr(ft_config, "jumbo_multiplier", 6),
+                share_jumbo_mlp_across_layers=getattr(ft_config, "share_jumbo_layers", False),
+                mlp_expansion_factor=getattr(ft_config, "jumbo_mlp_expansion", 2),
+            )
+        elif getattr(ft_config, "arch", "maelm") == "maelm":
+            pre_model = BertModel(_bert_cfg)
+        else:
+            pre_model = BertForTokenClassification(_bert_cfg)
+
     pre_model.classifier = nn.Identity()
-    model = ClassificationModel(pre_model, num_labels, representation_type=repr_type)
-    state_dict = ckpt["model"]
-    # Strip DDP 'module.' prefix if present
-    if any(k.startswith("module.") for k in state_dict):
-        state_dict = {k[len("module."):]: v for k, v in state_dict.items()}
+    model = ClassificationModel(pre_model, ckpt_num_labels, representation_type=repr_type)
+
+    # For "jumbo" repr_type the classifier is lazy-initialized on first forward pass,
+    # so it is absent from model.state_dict().  Pre-create it from the checkpoint shape
+    # so that load_state_dict() has a matching key to write into.
+    if repr_type == "jumbo" and "classifier.weight" in state_dict:
+        flat_dim = state_dict["classifier.weight"].shape[1]
+        model.classifier = nn.Linear(flat_dim, ckpt_num_labels)
+        model._classifier_initialized = True
+        model.hidden_size = flat_dim
+
     model.load_state_dict(state_dict)
     model = model.to(device)
     model.eval()
