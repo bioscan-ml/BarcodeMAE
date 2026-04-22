@@ -229,12 +229,24 @@ def main():
     parser.add_argument("--no-cuda", "--no_cuda", action="store_true")
     parser.add_argument("--overwrite", action="store_true",
                         help="Re-evaluate even if JSON result already exists.")
+    parser.add_argument("--skip-list", "--skip_list", default=None, metavar="FILE",
+                        help="Text file with one .pt filename per line to skip unconditionally "
+                             "(e.g. checkpoints already attempted in a previous run's log).")
     args = parser.parse_args()
 
     use_cuda = not args.no_cuda and torch.cuda.is_available()
     device = torch.device("cuda" if use_cuda else "cpu")
     print(f"Device: {device}")
     os.makedirs(args.results_dir, exist_ok=True)
+
+    skip_names = set()
+    if args.skip_list and os.path.exists(args.skip_list):
+        with open(args.skip_list) as _f:
+            for _line in _f:
+                name = _line.strip()
+                if name:
+                    skip_names.add(name)
+        print(f"Loaded {len(skip_names)} checkpoint name(s) to skip from {args.skip_list}")
 
     # Scan for all finetuned checkpoints
     candidates = []
@@ -261,7 +273,13 @@ def main():
     skipped_epoch = 0
     skipped_exists = 0
 
+    skipped_list = 0
     for run_name, ckpt_path, fname, taxa, repr_type in candidates:
+        if fname in skip_names:
+            print(f"SKIP (in skip-list): {fname}")
+            skipped_list += 1
+            continue
+
         out_fname = fname.replace(".pt", ".json")
         out_path = os.path.join(args.results_dir, out_fname)
 
@@ -308,7 +326,10 @@ def main():
             print(f"  ERROR evaluating {fname}: {e}")
 
     print(f"\n{'='*60}")
-    print(f"Done. Evaluated: {evaluated} | Skipped (done): {skipped_exists} | Skipped (epochs): {skipped_epoch}")
+    print(
+        f"Done. Evaluated: {evaluated} | Skipped (done): {skipped_exists} "
+        f"| Skipped (epochs): {skipped_epoch} | Skipped (skip-list): {skipped_list}"
+    )
     print(f"Results in: {args.results_dir}/")
 
 

@@ -22,12 +22,29 @@ source "/scratch/$USER/BarcodeMAE_venv/bin/activate"
 
 mkdir -p final_logs/eval_scan
 
+# Build a skip-list from any previous run logged in res.out so we don't
+# re-evaluate checkpoints that were already attempted.
+SKIP_LIST=""
+if [ -f res.out ]; then
+    TMP_SKIP=$(mktemp)
+    # Extract .pt filenames from "File:", "ERROR evaluating", and "SKIP ...:" lines.
+    grep -E '^File:|ERROR evaluating|^SKIP' res.out \
+        | grep -oE '[^[:space:]/]+\.pt' \
+        | sort -u > "$TMP_SKIP"
+    N_SKIP=$(wc -l < "$TMP_SKIP")
+    echo "Parsed $N_SKIP checkpoint name(s) to skip from res.out"
+    SKIP_LIST="--skip-list $TMP_SKIP"
+fi
+
 python barcodebert/eval_scan_and_test.py \
     --data-dir             ./data/ITS-5M \
     --checkpoint-base      ./model_checkpoints/ITS-5M \
     --results-dir          ./eval_results \
     --min-epochs           10 \
     --batch-size           128 \
-    --cpu-workers          8
+    --cpu-workers          8 \
+    $SKIP_LIST
+
+[ -n "$TMP_SKIP" ] && rm -f "$TMP_SKIP"
 
 echo "Done at: $(date)"
