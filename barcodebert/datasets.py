@@ -175,7 +175,10 @@ class DNADataset(Dataset):
             raise ValueError(f'Tokenizer "{tokenizer}" not recognized.')
         df = pd.read_csv(file_path, sep="\t" if file_path.endswith(".tsv") else ",", keep_default_na=False)
         if dataset_format == "ITS-5M":
-            fungi_data = Data(file_path, allow_duplicates=True)
+            if "train" in file_path:
+                fungi_data = Data(file_path, allow_duplicates=True)
+            elif "test" in file_path:
+                fungi_data = Data(file_path, allow_duplicates=False)
 
             self.tax_encoder = TaxonEncoder(data=fungi_data) if self.tax_encoder is None else self.tax_encoder
             for _, row in tqdm(fungi_data.data.iterrows(), total=fungi_data.data.shape[0]):
