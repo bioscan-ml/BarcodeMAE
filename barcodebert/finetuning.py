@@ -3,6 +3,7 @@
 import builtins
 import contextlib
 import copy
+import json
 import os
 import shutil
 import time
@@ -23,6 +24,39 @@ from barcodebert.evaluation import evaluate
 from barcodebert.io import load_pretrained_model, safe_save_model
 
 BASE_BATCH_SIZE = 64
+
+
+def _validate_test_results(results, partition_name):
+    """Sanity-check evaluation results; raises AssertionError if anything looks wrong."""
+    assert results["count"] > 0, f"{partition_name}: sample count must be > 0, got {results['count']}"
+    assert 0.0 <= results["accuracy"] <= 100.0, (
+        f"{partition_name}: accuracy {results['accuracy']:.2f}% is out of [0, 100] range"
+    )
+    assert 0.0 <= results["accuracy-balanced"] <= 100.0, (
+        f"{partition_name}: balanced accuracy {results['accuracy-balanced']:.2f}% is out of [0, 100] range"
+    )
+    assert 0.0 <= results["f1-macro"] <= 100.0, (
+        f"{partition_name}: F1-macro {results['f1-macro']:.2f}% is out of [0, 100] range"
+    )
+    assert results["cross-entropy"] >= 0.0, (
+        f"{partition_name}: cross-entropy {results['cross-entropy']:.5f} must be non-negative"
+    )
+    print(f"  [OK] {partition_name} sanity checks passed.")
+
+
+def _save_test_results(all_results, output_path):
+    """Save a dict of test results to a JSON file."""
+    # Convert numpy types to plain Python so json.dump works
+    def _to_python(obj):
+        if hasattr(obj, "item"):
+            return obj.item()
+        if isinstance(obj, dict):
+            return {k: _to_python(v) for k, v in obj.items()}
+        return obj
+
+    with open(output_path, "w") as f:
+        json.dump(_to_python(all_results), f, indent=2)
+    print(f"Test results saved to '{output_path}'")
 
 
 class ClassificationModel(nn.Module):
@@ -744,6 +778,17 @@ def run(config):
 
     # TEST ====================================================================
     print(f"\nEvaluating final model (epoch {config.epochs}) performance")
+
+    all_test_results = {
+        "run_name": config.run_name,
+        "run_id": config.run_id,
+        "taxonomic_level": getattr(config, "taxonomic_level", ""),
+        "dataset": config.dataset_name,
+        "final_epoch": config.epochs,
+        "best_epoch": best_stats["best_epoch"],
+        "best_val_accuracy": best_stats["max_accuracy"],
+    }
+
     # Evaluate on test set
     if config.dataset_name == "ITS-5M":
         print("\nEvaluating final model on test1 set...", flush=True)
@@ -754,6 +799,8 @@ def run(config):
             partition_name="Test1",
             is_distributed=config.distributed,
         )
+        _validate_test_results(eval_stats1, "Test1")
+        all_test_results["test1"] = eval_stats1
         # Send stats to wandb
         if config.log_wandb and config.global_rank == 0:
             wandb.log({**{f"Eval/Test1/{k}": v for k, v in eval_stats1.items()}}, step=total_step)
@@ -766,6 +813,8 @@ def run(config):
             partition_name="Test2",
             is_distributed=config.distributed,
         )
+        _validate_test_results(eval_stats2, "Test2")
+        all_test_results["test2"] = eval_stats2
         # Send stats to wandb
         if config.log_wandb and config.global_rank == 0:
             wandb.log({**{f"Eval/Test2/{k}": v for k, v in eval_stats2.items()}}, step=total_step)
@@ -778,6 +827,8 @@ def run(config):
             partition_name="Test3",
             is_distributed=config.distributed,
         )
+        _validate_test_results(eval_stats3, "Test3")
+        all_test_results["test3"] = eval_stats3
         # Send stats to wandb
         if config.log_wandb and config.global_rank == 0:
             wandb.log({**{f"Eval/Test3/{k}": v for k, v in eval_stats3.items()}}, step=total_step)
@@ -788,16 +839,19 @@ def run(config):
 
     else:
         print("\nEvaluating final model on test set...", flush=True)
-        eval_stats = evaluate(
+        test_eval_stats = evaluate(
             dataloader=dataloader_test,
             model=model,
             device=device,
             partition_name="Test",
             is_distributed=config.distributed,
         )
+        _validate_test_results(test_eval_stats, "Test")
+        all_test_results["test"] = test_eval_stats
+        eval_stats = test_eval_stats
         # Send stats to wandb
         if config.log_wandb and config.global_rank == 0:
-            wandb.log({**{f"Eval/Test/{k}": v for k, v in eval_stats.items()}}, step=total_step)
+            wandb.log({**{f"Eval/Test/{k}": v for k, v in test_eval_stats.items()}}, step=total_step)
 
     if distinct_val_test:
         # Evaluate on validation set
@@ -809,6 +863,7 @@ def run(config):
             partition_name=eval_set,
             is_distributed=config.distributed,
         )
+        all_test_results["val"] = eval_stats
         # Send stats to wandb
         if config.log_wandb and config.global_rank == 0:
             wandb.log(
@@ -839,9 +894,19 @@ def run(config):
         partition_name="Train",
         is_distributed=config.distributed,
     )
+    all_test_results["train"] = eval_stats
     # Send stats to wandb
     if config.log_wandb and config.global_rank == 0:
         wandb.log({**{f"Eval/Train/{k}": v for k, v in eval_stats.items()}}, step=total_step)
+
+    # Save all test results to JSON (main process only)
+    if config.global_rank == 0:
+        if config.model_output_dir:
+            results_filename = f"test_results_{getattr(config, 'taxonomic_level', 'unknown')}.json"
+            results_path = os.path.join(config.model_output_dir, results_filename)
+        else:
+            results_path = f"test_results_{getattr(config, 'taxonomic_level', 'unknown')}_{config.run_id}.json"
+        _save_test_results(all_test_results, results_path)
 
 
 def train_one_epoch(
