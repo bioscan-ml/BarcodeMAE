@@ -21,7 +21,7 @@ from transformers.models.bert.modeling_bert import TokenClassifierOutput
 from barcodebert import utils
 from barcodebert.datasets import DNADataset
 from barcodebert.evaluation import evaluate
-from barcodebert.io import load_pretrained_model, safe_save_model
+from barcodebert.io import load_pretrained_encoder, load_pretrained_model, safe_save_model
 
 BASE_BATCH_SIZE = 64
 
@@ -86,6 +86,18 @@ class ClassificationModel(nn.Module):
         if representation_type != "jumbo":
             self.classifier = nn.Linear(self.hidden_size, self.num_labels)
 
+    def _last_hidden(self, outputs):
+        """Return the final hidden states as a (B, N, D) tensor regardless of
+        whether `outputs` comes from a HuggingFace BertModel (tuple-valued
+        `hidden_states`) or from our JumboBertForTokenClassification (tensor-valued
+        `hidden_states` already equal to the final patch tokens)."""
+        if hasattr(outputs, "last_hidden_state") and outputs.last_hidden_state is not None:
+            return outputs.last_hidden_state
+        hs = outputs.hidden_states
+        if isinstance(hs, (list, tuple)):
+            return hs[-1]
+        return hs  # jumbo already gives final (B, N, D)
+
     def _get_embedding(self, outputs, mask):
         rtype = self.representation_type
 
@@ -101,13 +113,11 @@ class ClassificationModel(nn.Module):
             return outputs.jumbo_tokens.reshape(B, -1)  # (B, J*D)
 
         if rtype == "cls":
-            hidden = outputs.last_hidden_state if hasattr(outputs, "last_hidden_state") \
-                else outputs.hidden_states[-1]
-            return hidden[:, 0, :]  # (B, D)
+            return self._last_hidden(outputs)[:, 0, :]  # (B, D)
 
-        # default: "tokens" — mean-pool sequence tokens
-        hidden = outputs.last_hidden_state if hasattr(outputs, "last_hidden_state") \
-            else outputs.hidden_states[-1]
+        # default: "tokens" — mean-pool sequence tokens (same representation
+        # used when we extract per-sequence embeddings from the dataset)
+        hidden = self._last_hidden(outputs)
         seq_mask = mask.clone().float()
         sum_emb = (hidden * seq_mask.unsqueeze(-1)).sum(1)
         embedding = sum_emb / seq_mask.sum(1, keepdim=True).clamp(min=1)
@@ -242,10 +252,16 @@ def run(config):
             utils.set_rng_seeds_fixed(config.seed + start_epoch, all_gpu=False)
 
     # LOAD PRE-TRAINED CHECKPOINT =============================================
-    # Map model parameters to be load to the specified gpu.
-    pre_model, pre_checkpoint = load_pretrained_model(config.pretrained_checkpoint_path, device=device)
-    # Override the classifier with an identity function as we only want the embeddings
-    pre_model.classifier = nn.Identity()
+    # Encoder-only load: mirrors inspect_checkpoint.py (direct torch.load +
+    # BertConfig rebuild), then strips any taxonomy / token-classifier / decoder
+    # weights so only the encoder backbone is loaded. A fresh classification
+    # head is built on top inside ClassificationModel.
+    pre_model, pre_checkpoint = load_pretrained_encoder(config.pretrained_checkpoint_path, device=device)
+    # The loaded jumbo/transformer model may still expose a `.classifier` from
+    # its architecture (not from the checkpoint — we stripped those weights).
+    # Neutralize it so ClassificationModel's fresh head is the only classifier.
+    if hasattr(pre_model, "classifier"):
+        pre_model.classifier = nn.Identity()
 
     keys_to_reuse = [
         "k_mer",

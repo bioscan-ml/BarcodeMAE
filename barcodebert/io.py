@@ -208,3 +208,96 @@ def load_pretrained_model(checkpoint_path, device=None):
     print("------------------------------\n")
 
     return model, ckpt
+
+
+def load_pretrained_encoder(checkpoint_path, device=None):
+    """
+    Load ONLY the encoder from a pretrained checkpoint — no classifier, no
+    taxonomy head, no decoder. Mirrors the loading path used by
+    inspect_checkpoint.py (direct torch.load + rebuild BertConfig), then builds
+    the minimal encoder architecture and loads just the encoder weights.
+
+    Use this for finetuning when you want a clean backbone and a fresh
+    classification head. Returns (encoder, ckpt).
+
+    The returned encoder has:
+      - jumbo pretraining: JumboBertForTokenClassification (its `.classifier`
+        is untrained/unused; take embeddings from `.jumbo_tokens` or
+        `.hidden_states` in the forward output)
+      - maelm pretraining: BertModel (possibly wrapped in RegisterBertModel)
+      - vanilla transformer pretraining: BertModel
+    """
+    print(f"\nLoading encoder from {checkpoint_path}")
+    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+
+    cfg = ckpt["config"]
+    bert_config = BertConfig(**ckpt["bert_config"])
+    jumbo = getattr(cfg, "jumbo", False)
+
+    # ── 1. Build encoder-only architecture ────────────────────────────────
+    if jumbo:
+        model = create_jumbo_transformer_model(
+            bert_config,
+            jumbo_multiplier=getattr(cfg, "jumbo_multiplier", 6),
+            share_jumbo_mlp_across_layers=getattr(cfg, "share_jumbo_layers", False),
+            mlp_expansion_factor=getattr(cfg, "jumbo_mlp_expansion", 2),
+        )
+        print("Built JumboBertForTokenClassification (encoder only — no taxonomy head)")
+    elif cfg.arch == "maelm":
+        model = BertModel(bert_config)
+        print("Built BertModel (MAELM encoder)")
+    else:
+        model = BertModel(bert_config)
+        print("Built BertModel (vanilla transformer encoder)")
+
+    # ── 2. Strip head weights from state dict ─────────────────────────────
+    state_dict = remove_extra_pre_fix(ckpt["model"])
+
+    # MAELM: keep only encoder.* entries
+    register_tokens = None
+    if cfg.arch == "maelm" and "decoder_config" in ckpt:
+        register_tokens = state_dict.get("register_tokens", None)
+        state_dict = {k[len("encoder."):]: v for k, v in state_dict.items() if k.startswith("encoder.")}
+
+    # Drop any head-only keys that aren't part of the encoder architecture
+    target_keys = set(model.state_dict().keys())
+    filtered = {}
+    dropped = []
+    for k, v in state_dict.items():
+        if k in target_keys:
+            filtered[k] = v
+        else:
+            dropped.append(k)
+
+    if dropped:
+        # Show a concise summary so the user can see what was stripped
+        heads = sorted({k.split(".")[0] for k in dropped})
+        print(f"Dropped {len(dropped)} non-encoder param groups: {heads}")
+
+    missing = target_keys - set(filtered.keys())
+    if missing:
+        print(f"Warning: {len(missing)} target-model params have no checkpoint value "
+              f"(will stay at init): {sorted(list(missing))[:10]}...")
+
+    model.load_state_dict(filtered, strict=False)
+
+    # ── 3. Register-token wrap for MAELM ──────────────────────────────────
+    n_registers = getattr(cfg, "n_registers", 0)
+    if cfg.arch == "maelm" and n_registers > 0 and register_tokens is not None:
+        print(f"Wrapping encoder with RegisterBertModel ({n_registers} register tokens)")
+        model = RegisterBertModel(model, register_tokens)
+
+    model.eval()
+
+    # ── 4. Diagnostics (same info as inspect_checkpoint) ──────────────────
+    print("--- Encoder checkpoint summary ---")
+    print(f"  arch ................ {getattr(cfg, 'arch', '?')}")
+    print(f"  jumbo ............... {jumbo}")
+    print(f"  use_cls_token ....... {getattr(cfg, 'use_cls_token', False)}")
+    print(f"  epochs trained ...... {ckpt.get('epoch', '?')}")
+    print(f"  total_step .......... {ckpt.get('total_step', '?')}")
+    print(f"  max_accuracy ........ {ckpt.get('max_accuracy', '?')}")
+    print(f"  best_epoch .......... {ckpt.get('best_epoch', '?')}")
+    print("-----------------------------------\n")
+
+    return model, ckpt
