@@ -921,6 +921,51 @@ def run(config):
     if config.log_wandb and config.global_rank == 0:
         wandb.log({**{f"Eval/Train/{k}": v for k, v in eval_stats.items()}}, step=total_step)
 
+    # Evaluate any extra per-epoch checkpoints we kept via --save-epochs ========
+    if config.save_epochs and config.model_output_dir:
+        unique_save_epochs = sorted({ep for ep in config.save_epochs if 1 <= ep <= config.epochs})
+        all_test_results["saved_epochs"] = {}
+        print("\n" + "=" * 60)
+        print(f"Evaluating saved per-epoch checkpoints: {unique_save_epochs}")
+        print("=" * 60, flush=True)
+        for ep in unique_save_epochs:
+            ckpt_path_ep = os.path.join(
+                config.model_output_dir, f"epoch{ep}_finetune_{config.taxonomic_level}.pt"
+            )
+            if not os.path.isfile(ckpt_path_ep):
+                print(f"[skip] No checkpoint found for epoch {ep} at {ckpt_path_ep}")
+                continue
+            print(f"\n--- Loading checkpoint from epoch {ep}: {ckpt_path_ep} ---", flush=True)
+            ep_ckpt = torch.load(ckpt_path_ep, map_location=device)
+            model.load_state_dict(ep_ckpt["model"])
+            ep_results = {}
+            if config.dataset_name == "ITS-5M":
+                test_partitions = [
+                    ("test1", "Test1", dataloader_test1),
+                    ("test2", "Test2", dataloader_test2),
+                    ("test3", "Test3", dataloader_test3),
+                ]
+            else:
+                test_partitions = [("test", "Test", dataloader_test)]
+            for key, label, dl in test_partitions:
+                print(f"\nEvaluating epoch {ep} on {label} set...", flush=True)
+                ep_stats = evaluate(
+                    dataloader=dl,
+                    model=model,
+                    device=device,
+                    partition_name=label,
+                    is_distributed=config.distributed,
+                )
+                _validate_test_results(ep_stats, label)
+                ep_results[key] = ep_stats
+                print(ep_stats)
+                if config.log_wandb and config.global_rank == 0:
+                    wandb.log(
+                        {f"Eval/Epoch{ep}/{label}/{k}": v for k, v in ep_stats.items()},
+                        step=total_step,
+                    )
+            all_test_results["saved_epochs"][f"epoch_{ep}"] = ep_results
+
     # Save all test results to JSON (main process only)
     if config.global_rank == 0:
         if config.model_output_dir:
