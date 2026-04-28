@@ -751,6 +751,12 @@ def run(config):
                 ckpt_path_best = os.path.join(config.model_output_dir, f"best_finetune_{config.taxonomic_level}.pt")
                 print(f"Copying model to {ckpt_path_best}")
                 shutil.copyfile(config.checkpoint_path, ckpt_path_best)
+            if config.save_epochs and epoch in config.save_epochs:
+                ckpt_path_epoch = os.path.join(
+                    config.model_output_dir, f"epoch{epoch}_finetune_{config.taxonomic_level}.pt"
+                )
+                print(f"Copying model to {ckpt_path_epoch}")
+                shutil.copyfile(config.checkpoint_path, ckpt_path_epoch)
 
         t_end_save = time.time()
         timing_stats["saving"] = t_end_save - t_start_save
@@ -1216,6 +1222,16 @@ def get_parser():
             "'jumbo': flattened J*D jumbo representation. "
             "'cls': hidden state at position 0."
         ),
+    )
+    group.add_argument(
+        "--save-epochs",
+        "--save_epochs",
+        dest="save_epochs",
+        nargs="+",
+        type=int,
+        default=[],
+        metavar="EPOCH",
+        help="Persist a copy of the checkpoint at each listed epoch (e.g. --save-epochs 17 18 19 20).",
     )
     return parser
 
