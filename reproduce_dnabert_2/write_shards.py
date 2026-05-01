@@ -136,7 +136,7 @@ def write_shards(
 cpu_count = os.cpu_count()
 print(f"Number of available CPU cores: {cpu_count}")
 
-CONFIDENCE_THRESHOLD = 50.0
+CONFIDENCE_THRESHOLD = 0.0  # include all classified sequences regardless of confidence
 RATIO = 0.25
 TSV_FILE = "../dnabert_2_kraken_species_assignments.tsv"
 output_dir = os.path.expanduser(f"~/dnabert2_wds/shards_{RATIO}")

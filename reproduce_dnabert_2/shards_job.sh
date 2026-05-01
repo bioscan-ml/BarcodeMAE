@@ -9,3 +9,5 @@ module load python/3.11
 source /home/pmillana/xformers/bin/activate
 cd /home/pmillana/projects/def-lila-ab/pmillana/reproduce_dnabert_2
 python write_shards.py
+
+
