@@ -11,9 +11,12 @@ import webdataset as wds
 from tqdm import tqdm
 from transformers import AutoTokenizer
 
-tokenizer = AutoTokenizer.from_pretrained("zhihan1996/DNABERT-2-117M", trust_remote_code=True, max_len=128)
+MAX_LENGTH = 224
 
-tokenized_seq = tokenizer("ACGT", padding='max_length')['input_ids']
+tokenizer = AutoTokenizer.from_pretrained("zhihan1996/DNABERT-2-117M", trust_remote_code=True)
+tokenizer.model_max_length = MAX_LENGTH
+
+tokenized_seq = tokenizer("ACGT", padding='max_length', truncation=True, max_length=MAX_LENGTH)['input_ids']
 print(len(tokenized_seq))
 
 # Suppress Hugging Face tokenizer parallelism warning
@@ -29,7 +32,7 @@ def _init_worker(labels_arr):
 
 
 def tokenize(seq):
-    tokens, _, att_mask = tokenizer(seq, padding='max_length').values()
+    tokens, _, att_mask = tokenizer(seq, padding='max_length', truncation=True, max_length=MAX_LENGTH).values()
     tokens_np = np.array(tokens).astype(np.uint16)
     att_mask_np = np.array(att_mask).astype(np.uint8)
     return tokens_np, att_mask_np
@@ -137,7 +140,7 @@ cpu_count = os.cpu_count()
 print(f"Number of available CPU cores: {cpu_count}")
 
 CONFIDENCE_THRESHOLD = 0.0  # include all classified sequences regardless of confidence
-RATIO = 0.25
+RATIO = 0.01
 
 BASE_DATA_DIR = "/home/m4safari/projects/def-lila-ab/m4safari/shards_data/BarcodeMAE/reproduce_dnabert_2/reproduce_dnabert_2"
 TSV_FILE = os.path.join(BASE_DATA_DIR, "dnabert_2_kraken_species_assignments.tsv")
