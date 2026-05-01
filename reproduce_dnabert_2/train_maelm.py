@@ -231,6 +231,8 @@ def parse_args():
     parser.add_argument("--learning-rate", type=float, default=5e-4)
     parser.add_argument("--weight-decay", type=float, default=0.1)
     parser.add_argument("--checkpoint-interval", type=int, default=2000)
+    parser.add_argument("--log-interval", type=int, default=100,
+                        help="Print loss every N steps (use 1 for smoke tests)")
 
     # Jumbo CLS token args (uses barcodebert MAELMModel)
     parser.add_argument("--jumbo", action="store_true",
@@ -510,7 +512,7 @@ def main():
             scheduler.step()
             optimizer.zero_grad()
 
-            if step % 100 == 0 and rank == 0:
+            if step % args.log_interval == 0 and rank == 0:
                 elapsed = time.time() - start_time
                 if elapsed == 0:
                     elapsed = 1e-5
