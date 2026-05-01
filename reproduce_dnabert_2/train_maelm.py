@@ -45,7 +45,10 @@ def get_num_cpu_available():
 
 
 def npy_decoder(data: bytes) -> torch.Tensor:
-    return torch.from_numpy(np.load(io.BytesIO(data), allow_pickle=False))
+    arr = np.load(io.BytesIO(data), allow_pickle=False)
+    if arr.dtype == np.uint16:
+        arr = arr.astype(np.int32)
+    return torch.from_numpy(arr)
 
 
 def make_dataset(pattern: str, shuffle_buf: int = 10_000, resampled: bool = False, world_size: int = 1, rank: int = 0):
