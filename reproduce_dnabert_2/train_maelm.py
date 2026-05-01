@@ -6,6 +6,7 @@ import math
 import argparse
 import random
 import glob
+from collections import defaultdict, deque
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -109,6 +110,69 @@ def setup_data_loaders(batch_size, total_train_batch_size, train_shards_pattern,
     return dataloader_train, grad_accum_steps
 
 
+def balanced_batch_pipeline(src, k, m, batch_size, buffer_size=None):
+    """
+    Streaming class-balanced batch builder for WebDataset.
+
+    Buffers samples by species label and yields collated batches containing:
+      - k*m labeled slots: k species × m samples each
+          → k * C(m,2) guaranteed same-species (positive) pairs
+          → e.g. k=32, m=2: exactly 32 positive pairs
+      - (batch_size - k*m) fill slots: random samples (labeled or unlabeled)
+          → serve as negatives in the contrastive loss
+
+    Compatible with any WebDataset stream; no index-based access required.
+    """
+    n_labeled = k * m
+    n_fill = batch_size - n_labeled
+    if buffer_size is None:
+        buffer_size = batch_size * 40
+
+    species_buf = defaultdict(list)       # label -> [(key, tokens, mask, label), ...]
+    general_buf = deque(maxlen=buffer_size)
+
+    for sample in src:
+        key, tokens, mask, label_raw = sample
+        label_val = int(label_raw.reshape(-1)[0])
+
+        item = (key, tokens, mask, label_val)
+        if label_val >= 0:
+            species_buf[label_val].append(item)
+        general_buf.append(item)
+
+        eligible = [sp for sp, buf in species_buf.items() if len(buf) >= m]
+        if len(eligible) < k:
+            continue
+
+        chosen = random.sample(eligible, k)
+        labeled = []
+        labeled_keys = set()
+        for sp in chosen:
+            picked = random.sample(species_buf[sp], m)
+            labeled.extend(picked)
+            labeled_keys.update(x[0] for x in picked)
+            for p in picked:
+                species_buf[sp].remove(p)
+
+        fill_candidates = [x for x in general_buf if x[0] not in labeled_keys]
+        if len(fill_candidates) < n_fill:
+            # Not enough fill yet; restore species buffers and keep streaming
+            for item_ in labeled:
+                species_buf[item_[3]].append(item_)
+            continue
+
+        fill = random.sample(fill_candidates, n_fill)
+        batch = labeled + fill
+        random.shuffle(batch)
+
+        keys_b = [x[0] for x in batch]
+        tokens_b = torch.stack([x[1] for x in batch])
+        masks_b = torch.stack([x[2] for x in batch])
+        labels_b = torch.tensor([x[3] for x in batch], dtype=torch.long)
+
+        yield keys_b, tokens_b, masks_b, labels_b
+
+
 def process_batch_mlm(batch, tokenizer, mask_ratio=0.15):
     """
     Process batch for masked language modeling.
@@ -193,6 +257,13 @@ def parse_args():
     parser.add_argument("--no-compile", action="store_true")
     parser.add_argument("--num-workers", type=int, default=4)
 
+    # Balanced sampling (streaming KClassMSample equivalent for WebDataset)
+    parser.add_argument("--k-classes", type=int, default=0,
+                        help="Species per balanced block per batch (0 = disabled). "
+                             "k=32 with --m-per-class=2 gives 32 positive pairs.")
+    parser.add_argument("--m-per-class", type=int, default=2,
+                        help="Samples per species in the balanced block (default 2).")
+
     return parser.parse_known_args()[0]
 
 
@@ -264,15 +335,34 @@ def main():
             print(f"Loaded species vocab: {num_species:,} species from {args.species_vocab}")
 
     # Data Loading
-    train_loader, acc_steps = setup_data_loaders(
-        args.batch_size,
-        args.total_batch_size,
-        args.train_shards_pattern,
-        world_size,
-        rank,
-        device,
-        workers=args.num_workers
-    )
+    if args.k_classes > 0:
+        k, m = args.k_classes, args.m_per_class
+        if k * m > args.batch_size:
+            raise ValueError(f"k*m={k}*{m}={k*m} exceeds batch_size={args.batch_size}")
+        assert args.total_batch_size % (args.batch_size * world_size) == 0
+        acc_steps = args.total_batch_size // (args.batch_size * world_size)
+        if rank == 0:
+            print(f"Balanced sampling: k={k} species × m={m} samples = {k*m} labeled "
+                  f"+ {args.batch_size - k*m} fill per batch → {k * (m*(m-1)//2)} positive pairs")
+            print(f"total desired batch size: {args.total_batch_size}")
+            print(f"=> calculated gradient accumulation steps: {acc_steps}")
+        raw_dataset = make_dataset(
+            args.train_shards_pattern, 10000, resampled=True,
+            world_size=world_size, rank=rank
+        )
+        train_loader = balanced_batch_pipeline(
+            iter(raw_dataset), k=k, m=m, batch_size=args.batch_size
+        )
+    else:
+        train_loader, acc_steps = setup_data_loaders(
+            args.batch_size,
+            args.total_batch_size,
+            args.train_shards_pattern,
+            world_size,
+            rank,
+            device,
+            workers=args.num_workers
+        )
 
     tokenizer = AutoTokenizer.from_pretrained("zhihan1996/DNABERT-2-117M", trust_remote_code=True)
 
@@ -303,7 +393,7 @@ def main():
             decoder_config=config,
             jumbo=True,
             jumbo_multiplier=args.jumbo_multiplier,
-            share_jumbo_layers=False,
+            share_jumbo_layers=True,
             enable_genus_classification=(num_species is not None),
         )
     else:
@@ -333,6 +423,9 @@ def main():
 
         for step in range(0, args.max_steps):
             loss_accum = 0.0
+            tax_loss_accum = 0.0
+            num_pos_pairs = 0
+            num_neg_pairs = 0
 
             for micro_step in range(acc_steps):
                 try:
@@ -342,10 +435,20 @@ def main():
                         print(f"DataLoader issue ({type(e).__name__}), recreating...")
                         if isinstance(e, (BrokenPipeError, ConnectionResetError)):
                             time.sleep(10)
-                    train_loader, _ = setup_data_loaders(
-                        args.batch_size, args.total_batch_size, args.train_shards_pattern,
-                        world_size, rank, device
-                    )
+                    if args.k_classes > 0:
+                        raw_dataset = make_dataset(
+                            args.train_shards_pattern, 10000, resampled=True,
+                            world_size=world_size, rank=rank
+                        )
+                        train_loader = balanced_batch_pipeline(
+                            iter(raw_dataset), k=args.k_classes, m=args.m_per_class,
+                            batch_size=args.batch_size
+                        )
+                    else:
+                        train_loader, _ = setup_data_loaders(
+                            args.batch_size, args.total_batch_size, args.train_shards_pattern,
+                            world_size, rank, device
+                        )
                     batch = next(train_loader)
 
                 masked_input, attention_mask, targets, mask_positions, species_labels = \
@@ -375,7 +478,7 @@ def main():
 
                     # Taxonomy classification loss via Jumbo CLS tokens
                     if raw_model.enable_genus_classification and outputs.jumbo_tokens is not None:
-                        tax_loss, _, _, _, _ = compute_taxonomy_classification_loss(
+                        tax_loss, _, _, n_same, n_diff = compute_taxonomy_classification_loss(
                             outputs.jumbo_tokens,
                             species_labels,
                             raw_model.taxonomy_classifier,
@@ -383,7 +486,10 @@ def main():
                             max_pairs=32,
                             debug_print=False,
                         )
+                        num_pos_pairs += n_same
+                        num_neg_pairs += n_diff
                         if tax_loss is not None:
+                            tax_loss_accum += tax_loss.detach() / acc_steps
                             loss = loss + args.cls_loss_weight * tax_loss
                 else:
                     # Original path: MAELMModel computes loss internally via labels
@@ -410,9 +516,13 @@ def main():
                     elapsed = 1e-5
                 seq_per_sec = (args.total_batch_size * args.max_seq_length) / elapsed
                 lr = scheduler.get_last_lr()[0]
-                print(f"Step {step} | Loss: {loss_accum.item():.4f} | LR: {lr:.2e} | Tok/s: {seq_per_sec:.0f}")
+                tax_str = (
+                    f" | TaxLoss: {tax_loss_accum.item():.4f} | Pairs: {num_pos_pairs}pos/{num_neg_pairs}neg"
+                    if isinstance(tax_loss_accum, torch.Tensor) else ""
+                )
+                print(f"Step {step} | Loss: {loss_accum.item():.4f}{tax_str} | LR: {lr:.2e} | Tok/s: {seq_per_sec:.0f}")
                 with open(os.path.join(args.log_dir, "log.txt"), "a") as f:
-                    f.write(f"{step} train {loss_accum.item():.4f} lr {lr:.2e} tok/s {seq_per_sec:.0f}\n")
+                    f.write(f"{step} train {loss_accum.item():.4f}{tax_str} lr {lr:.2e} tok/s {seq_per_sec:.0f}\n")
                 start_time = time.time()
 
             if (step + 1) % args.checkpoint_interval == 0 and rank == 0:
