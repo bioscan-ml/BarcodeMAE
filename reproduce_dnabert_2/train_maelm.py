@@ -234,11 +234,23 @@ def parse_args():
     parser.add_argument("--log-interval", type=int, default=100,
                         help="Print loss every N steps (use 1 for smoke tests)")
 
+    # Encoder / decoder architecture
+    parser.add_argument("--n-layers", type=int, default=12, help="Encoder hidden layers")
+    parser.add_argument("--n-heads", type=int, default=12, help="Encoder attention heads")
+    parser.add_argument("--decoder-n-layers", type=int, default=None,
+                        help="Decoder hidden layers (defaults to --n-layers)")
+    parser.add_argument("--decoder-n-heads", type=int, default=None,
+                        help="Decoder attention heads (defaults to --n-heads)")
+
     # Jumbo CLS token args (uses barcodebert MAELMModel)
     parser.add_argument("--jumbo", action="store_true",
                         help="Use Jumbo CLS tokens in the encoder (requires barcodebert package)")
     parser.add_argument("--jumbo-multiplier", type=int, default=6,
                         help="Number of Jumbo CLS tokens (J)")
+    parser.add_argument("--jumbo-mlp-expansion", type=int, default=2,
+                        help="MLP width multiplier for Jumbo CLS token layers")
+    parser.add_argument("--share-jumbo-layers", action="store_true", default=True,
+                        help="Share Jumbo MLP weights across encoder layers")
     parser.add_argument("--species-vocab", type=str, default=None,
                         help="Path to species_vocab.json written by write_shards.py")
     parser.add_argument("--cls-loss-weight", type=float, default=1.0,
@@ -336,6 +348,10 @@ def main():
         if rank == 0:
             print(f"Loaded species vocab: {num_species:,} species from {args.species_vocab}")
 
+    # Resolve shard glob once — setup_data_loaders does this internally but
+    # make_dataset (used by the balanced path) gets the raw pattern otherwise.
+    resolved_shards = sorted(glob.glob(args.train_shards_pattern)) or args.train_shards_pattern
+
     # Data Loading
     if args.k_classes > 0:
         k, m = args.k_classes, args.m_per_class
@@ -349,7 +365,7 @@ def main():
             print(f"total desired batch size: {args.total_batch_size}")
             print(f"=> calculated gradient accumulation steps: {acc_steps}")
         raw_dataset = make_dataset(
-            args.train_shards_pattern, 10000, resampled=True,
+            resolved_shards, 10000, resampled=True,
             world_size=world_size, rank=rank
         )
         train_loader = balanced_batch_pipeline(
@@ -368,11 +384,14 @@ def main():
 
     tokenizer = AutoTokenizer.from_pretrained("zhihan1996/DNABERT-2-117M", trust_remote_code=True)
 
-    config = BertConfig(**{
+    dec_n_layers = args.decoder_n_layers if args.decoder_n_layers is not None else args.n_layers
+    dec_n_heads = args.decoder_n_heads if args.decoder_n_heads is not None else args.n_heads
+
+    encoder_config = BertConfig(**{
         "vocab_size": 4096,
         "hidden_size": 768,
-        "num_hidden_layers": 12,
-        "num_attention_heads": 12,
+        "num_hidden_layers": args.n_layers,
+        "num_attention_heads": args.n_heads,
         "intermediate_size": 3072,
         "max_position_embeddings": args.max_seq_length,
         "type_vocab_size": 2,
@@ -380,6 +399,19 @@ def main():
         "alibi_starting_size": args.alibi_starting_size,
         "num_labels": 4096,
     })
+    decoder_config = BertConfig(**{
+        "vocab_size": 4096,
+        "hidden_size": 768,
+        "num_hidden_layers": dec_n_layers,
+        "num_attention_heads": dec_n_heads,
+        "intermediate_size": 3072,
+        "max_position_embeddings": args.max_seq_length,
+        "type_vocab_size": 2,
+        "_name_or_path": "zhihan1996/DNABERT-2-117M",
+        "alibi_starting_size": args.alibi_starting_size,
+        "num_labels": 4096,
+    })
+    config = encoder_config  # kept for loss computation references below
 
     # Build model
     if args.jumbo:
@@ -388,15 +420,20 @@ def main():
                 "barcodebert package not found. Run `pip install -e .` from the BarcodeMAE directory."
             )
         if rank == 0:
-            print(f"Initializing Jumbo MAELMModel (J={args.jumbo_multiplier}, "
+            print(f"Initializing Jumbo MAELMModel "
+                  f"(enc={args.n_layers}L/{args.n_heads}H "
+                  f"dec={dec_n_layers}L/{dec_n_heads}H "
+                  f"J={args.jumbo_multiplier} mlp_exp={args.jumbo_mlp_expansion} "
+                  f"shared={args.share_jumbo_layers} "
                   f"taxonomy={'yes' if num_species else 'no'})...")
         raw_model = BarcodeMAELMModel(
-            encoder_config=config,
-            decoder_config=config,
+            encoder_config=encoder_config,
+            decoder_config=decoder_config,
             jumbo=True,
             jumbo_multiplier=args.jumbo_multiplier,
-            share_jumbo_layers=True,
+            share_jumbo_layers=args.share_jumbo_layers,
             enable_genus_classification=(num_species is not None),
+            mlp_expansion_factor=args.jumbo_mlp_expansion,
         )
     else:
         if rank == 0:
