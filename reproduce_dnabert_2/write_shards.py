@@ -138,7 +138,11 @@ print(f"Number of available CPU cores: {cpu_count}")
 
 CONFIDENCE_THRESHOLD = 0.0  # include all classified sequences regardless of confidence
 RATIO = 0.25
-TSV_FILE = "../dnabert_2_kraken_species_assignments.tsv"
+
+BASE_DATA_DIR = "/home/m4safari/projects/def-lila-ab/m4safari/shards_data/BarcodeMAE/reproduce_dnabert_2/reproduce_dnabert_2"
+TSV_FILE = os.path.join(BASE_DATA_DIR, "dnabert_2_kraken_species_assignments.tsv")
+TRAIN_FILE = os.path.join(BASE_DATA_DIR, "data/train.txt")
+DEV_FILE = os.path.join(BASE_DATA_DIR, "data/dev.txt")
 output_dir = os.path.expanduser(f"~/dnabert2_wds/shards_{RATIO}")
 
 # Load species labels from TSV (train sequences only; SEQ_1 = line 0)
@@ -152,11 +156,11 @@ with open(vocab_path, "w") as f:
 print(f"Saved species vocab ({len(species_to_idx):,} species) to {vocab_path}")
 
 # Dev shards: no labels (TSV covers train only)
-write_shards("data/dev.txt", output_dir, "dev", labels_array=None, ratio=RATIO)
+write_shards(DEV_FILE, output_dir, "dev", labels_array=None, ratio=RATIO)
 
 # Train shards: SEQ_1 = line 0 → offset=1 for 1-based SEQ IDs
 write_shards(
-    "data/train.txt",
+    TRAIN_FILE,
     output_dir,
     "train",
     labels_array=labels_array,
