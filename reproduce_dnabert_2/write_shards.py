@@ -143,7 +143,7 @@ BASE_DATA_DIR = "/home/m4safari/projects/def-lila-ab/m4safari/shards_data/Barcod
 TSV_FILE = os.path.join(BASE_DATA_DIR, "dnabert_2_kraken_species_assignments.tsv")
 TRAIN_FILE = os.path.join(BASE_DATA_DIR, "data/train.txt")
 DEV_FILE = os.path.join(BASE_DATA_DIR, "data/dev.txt")
-output_dir = os.path.expanduser(f"~/dnabert2_wds/shards_{RATIO}")
+output_dir = f"/scratch/m4safari/dnabert2_wds/shards_{RATIO}"
 
 # Load species labels from TSV (train sequences only; SEQ_1 = line 0)
 labels_array, species_to_idx = load_labels(TSV_FILE, confidence_threshold=CONFIDENCE_THRESHOLD)
