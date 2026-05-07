@@ -2,190 +2,237 @@
 
 import os
 import sys
+import time
+from itertools import product
 
 import numpy as np
+import pandas as pd
 import torch
 import umap
 from sklearn.cluster import AgglomerativeClustering
 from sklearn.metrics import adjusted_mutual_info_score
+from torch import nn
 
 sys.path.append(".")
 from barcodebert import utils
-from baselines.datasets import representations_from_df
-from baselines.io import load_baseline_model
+from barcodebert.datasets import BPETokenizer, KmerTokenizer, representations_from_df
+from barcodebert.io import load_pretrained_model
 
 
-def zsc_pipeline(X, y_true, metric="cosine", n_neighbours=10):
+def zsc_pipeline(X, y_true, metric="cosine", n_neighbours=10, n_clusters=None):
+    """
+    UMAP dimensionality reduction → Agglomerative Clustering → AMI evaluation.
 
-    # Step 1: Dimensionality reduction with UMAP to 50 dimensions
+    Parameters
+    ----------
+    X : np.ndarray (N, D)
+    y_true : array-like (N,)
+    metric : str
+    n_neighbours : int
+    n_clusters : int or None
+        Number of clusters for AgglomerativeClustering.
+        If None, inferred from the number of unique labels in y_true.
+    """
+    if n_clusters is None:
+        n_clusters = len(np.unique(y_true))
+        print(f"Auto-detected n_clusters = {n_clusters}")
+
+    print(f"Running UMAP (metric={metric}, n_neighbors={n_neighbours})...")
     umap_reducer = umap.UMAP(n_components=50, random_state=42, metric=metric, n_neighbors=n_neighbours)
     X_reduced = umap_reducer.fit_transform(X)
 
-    # Step 2: Cluster the reduced embeddings with Agglomerative Clustering (L2, Ward’s method)
-    agglomerative_clustering = AgglomerativeClustering(n_clusters=3479, linkage="ward")  # 3479 species 3950 bins
-    cluster_labels = agglomerative_clustering.fit_predict(X_reduced)
+    print(f"Running AgglomerativeClustering (n_clusters={n_clusters})...")
+    clustering = AgglomerativeClustering(n_clusters=n_clusters, linkage="ward")
+    cluster_labels = clustering.fit_predict(X_reduced)
 
-    # Step 3: Evaluate clustering performance with Adjusted Mutual Information (AMI) score
     ami_score = adjusted_mutual_info_score(y_true, cluster_labels)
-
-    print("Adjusted Mutual Information (AMI) score:", ami_score)
+    print(f"Adjusted Mutual Information (AMI) score: {ami_score:.4f}")
     return ami_score
 
 
 def run(config):
     r"""
-    Run ZSC job, using a single GPU worker to create the embeddings.
+    Run ZSC evaluation using a single GPU worker to create embeddings.
 
     Parameters
     ----------
-    config : argparse.Namespace or OmegaConf
-        The configuration for this experiment.
+    config : argparse.Namespace
     """
+    t_start = time.time()
 
     if config.log_wandb:
-        # Lazy import of wandb, since logging to wandb is optional
         import wandb
-
-        wandb.init(project="BarcodeBERT", name=f"zsc_{config.backbone}_CANADA-1.5M", config=vars(config))
-        wandb.config.update(vars(config))  # log your CLI args
+        run_name = f"zsc_{os.path.basename(os.path.dirname(config.pretrained_checkpoint_path))}"
+        wandb.init(project="BarcodeBERT", name=run_name, config=vars(config))
 
     if config.seed is not None:
         utils.set_rng_seeds_fixed(config.seed)
 
     if config.deterministic:
-        print("Running in deterministic cuDNN mode. Performance may be slower, but more reproducible.")
+        print("Running in deterministic cuDNN mode.")
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
-    print()
-    print("Configuration:")
-    print()
+    print("\nConfiguration:\n")
     print(config)
-    print()
-    print(f"Found {torch.cuda.device_count()} GPUs and {utils.get_num_cpu_available()} CPUs.", flush=True)
+    print(f"\nFound {torch.cuda.device_count()} GPUs and {utils.get_num_cpu_available()} CPUs.", flush=True)
 
-    # LOAD PRE-TRAINED CHECKPOINT =============================================
-    # Map model parameters to be load to the specified gpu.
+    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
-    embedder = load_baseline_model(config.backbone)
-    embedder.name = config.backbone
+    # --- Load checkpoint ---
+    model, pre_checkpoint = load_pretrained_model(config.pretrained_checkpoint_path, device=device)
+    if hasattr(model, "classifier"):
+        model.classifier = nn.Identity()
+    model = model.to(device)
+    model.eval()
 
-    # Ensure model is in eval mode
-    embedder.model.eval()
+    # Inherit tokenizer settings from checkpoint
+    keys_to_reuse = [
+        "k_mer", "stride", "max_len", "tokenizer", "bpe_path",
+        "tokenize_n_nucleotide", "predict_n_nucleotide",
+        "pretrain_levenshtein", "levenshtein_vectorized",
+        "n_layers", "n_heads", "dataset_name", "use_cls_token",
+    ]
+    default_kwargs = vars(get_parser().parse_args([
+        "--pretrained_checkpoint=dummy.pt", "--backbone=dummy", "--data-dir=.", "--dataset=BIOSCAN-5M"
+    ]))
+    for key in keys_to_reuse:
+        ckpt_val = getattr(pre_checkpoint["config"], key, None)
+        if ckpt_val is None:
+            continue
+        cur_val = getattr(config, key, None)
+        if cur_val is None or cur_val == default_kwargs.get(key):
+            print(f"  Using checkpoint value: {key} = {ckpt_val}")
+        setattr(config, key, ckpt_val)
 
-    trainable_params = sum(p.numel() for p in embedder.model.parameters() if p.requires_grad)
+    n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Trainable parameters: {n_params:,}")
 
-    print(f"Number of trainable parameters: {trainable_params}")
-
-    data_folder = config.data_dir
-    if config.taxon == "bin":
-        rank = "bin_uri"
+    # --- Tokenizer ---
+    if config.tokenizer == "kmer":
+        base_pairs = "ACGT"
+        if getattr(config, "use_cls_token", False):
+            specials = ["[MASK]", "[UNK]", "[CLS]"]
+        else:
+            specials = ["[MASK]", "[UNK]"]
+        if getattr(config, "tokenize_n_nucleotide", False):
+            base_pairs += "N"
+        kmers = ["".join(kmer) for kmer in product(base_pairs, repeat=config.k_mer)]
+        if getattr(config, "tokenize_n_nucleotide", False):
+            kmers = [k for k in kmers if "N" not in k] + [k for k in kmers if "N" in k]
+        from torchtext.vocab import vocab as build_vocab
+        vocab = build_vocab(dict.fromkeys(kmers, 1), specials=specials)
+        vocab.set_default_index(vocab["[UNK]"])
+        tokenizer = KmerTokenizer(config.k_mer, vocab, stride=config.stride,
+                                   padding=True, max_len=config.max_len)
+    elif config.tokenizer == "bpe":
+        tokenizer = BPETokenizer(padding=True, max_tokenized_len=config.max_len,
+                                  bpe_path=config.bpe_path)
     else:
-        rank = config.taxon
+        raise ValueError(f"Unknown tokenizer: {config.tokenizer}")
 
-    embeddings = {}
-    for file in ["unseen", "supervised_test"]:
-        filename = f"{data_folder}/{file}.csv"
-        embeddings[file] = representations_from_df(
-            filename, embedder, dataset="CANADA-1.5M", target=rank, save_embeddings=True, load_embeddings=False
-        )
-        print(embeddings[file]["data"].shape)
-        print(embeddings[file]["ids"].shape)
+    # --- Determine target column ---
+    if config.taxon.lower() == "bin":
+        target_level = "bin_uri"
+    elif config.dataset_name == "CANADA-1.5M":
+        target_level = config.taxon + "_name"
+    elif config.dataset_name == "BIOSCAN-5M":
+        target_level = config.taxon + "_index"
+    else:
+        raise ValueError(f"Unknown dataset: {config.dataset_name}")
 
-    X_part = np.vstack((embeddings["supervised_test"]["data"], embeddings["unseen"]["data"]))
-    y_part = np.hstack((embeddings["supervised_test"]["ids"], embeddings["unseen"]["ids"]))
+    # --- Load data ---
+    df_test = pd.read_csv(os.path.join(config.data_dir, "supervised_test.csv"))
+    df_unseen = pd.read_csv(os.path.join(config.data_dir, "unseen.csv"))
 
-    print("Unique bins: ", np.unique(y_part).shape)
-    print(X_part.shape, y_part.shape)
-    print(y_part[:3])
+    # --- Extract representations ---
+    rep_type = getattr(config, "representation_type", "tokens")
+    use_cls = getattr(config, "use_cls_token", False)
 
-    # ZSC-accuracy
-    ami = 100.0 * zsc_pipeline(X_part, y_part, metric=config.metric, n_neighbours=config.n_neighbors)
+    print(f"\nExtracting representations (type={rep_type}) for supervised_test...", flush=True)
+    X_test, y_test, _ = representations_from_df(
+        df_test, target_level, model, tokenizer,
+        config.dataset_name, None, None, rep_type, use_cls_token=use_cls,
+    )
+
+    print(f"Extracting representations (type={rep_type}) for unseen...", flush=True)
+    X_unseen, y_unseen, _ = representations_from_df(
+        df_unseen, target_level, model, tokenizer,
+        config.dataset_name, None, None, rep_type, use_cls_token=use_cls,
+    )
+
+    X = np.vstack([X_test, X_unseen])
+    y = np.hstack([y_test, y_unseen])
+
+    print(f"\nCombined: {X.shape[0]} samples, {len(np.unique(y))} unique labels, dim={X.shape[1]}")
+
+    # --- ZSC pipeline ---
+    ami = 100.0 * zsc_pipeline(
+        X, y,
+        metric=config.metric,
+        n_neighbours=config.n_neighbors,
+        n_clusters=getattr(config, "n_clusters", None),
+    )
+    print(f"\nFinal AMI (%): {ami:.4f}")
+    print(f"Total time: {time.time() - t_start:.1f}s")
+
     if config.log_wandb:
+        import wandb
         wandb.log({"eval/ami": ami})
+
+    return ami
 
 
 def get_parser():
-    r"""
-    Build argument parser for the command line interface.
-
-    Returns
-    -------
-    parser : argparse.ArgumentParser
-        CLI argument parser.
-    """
     import sys
-
     from barcodebert.pretraining import get_parser as get_pretraining_parser
 
     parser = get_pretraining_parser()
 
-    # Use the name of the file called to determine the name of the program
     prog = os.path.split(sys.argv[0])[1]
-    if prog == "__main__.py" or prog == "__main__":
-        # If the file is called __main__.py, go up a level to the module name
+    if prog in ("__main__.py", "__main__"):
         prog = os.path.split(__file__)[1]
     parser.prog = prog
-    parser.description = "Evaluate with k-nearest neighbors for BarcodeBERT."
+    parser.description = "Zero-Shot Clustering (ZSC) evaluation for BarcodeMAE."
 
-    # Model args --------------------------------------------------------------
-    group = parser.add_argument_group("Input model type")
+    group = parser.add_argument_group("Model")
     group.add_argument(
-        "--pretrained-checkpoint",
-        "--pretrained_checkpoint",
+        "--pretrained-checkpoint", "--pretrained_checkpoint",
         dest="pretrained_checkpoint_path",
-        default="",
-        type=str,
-        metavar="PATH",
-        required=False,
-        help=" Model checkpoint path for new BarcodeBERT.",
+        default="", type=str, metavar="PATH", required=True,
+        help="Path to pretrained checkpoint (.pt)",
     )
     group.add_argument(
-        "--backbone",
-        "--model_type",
-        dest="backbone",
-        default="",
-        type=str,
-        metavar="PATH",
-        required=True,
-        help="Architecture of the Encoder one of [DNABERT-2, HyenaDNA, DNABERT-S, \
-              BarcodeBERT, NT]",
+        "--backbone", dest="backbone",
+        default="barcodebert", type=str,
+        help="Model name (used for logging only)",
     )
     group.add_argument(
-        "--dataset_name",
-        default="CANADA-1.5M",
-        type=str,
-        help="Dataset format %(default)s",
+        "--representation-type", "--representation_type",
+        dest="representation_type",
+        default="tokens", type=str,
+        choices=["tokens", "tokens_with_cls", "cls", "jumbo", "jumbo_avg",
+                 "all_tokens", "tokens_with_registers", "all_with_registers"],
+        help="How to extract the sequence embedding from the model",
     )
-    # ZSC args ----------------------------------------------------------------
+
     group = parser.add_argument_group("ZSC parameters")
-    group.add_argument(
-        "--taxon",
-        type=str,
-        default="bin_uri",
-        help="Taxonomic level to evaluate on. Default: %(default)s",
-    )
-    group.add_argument(
-        "--n-neighbors",
-        "--n_neighbors",
-        default=5,
-        type=int,
-        help="Neighborhood size for UMAP. Default: %(default)s",
-    )
-    group.add_argument(
-        "--metric",
-        default="cosine",
-        type=str,
-        help="Distance metric to use for UMAP. Default: %(default)s",
-    )
+    group.add_argument("--taxon", type=str, default="bin_uri",
+                       help="Taxonomic level to evaluate. Default: %(default)s")
+    group.add_argument("--n-neighbors", "--n_neighbors", dest="n_neighbors",
+                       default=5, type=int,
+                       help="UMAP neighborhood size. Default: %(default)s")
+    group.add_argument("--metric", default="cosine", type=str,
+                       help="UMAP distance metric. Default: %(default)s")
+    group.add_argument("--n-clusters", "--n_clusters", dest="n_clusters",
+                       default=None, type=int,
+                       help="Number of clusters (auto-detected from data if not set)")
     return parser
 
 
 def cli():
-    r"""Command-line interface for model training."""
     parser = get_parser()
     config = parser.parse_args()
-    # Handle disable_wandb overriding log_wandb and forcing it to be disabled.
     if config.disable_wandb:
         config.log_wandb = False
     del config.disable_wandb
