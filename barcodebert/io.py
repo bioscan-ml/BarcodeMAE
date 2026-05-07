@@ -133,7 +133,7 @@ def load_pretrained_model(checkpoint_path, device=None):
     print(f"\nLoading model from {checkpoint_path}")
     ckpt = torch.load(checkpoint_path, map_location=device)
     bert_config = BertConfig(**ckpt["bert_config"])
-    print(bert_config)
+    #print(bert_config)
 
     # Check if this is a jumbo transformer model
     if hasattr(ckpt["config"], "jumbo") and ckpt["config"].jumbo:
