@@ -194,6 +194,7 @@ def load_pretrained_model(checkpoint_path, device=None):
         epochs_trained = "N/A"
     print("\n--- Checkpoint Diagnostics ---")
     print(f"  Total steps trained:       {total_step}")
+    print(f"  Epoch (last saved):        {ckpt.get('epoch', 'N/A')}")
     print(f"  Epochs trained:            {epochs_trained}")
     print(f"  use_cls_token:             {getattr(cfg, 'use_cls_token', False)}")
     print(f"  enable_genus_classification:      {getattr(cfg, 'enable_genus_classification', False)}")
