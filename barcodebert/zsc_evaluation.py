@@ -176,6 +176,11 @@ def run(config):
     print(f"\nFinal AMI (%): {ami:.4f}")
     print(f"Total time: {time.time() - t_start:.1f}s")
 
+    model_name = os.path.join(*os.path.split(config.pretrained_checkpoint_path)[-2:])
+    rep_type = getattr(config, "representation_type", "tokens")
+    with open("ZSC_RESULTS.txt", "a") as f:
+        f.write(f"\n{config.run_name}_{model_name}_{rep_type}\t{ami:.4f}")
+
     if config.log_wandb:
         import wandb
         wandb.log({"eval/ami": ami})

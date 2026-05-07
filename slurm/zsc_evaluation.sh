@@ -109,7 +109,6 @@ for model_entry in "${MODELS[@]}"; do
             --data-dir "${DATA_DIR}" \
             --representation_type "${rep_type}" \
             --taxon genus \
-            --n-clusters 5296 \
             --n-neighbors 15 \
             --metric cosine \
             --run-name "zsc_${run_name}_${rep_type}" \
