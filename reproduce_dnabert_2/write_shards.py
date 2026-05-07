@@ -117,20 +117,34 @@ def write_shards(
     sink = wds.ShardWriter(pattern, maxsize=target_shard_size_bytes, maxcount=max_samples_per_shard)
 
     with open(input_file) as f:
-        lines = [
-            (line, split_name, idx, seq_id_offset + idx)
-            for idx, line in enumerate(f)
-            if random.random() <= ratio
-        ]
+        n_lines = sum(1 for _ in f)
+    n_expected = n_lines if ratio >= 1.0 else int(n_lines * ratio)
 
+    CHUNK = 50_000
+    n_written = 0
     with Pool(num_workers, initializer=_init_worker, initargs=(labels_array,)) as pool, \
-         tqdm(total=len(lines), desc=f"Writing {split_name} shards") as pbar:
-        for record in pool.imap(process_line, lines, chunksize=256):
-            sink.write(record)
-            pbar.update(1)
+         tqdm(total=n_expected, desc=f"Writing {split_name} shards") as pbar:
+        batch = []
+        idx = 0
+        with open(input_file) as f:
+            for line in f:
+                if ratio >= 1.0 or random.random() <= ratio:
+                    batch.append((line, split_name, idx, seq_id_offset + idx))
+                    idx += 1
+                if len(batch) >= CHUNK:
+                    for record in pool.imap(process_line, batch, chunksize=256):
+                        sink.write(record)
+                        pbar.update(1)
+                        n_written += 1
+                    batch.clear()
+        if batch:
+            for record in pool.imap(process_line, batch, chunksize=256):
+                sink.write(record)
+                pbar.update(1)
+                n_written += 1
 
     sink.close()
-    print(f"Wrote {len(lines)} samples to shards at {out_dir}")
+    print(f"Wrote {n_written} samples to shards at {out_dir}")
 
 
 # ---------------------------------------------------------------------------
@@ -139,7 +153,7 @@ def write_shards(
 cpu_count = os.cpu_count()
 print(f"Number of available CPU cores: {cpu_count}")
 
-CONFIDENCE_THRESHOLD = 0.0  # include all classified sequences regardless of confidence
+CONFIDENCE_THRESHOLD = 25.0  # only trust Kraken2 assignments with confidence > 25%
 RATIO = 0.01
 
 BASE_DATA_DIR = "/home/m4safari/projects/def-lila-ab/m4safari/shards_data/BarcodeMAE/reproduce_dnabert_2/reproduce_dnabert_2"
