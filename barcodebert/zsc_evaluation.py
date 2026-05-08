@@ -399,7 +399,12 @@ def run(config):
     rep_type = getattr(config, "representation_type", "tokens")
     use_cls = getattr(config, "use_cls_token", False)
     bert_cfg = pre_checkpoint.get("bert_config", None)
-    hidden_size = bert_cfg.hidden_size if bert_cfg is not None else 768
+    if bert_cfg is None:
+        hidden_size = 768
+    elif isinstance(bert_cfg, dict):
+        hidden_size = bert_cfg.get("hidden_size", 768)
+    else:
+        hidden_size = bert_cfg.hidden_size
     embedder = ModelEmbedder(
         model=model,
         tokenizer=tokenizer,
