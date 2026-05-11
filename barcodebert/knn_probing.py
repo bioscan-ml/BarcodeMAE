@@ -76,22 +76,21 @@ def run(config):
     ]
     default_kwargs = vars(get_parser().parse_args(["--pretrained_checkpoint=dummy.pt", "--dataset=foo_bar"]))
     for key in keys_to_reuse:
-        if not hasattr(config, key) or getattr(config, key) == getattr(pre_checkpoint["config"], key):
+        ckpt_val = getattr(pre_checkpoint["config"], key, None)
+        cur_val = getattr(config, key, None)
+        if cur_val == ckpt_val:
             pass
-        elif getattr(config, key) is None or getattr(config, key) == default_kwargs[key]:
-            print(
-                f"  Overriding default config value {key}={getattr(config, key)}"
-                f" with {getattr(pre_checkpoint['config'], key)} from pretained checkpoint."
-            )
-        elif getattr(config, key) != getattr(pre_checkpoint["config"], key):
+        elif cur_val is None or cur_val == default_kwargs.get(key):
+            print(f"  Overriding default config value {key}={cur_val} with {ckpt_val} from pretrained checkpoint.")
+        elif ckpt_val is not None and cur_val != ckpt_val:
             raise ValueError(
                 f"config value for {key} differs from pretrained checkpoint:"
-                f" {getattr(config, key)} (ours) vs {getattr(pre_checkpoint['config'], key)} (pretrained checkpoint)"
+                f" {cur_val} (ours) vs {ckpt_val} (pretrained checkpoint)"
             )
-        setattr(config, key, getattr(pre_checkpoint["config"], key, None))
+        setattr(config, key, ckpt_val)
 
-    config.pretrained_run_name = pre_checkpoint["config"].run_name
-    config.pretrained_run_id = pre_checkpoint["config"].run_id
+    config.pretrained_run_name = getattr(pre_checkpoint["config"], "run_name", None)
+    config.pretrained_run_id = getattr(pre_checkpoint["config"], "run_id", None)
 
     # DATASET =================================================================
 
