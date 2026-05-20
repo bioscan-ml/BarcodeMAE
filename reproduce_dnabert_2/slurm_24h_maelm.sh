@@ -63,29 +63,22 @@ echo "Date: $(date)"
 echo "------------------------------------------------------"
 
 # --- Training Command ---
-# running train_maelm.py
-
-SHARDS_DIR="$HOME/dnabert2_wds/shards_0.25"
-SPECIES_VOCAB="$SHARDS_DIR/species_vocab.json"
+# running main_train.py
 
 torchrun --nproc_per_node=1 \
          --nnodes=1 \
          --node_rank=0 \
          --master_addr=$MASTER_ADDR \
          --master_port=$MASTER_PORT \
-         train_maelm.py \
+         main_train.py \
+         --architecture maelm \
          --batch-size 64 \
          --total-batch-size 4096 \
          --max-steps 500000 \
          --checkpoint-interval 2000 \
          --checkpoint-dir "$CHECKPOINT_DIR" \
          --log-dir "$LOG_DIR" \
-         --learning-rate 5e-4 \
+         --max-lr 5e-4 \
          --warmup-steps 30000 \
          --weight-decay 0.1 \
-         --train-shards-pattern "$SHARDS_DIR/train-*.tar" \
-         --jumbo \
-         --jumbo-multiplier 6 \
-         --species-vocab "$SPECIES_VOCAB" \
-         --cls-loss-weight 1.0 \
          --finetune-data-path "$FINETUNE_DATA"

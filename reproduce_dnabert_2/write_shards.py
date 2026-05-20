@@ -153,8 +153,8 @@ def write_shards(
 cpu_count = os.cpu_count()
 print(f"Number of available CPU cores: {cpu_count}")
 
-CONFIDENCE_THRESHOLD = 25.0  # only trust Kraken2 assignments with confidence > 25%
-RATIO = 0.01
+CONFIDENCE_THRESHOLD = 50.0  # only trust Kraken2 assignments with confidence > 25%
+RATIO = 1.0
 
 BASE_DATA_DIR = "/home/m4safari/projects/def-lila-ab/m4safari/shards_data/BarcodeMAE/reproduce_dnabert_2/reproduce_dnabert_2"
 TSV_FILE = os.path.join(BASE_DATA_DIR, "dnabert_2_kraken_species_assignments.tsv")

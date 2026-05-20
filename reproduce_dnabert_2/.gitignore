@@ -1,0 +1,7 @@
+data/*
+dev-dl/*
+shards/*
+wandb/*
+logs/*
+checkpoints/*
+

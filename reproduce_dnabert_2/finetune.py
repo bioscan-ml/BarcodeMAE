@@ -25,6 +25,11 @@ try:
 except ImportError:
     pass
 
+try:
+    import wandb
+except ImportError:
+    wandb = None
+
 
 @dataclass
 class ModelArguments:
@@ -72,7 +77,21 @@ class TrainingArguments(transformers.TrainingArguments):
     save_model: bool = field(default=True)
     seed: int = field(default=42)
     evaluation_strategy: str = "no"
-    save_strategy: str = 'no' 
+    save_strategy: str = 'no'
+    use_wandb: bool = field(default=True, metadata={"help": "Enable Weights & Biases logging."})
+    wandb_project: str = field(default="dnabert2-training", metadata={"help": "W&B project name."})
+    wandb_entity: Optional[str] = field(default=None, metadata={"help": "W&B entity/team."})
+    wandb_mode: str = field(default="online", metadata={"help": "W&B mode: online, offline, disabled."})
+    wandb_tags: str = field(default="finetuning", metadata={"help": "Comma-separated W&B tags."})
+    wandb_group: Optional[str] = field(default=None, metadata={"help": "W&B group name."})
+    wandb_job_type: str = field(default="finetuning", metadata={"help": "W&B job type."})
+
+
+def parse_wandb_tags(tags: str) -> List[str]:
+    parsed = [tag.strip() for tag in tags.split(",") if tag.strip()]
+    if "finetuning" not in parsed:
+        parsed.append("finetuning")
+    return parsed
 
 def safe_save_model_for_hf_trainer(trainer: transformers.Trainer, output_dir: str):
     """Collects the state dict and dump to disk."""
@@ -255,6 +274,32 @@ def compute_metrics(eval_pred):
 def train():
     parser = transformers.HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+
+    wandb_run = None
+    if training_args.use_wandb and wandb is not None and training_args.wandb_mode != "disabled":
+        tags = parse_wandb_tags(training_args.wandb_tags)
+        wandb_run = wandb.init(
+            project=training_args.wandb_project,
+            entity=training_args.wandb_entity,
+            name=training_args.run_name,
+            tags=tags,
+            group=training_args.wandb_group,
+            job_type=training_args.wandb_job_type,
+            mode=training_args.wandb_mode,
+            config={
+                "model_type": model_args.model_type,
+                "model_name_or_path": model_args.model_name_or_path,
+                "data_path": data_args.data_path,
+                "kmer": data_args.kmer,
+                "learning_rate": training_args.learning_rate,
+                "num_train_epochs": training_args.num_train_epochs,
+                "per_device_train_batch_size": training_args.per_device_train_batch_size,
+                "per_device_eval_batch_size": training_args.per_device_eval_batch_size,
+            },
+        )
+        training_args.report_to = ["wandb"]
+    else:
+        training_args.report_to = []
 
     # load tokenizer
     # Always default to valid DNABERT-2 tokenizer unless explicitly overridden with a valid tokenizer name
@@ -451,11 +496,18 @@ def train():
         results = trainer.evaluate(eval_dataset=val_dataset)
         with open(os.path.join(training_args.output_dir,training_args.run_name,"eval_results.json"), "w") as f:
             json.dump(results, f)
+        if wandb_run is not None:
+            wandb.log({f"finetune/eval/{k}": v for k, v in results.items()})
             
     if test_dataset is not None:
          predictions = trainer.predict(test_dataset)
          with open(os.path.join(training_args.output_dir,training_args.run_name,"test_results.json"), "w") as f:
              json.dump(predictions.metrics, f)
+         if wandb_run is not None:
+             wandb.log({f"finetune/test/{k}": v for k, v in predictions.metrics.items()})
+
+    if wandb_run is not None:
+        wandb.finish()
 
 if __name__ == "__main__":
     train()

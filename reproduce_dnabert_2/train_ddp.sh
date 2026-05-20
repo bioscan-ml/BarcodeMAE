@@ -66,7 +66,8 @@ torchrun --nproc_per_node=4 \
          --node_rank=0 \
          --master_addr=$MASTER_ADDR \
          --master_port=$MASTER_PORT \
-         train.py \
+         main_train.py \
+         --architecture bert \
          --batch-size 64 \
          --total-batch-size 4096 \
          --max-steps 500000 \

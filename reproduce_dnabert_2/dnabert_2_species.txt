@@ -1,0 +1,136 @@
+Ceratobasidium
+Claviceps Maximensis
+Fusarium Annulatum
+Melampsora
+Metschnikowia
+Mucor Saturninus
+Penicillium Chermesinum
+Saccharomyces Cerevisiae
+Sporopachydermia Quercuum
+Tranzscheliella Williamsii
+Xylariales
+Protozoa Phytophthora Sojae
+Pythium Apiculatum
+Mammalian
+Bubalus Bubalis
+Camelus Dromedarius
+Human
+Macaca Assamensis
+Macaca Nigra
+Mus Musculus
+Peromyscus Californicus
+Brachionus Rubens
+Ceroptres Masudai
+Cotesia Typhae
+Croniades Pieria
+Drosophila Athabasca
+Emesis Russula
+Hydra Oligactis
+Meganola Albula
+Oscheius
+Rutpela Maculata
+Anas Zonorhyncha
+Other Coregonus Clupeaformis
+Vertebrate Gnathonemus Longibarbis
+Myxocyprinus Asiaticus
+Rhipidura Dahli
+Aeromonas
+Agrobacterium
+Alcaligenaceae Bacterium
+Aliivibrio
+Alphaproteobacteria Bacterium
+Amycolatopsis Antarctica
+Anaerostipes Faecis
+Arthrobacter
+Atopobium
+Bacillus Bc15
+Bacillus Bs3 2021
+Bacterium
+Bacteroidetes Bacterium Qs
+Breoghania Corrubedonensis
+Caldicoprobacter Oshimai
+Candidatus Cryptobacteroides Excrementipullorum
+Candidatus Dadabacteria Bacterium Rbg Combo
+Candidatus Dwaynia Gallinarum
+Candidatus Falkowbacteria Bacterium
+Candidatus Geothermincola Secundus
+Candidatus Gottesmanbacteria Bacterium
+Candidatus Nomurabacteria Bacterium Full
+Candidatus Portnoybacteria Bacterium Big Fil Rev
+Candidatus Regiella Insecticola
+Candidatus Roizmanbacteria Bacterium Combo All
+Candidatus Rokubacteria Bacterium
+Candidatus Saccharibacteria Bacterium
+Candidatus Staskawiczbacteria Bacterium Full
+Christensenella
+Clostridiaceae Bacterium
+Clostridiales Bacterium
+Clostridium Cag 505
+Clostridium Mcc328
+Clostridium Nexile
+Clostridium Uba3521
+Collinsella Urealyticum
+Coprobacillus Cateniformis
+Cyanobium
+Dehalococcoidia Bacterium
+Enterobacteriaceae Bacterium
+Evtepia Gabavorous
+Firmicutes Bacterium
+Fulvivirga
+Jeongeupia Chitinilytica
+Legionella Endosymbiont Of Polyplax Serrata
+Listeria Ilorinensis
+Maribacter Cobaltidurans
+Marinomonas
+Mesorhizobium
+Methyloceanibacter Caenitepidi
+Microvirga
+Mycolicibacter Engbaekii
+Novosphingobium
+Omnitrophica Wor Bacterium Rbg
+Pantoea
+Paraburkholderia Edwinii
+Parerythrobacter Lutipelagi
+Paulownia Witches Phytoplasma
+Polaromonas Eurypsychrophila
+Prevotella Ag 487 50 53
+Bacteria Prevotella Uba3619
+Prevotella Uba634
+Prochlorococcus Ag-321-I09
+Prochlorococcus Ag-363-B18
+Prochlorococcus Ag-402-L19
+Prochlorococcus Scb243 498N4
+Providencia
+Pseudomonas 35 E 8
+Pseudomonas Bigb0408
+Pseudomonas P867
+Pseudomonas Promysalinigenes
+Roseobacter
+Salinicola Peritrichatus
+Salmonella S096 02912
+Salmonella Zj-F75
+Sinorhizobium
+Sodalis Ligni
+Sphaerochaeta
+Sphingobacterium
+Sphingomonas Carotinifaciens
+Sphingomonas Mesophila
+Sporosarcina Jiandibaonis
+Sporosarcina Ureilytica
+Staphylococcus Gdq20D1P
+Staphylococcus M0911
+Streptococcus
+Streptomyces 8401
+Streptomyces Di166
+Streptomyces Durbertensis
+Streptomyces Neau-Yj-81
+Streptomyces Rk74B
+Thermopetrobacter
+Uncultured Kushneria
+Uncultured Phascolarctobacterium
+Uncultured Proteus
+Bacteria Verrucomicrobiales Bacterium
+Vibrio
+Victivallis Lenta
+Virgibacillus Salexigens
+Xanthomonadales Bacterium

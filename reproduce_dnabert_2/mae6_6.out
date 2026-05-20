@@ -1,0 +1,51 @@
+nohup: ignoring input
+total desired batch size: 4096
+=> calculated gradient accumulation steps: 64
+/lambda/nfs/Main-File-System/reproduce_dnabert_2/dev-dl/lib/python3.10/site-packages/webdataset/compat.py:377: UserWarning: WebDataset(shardshuffle=...) is ignored for resampled datasets
+  warnings.warn("WebDataset(shardshuffle=...) is ignored for resampled datasets")
+/lambda/nfs/Main-File-System/reproduce_dnabert_2/dev-dl/lib/python3.10/site-packages/webdataset/compat.py:381: UserWarning: set WebDataset(shardshuffle=...) to a positive integer or 0 or False
+  warnings.warn("set WebDataset(shardshuffle=...) to a positive integer or 0 or False")
+/lambda/nfs/Main-File-System/reproduce_dnabert_2/dev-dl/lib/python3.10/site-packages/webdataset/pipeline.py:176: UserWarning: .with_length() only sets the value of __len__ for compatibility with some training environments. It does not change the number of samples in an epoch.
+  warnings.warn(
+/lambda/nfs/Main-File-System/reproduce_dnabert_2/dev-dl/lib/python3.10/site-packages/torch/__init__.py:1617: UserWarning: Please use the new API settings to control TF32 behavior, such as torch.backends.cudnn.conv.fp32_precision = 'tf32' or torch.backends.cuda.matmul.fp32_precision = 'ieee'. Old settings, e.g, torch.backends.cuda.matmul.allow_tf32 = True, torch.backends.cudnn.allow_tf32 = True, allowTF32CuDNN() and allowTF32CuBLAS() will be deprecated after Pytorch 2.9. Please see https://pytorch.org/docs/main/notes/cuda.html#tensorfloat-32-tf32-on-ampere-and-later-devices (Triggered internally at /pytorch/aten/src/ATen/Context.cpp:80.)
+  _C._set_float32_matmul_precision(precision)
+maelm optimizer on 96,469,504 trainable parameters
+No checkpoint found, starting from step 0
+wandb: [wandb.login()] Loaded credentials for https://api.wandb.ai from /home/ubuntu/.netrc.
+wandb: Currently logged in as: millanp9507 (millan_lab) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: setting up run zht7nwc6
+wandb: Tracking run with wandb version 0.26.0
+wandb: Run data is saved locally in /lambda/nfs/Main-File-System/reproduce_dnabert_2/wandb/run-20260422_224307-zht7nwc6
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run gentle-smoke-232
+wandb: ⭐️ View project at https://wandb.ai/uoguelph_mlrg/barcodemae
+wandb: 🚀 View run at https://wandb.ai/uoguelph_mlrg/barcodemae/runs/zht7nwc6
+Starting maelm training from step 0 to 500000
+step     0 | loss: 8.414955 | lr 1.6667e-08 | norm: 29.9684 | dt: 13392.54ms | seq/sec: 305.84
+step     1 | loss: 8.415158 | lr 3.3333e-08 | norm: 29.9544 | dt: 12144.27ms | seq/sec: 337.28
+step     2 | loss: 8.413231 | lr 5.0000e-08 | norm: 29.9796 | dt: 12160.11ms | seq/sec: 336.84
+step     3 | loss: 8.408740 | lr 6.6667e-08 | norm: 29.9547 | dt: 12189.60ms | seq/sec: 336.02
+step     4 | loss: 8.403148 | lr 8.3333e-08 | norm: 29.9625 | dt: 12220.67ms | seq/sec: 335.17
+step     5 | loss: 8.393561 | lr 1.0000e-07 | norm: 29.9775 | dt: 12231.38ms | seq/sec: 334.88
+step     6 | loss: 8.384905 | lr 1.1667e-07 | norm: 29.9776 | dt: 12224.49ms | seq/sec: 335.07
+step     7 | loss: 8.372141 | lr 1.3333e-07 | norm: 29.9623 | dt: 12253.59ms | seq/sec: 334.27
+step     8 | loss: 8.357985 | lr 1.5000e-07 | norm: 29.9803 | dt: 12280.32ms | seq/sec: 333.54
+step     9 | loss: 8.340854 | lr 1.6667e-07 | norm: 29.9731 | dt: 12269.17ms | seq/sec: 333.84
+step    10 | loss: 8.322653 | lr 1.8333e-07 | norm: 29.9993 | dt: 12262.84ms | seq/sec: 334.02
+step    11 | loss: 8.301571 | lr 2.0000e-07 | norm: 29.9738 | dt: 12264.30ms | seq/sec: 333.98
+step    12 | loss: 8.278778 | lr 2.1667e-07 | norm: 29.9662 | dt: 12267.15ms | seq/sec: 333.90
+step    13 | loss: 8.252710 | lr 2.3333e-07 | norm: 29.9880 | dt: 12264.66ms | seq/sec: 333.97
+step    14 | loss: 8.227198 | lr 2.5000e-07 | norm: 29.9636 | dt: 12270.98ms | seq/sec: 333.80
+step    15 | loss: 8.198096 | lr 2.6667e-07 | norm: 29.9733 | dt: 12268.73ms | seq/sec: 333.86
+step    16 | loss: 8.167274 | lr 2.8333e-07 | norm: 29.9774 | dt: 12272.54ms | seq/sec: 333.75
+step    17 | loss: 8.134365 | lr 3.0000e-07 | norm: 29.9752 | dt: 12260.56ms | seq/sec: 334.08
+step    18 | loss: 8.099047 | lr 3.1667e-07 | norm: 29.9612 | dt: 12262.28ms | seq/sec: 334.03
+step    19 | loss: 8.063193 | lr 3.3333e-07 | norm: 29.9564 | dt: 12267.78ms | seq/sec: 333.88
+step    20 | loss: 8.022616 | lr 3.5000e-07 | norm: 29.9578 | dt: 12270.22ms | seq/sec: 333.82
+step    21 | loss: 7.982100 | lr 3.6667e-07 | norm: 29.9462 | dt: 12277.09ms | seq/sec: 333.63
+step    22 | loss: 7.939236 | lr 3.8333e-07 | norm: 29.9029 | dt: 12268.93ms | seq/sec: 333.85
+step    23 | loss: 7.893902 | lr 4.0000e-07 | norm: 29.9004 | dt: 12266.09ms | seq/sec: 333.93
+step    24 | loss: 7.846454 | lr 4.1667e-07 | norm: 29.8770 | dt: 12267.61ms | seq/sec: 333.89
+step    25 | loss: 7.797772 | lr 4.3333e-07 | norm: 29.8514 | dt: 12278.83ms | seq/sec: 333.58
+step    26 | loss: 7.745919 | lr 4.5000e-07 | norm: 29.8308 | dt: 12274.21ms | seq/sec: 333.71
+step    27 | loss: 7.692665 | lr 4.6667e-07 | norm: 29.8041 | dt: 12272.55ms | seq/sec: 333.75

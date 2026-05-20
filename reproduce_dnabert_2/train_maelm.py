@@ -269,6 +269,13 @@ def parse_args():
     parser.add_argument("--max-seq-length", type=int, default=512)
     parser.add_argument("--alibi-starting-size", type=int, default=512)
     parser.add_argument("--no-compile", action="store_true")
+    parser.add_argument("--compile-mode", type=str, default="reduce-overhead",
+                        choices=["default", "reduce-overhead", "max-autotune"],
+                        help="torch.compile mode (ignored when --no-compile is set)")
+    parser.add_argument("--amp", action="store_true", default=True,
+                        help="Enable automatic mixed precision (fp16 on CUDA)")
+    parser.add_argument("--no-amp", dest="amp", action="store_false",
+                        help="Disable automatic mixed precision")
     parser.add_argument("--num-workers", type=int, default=4)
 
     # Balanced sampling (streaming KClassMSample equivalent for WebDataset)
@@ -332,6 +339,8 @@ def main():
     if torch.cuda.is_available():
         torch.cuda.set_device(local_rank)
         device = torch.device(f"cuda:{local_rank}")
+        torch.backends.cudnn.benchmark = True
+        torch.set_float32_matmul_precision("high")  # enables TF32 on Ampere+ GPUs
     else:
         device = torch.device("cpu")
 
@@ -393,7 +402,7 @@ def main():
         "num_hidden_layers": args.n_layers,
         "num_attention_heads": args.n_heads,
         "intermediate_size": 3072,
-        "max_position_embeddings": args.max_seq_length,
+        "max_position_embeddings": args.max_seq_length + args.jumbo_multiplier + 8,
         "type_vocab_size": 2,
         "_name_or_path": "zhihan1996/DNABERT-2-117M",
         "alibi_starting_size": args.alibi_starting_size,
@@ -405,7 +414,7 @@ def main():
         "num_hidden_layers": dec_n_layers,
         "num_attention_heads": dec_n_heads,
         "intermediate_size": 3072,
-        "max_position_embeddings": args.max_seq_length,
+        "max_position_embeddings": args.max_seq_length + args.jumbo_multiplier + 8,
         "type_vocab_size": 2,
         "_name_or_path": "zhihan1996/DNABERT-2-117M",
         "alibi_starting_size": args.alibi_starting_size,
@@ -441,10 +450,21 @@ def main():
         raw_model = MAELMModel(config, config)
 
     raw_model.to(device)
+
+    if not args.no_compile:
+        if rank == 0:
+            print(f"Compiling model with torch.compile (mode={args.compile_mode})...")
+        if args.jumbo:
+            print("Note: torch.compile disabled for Jumbo MAE (dynamic shapes incompatible)")
+        else:
+            raw_model = torch.compile(raw_model, mode=args.compile_mode)
+
     model = raw_model
 
     if world_size > 1:
         model = DDP(raw_model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
+
+    scaler = torch.cuda.amp.GradScaler(enabled=args.amp and device.type == "cuda")
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
     scheduler = get_cosine_schedule_with_warmup(
@@ -454,7 +474,7 @@ def main():
     model.train()
     step = 0
     start_time = time.time()
-    optimizer.zero_grad()
+    optimizer.zero_grad(set_to_none=True)
 
     try:
         if rank == 0:
@@ -501,53 +521,57 @@ def main():
                 if world_size > 1:
                     model.require_backward_grad_sync = (micro_step == acc_steps - 1)
 
-                if args.jumbo:
-                    mask_positions = mask_positions.to(device)
-                    outputs = model(
-                        input_ids=masked_input,
-                        attention_mask=attention_mask,
-                        mask_positions=mask_positions,
-                    )
-
-                    # MAE reconstruction loss: only on masked positions
-                    loss = F.cross_entropy(
-                        outputs.logits.view(-1, config.vocab_size)[mask_positions.view(-1)],
-                        targets.view(-1)[mask_positions.view(-1)],
-                    )
-
-                    # Taxonomy classification loss via Jumbo CLS tokens
-                    if raw_model.enable_genus_classification and outputs.jumbo_tokens is not None:
-                        tax_loss, _, _, n_same, n_diff = compute_taxonomy_classification_loss(
-                            outputs.jumbo_tokens,
-                            species_labels,
-                            raw_model.taxonomy_classifier,
-                            same_ratio=0.5,
-                            max_pairs=32,
-                            debug_print=False,
+                amp_ctx = torch.cuda.amp.autocast(enabled=args.amp and device.type == "cuda")
+                with amp_ctx:
+                    if args.jumbo:
+                        mask_positions = mask_positions.to(device)
+                        outputs = model(
+                            input_ids=masked_input,
+                            attention_mask=attention_mask,
+                            mask_positions=mask_positions,
                         )
-                        num_pos_pairs += n_same
-                        num_neg_pairs += n_diff
-                        if tax_loss is not None:
-                            tax_loss_accum += tax_loss.detach() / acc_steps
-                            loss = loss + args.cls_loss_weight * tax_loss
-                else:
-                    # Original path: MAELMModel computes loss internally via labels
-                    outputs = model(input_ids=masked_input, attention_mask=attention_mask, labels=targets)
-                    loss = outputs.loss if hasattr(outputs, 'loss') else (
-                        outputs[0] if isinstance(outputs, (tuple, list)) else outputs
-                    )
+
+                        # MAE reconstruction loss: only on masked positions
+                        loss = F.cross_entropy(
+                            outputs.logits.view(-1, config.vocab_size)[mask_positions.view(-1)],
+                            targets.view(-1)[mask_positions.view(-1)],
+                        )
+
+                        # Taxonomy classification loss via Jumbo CLS tokens
+                        _raw = model.module if hasattr(model, "module") else model
+                        if _raw.enable_genus_classification and outputs.jumbo_tokens is not None:
+                            tax_loss, _, _, n_same, n_diff = compute_taxonomy_classification_loss(
+                                outputs.jumbo_tokens,
+                                species_labels,
+                                _raw.taxonomy_classifier,
+                                same_ratio=0.5,
+                                max_pairs=32,
+                                debug_print=False,
+                            )
+                            num_pos_pairs += n_same
+                            num_neg_pairs += n_diff
+                            if tax_loss is not None:
+                                tax_loss_accum += tax_loss.detach() / acc_steps
+                                loss = loss + args.cls_loss_weight * tax_loss
+                    else:
+                        outputs = model(input_ids=masked_input, attention_mask=attention_mask, labels=targets)
+                        loss = outputs.loss if hasattr(outputs, 'loss') else (
+                            outputs[0] if isinstance(outputs, (tuple, list)) else outputs
+                        )
 
                 loss = loss / acc_steps
                 loss_accum += loss.detach()
-                loss.backward()
+                scaler.scale(loss).backward()
 
             if world_size > 1:
                 dist.all_reduce(loss_accum, op=dist.ReduceOp.AVG)
 
+            scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
+            scaler.step(optimizer)
+            scaler.update()
             scheduler.step()
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
 
             if step % args.log_interval == 0 and rank == 0:
                 elapsed = time.time() - start_time

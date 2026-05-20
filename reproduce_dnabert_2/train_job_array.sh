@@ -66,7 +66,7 @@ ls -l $CHECKPOINT_DIR/latest_checkpoint.pt 2>/dev/null || echo "No checkpoint fo
 echo "------------------------------------------------------"
 
 # --- Training Command ---
-# train.py is configured to automatically look for 'latest_checkpoint.pt' 
+# main_train.py is configured to automatically look for 'latest_checkpoint.pt' 
 # inside --checkpoint-dir. If found, it resumes. If not, it starts from step 0.
 
 torchrun --nproc_per_node=4 \
@@ -74,7 +74,8 @@ torchrun --nproc_per_node=4 \
          --node_rank=0 \
          --master_addr=$MASTER_ADDR \
          --master_port=$MASTER_PORT \
-         train.py \
+         main_train.py \
+         --architecture bert \
          --batch-size 64 \
          --total-batch-size 4096 \
          --max-steps 500000 \
