@@ -494,20 +494,23 @@ def train():
     # evaluate
     if training_args.eval_and_save_results and val_dataset is not None:
         results = trainer.evaluate(eval_dataset=val_dataset)
-        with open(os.path.join(training_args.output_dir,training_args.run_name,"eval_results.json"), "w") as f:
+        os.makedirs(training_args.output_dir, exist_ok=True)
+        with open(os.path.join(training_args.output_dir, "eval_results.json"), "w") as f:
             json.dump(results, f)
         if wandb_run is not None:
             wandb.log({f"finetune/eval/{k}": v for k, v in results.items()})
-            
+
     if test_dataset is not None:
-         predictions = trainer.predict(test_dataset)
-         with open(os.path.join(training_args.output_dir,training_args.run_name,"test_results.json"), "w") as f:
-             json.dump(predictions.metrics, f)
-         if wandb_run is not None:
-             wandb.log({f"finetune/test/{k}": v for k, v in predictions.metrics.items()})
+        predictions = trainer.predict(test_dataset)
+        os.makedirs(training_args.output_dir, exist_ok=True)
+        with open(os.path.join(training_args.output_dir, "test_results.json"), "w") as f:
+            json.dump(predictions.metrics, f)
+        if wandb_run is not None:
+            wandb.log({f"finetune/test/{k}": v for k, v in predictions.metrics.items()})
 
     if wandb_run is not None:
         wandb.finish()
 
 if __name__ == "__main__":
     train()
+

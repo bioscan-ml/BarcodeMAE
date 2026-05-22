@@ -4,15 +4,15 @@ set -euo pipefail
 : "${CONFIG_NAME:?CONFIG_NAME is required}"
 : "${ARCHITECTURE:?ARCHITECTURE is required}"
 
-PROJECT_DIR=${PROJECT_DIR:-/home/loan/Nextcloud/CodeRepos/BarcodeMAE/reproduce_dnabert_2}
+PROJECT_DIR=${PROJECT_DIR:-/home/pmillana/projects/def-lila-ab/pmillana/BarcodeMAE/reproduce_dnabert_2}
 SHARDS_DIR=${SHARDS_DIR:-/scratch/${USER}/dnabert2_wds/shards_1.0}
-GUE_DATA_PATH=${GUE_DATA_PATH:-/scratch/${USER}/dnabert2_wds}
+GUE_DATA_PATH=${GUE_DATA_PATH:-/home/pmillana/projects/def-lila-ab/pmillana/reproduce_dnabert_2/}
 SPECIES_VOCAB=${SPECIES_VOCAB:-$SHARDS_DIR/species_vocab.json}
 CHECKPOINT_ROOT=${CHECKPOINT_ROOT:-/scratch/${USER}/MAE_checkpoints}
 LOG_ROOT=${LOG_ROOT:-/scratch/${USER}/MAE_logs}
 
 MAX_STEPS=${MAX_STEPS:-7908}
-WARMUP_STEPS=${WARMUP_STEPS:-600}
+WARMUP_STEPS=${WARMUP_STEPS:-790}
 MAX_LR=${MAX_LR:-5e-4}
 WEIGHT_DECAY=${WEIGHT_DECAY:-0.1}
 MASK_RATIO=${MASK_RATIO:-0.15}
@@ -36,11 +36,7 @@ module load python/3.11
 module load scipy-stack
 module load arrow
 
-if [[ -n "${VENV_PATH:-}" ]]; then
-    source "$VENV_PATH/bin/activate"
-elif [[ -d "/scratch/$USER/BarcodeMAE_venv" ]]; then
-    source "/scratch/$USER/BarcodeMAE_venv/bin/activate"
-fi
+source /home/pmillana/dl-dev/bin/activate
 
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
 export NCCL_DEBUG=${NCCL_DEBUG:-INFO}
@@ -114,6 +110,11 @@ torchrun_cmd=(
     --wandb-mode "$WANDB_MODE"
     --wandb-run-name "$RUN_ID"
 )
+
+
+# MAELM has dynamic masking/indexing patterns that are unstable with torch.compile
+# (Inductor/CUDAGraph errors). Keep compile off by default for MAELM runs.
+torchrun_cmd+=(--no-compile)
 
 if [[ -n "$WANDB_ENTITY" ]]; then
     torchrun_cmd+=(--wandb-entity "$WANDB_ENTITY")

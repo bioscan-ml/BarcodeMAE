@@ -19,24 +19,24 @@ if [[ "$CONFIG_NAME" != "auxiliary" && "$CONFIG_NAME" != "cls" && "$CONFIG_NAME"
     exit 1
 fi
 
-PROJECT_DIR=${PROJECT_DIR:-/home/loan/Nextcloud/CodeRepos/BarcodeMAE/reproduce_dnabert_2}
+PROJECT_DIR=${PROJECT_DIR:-/home/pmillana/projects/def-lila-ab/pmillana/BarcodeMAE/reproduce_dnabert_2}
 SHARDS_DIR=${SHARDS_DIR:-/scratch/${USER}/dnabert2_wds/shards_1.0}
-GUE_DATA_PATH=${GUE_DATA_PATH:-/scratch/${USER}/dnabert2_wds}
+GUE_DATA_PATH=${GUE_DATA_PATH:-/home/pmillana/projects/def-lila-ab/pmillana/reproduce_dnabert_2/}
 SPECIES_VOCAB=${SPECIES_VOCAB:-$SHARDS_DIR/species_vocab.json}
 CHECKPOINT_ROOT=${CHECKPOINT_ROOT:-/scratch/${USER}/MAE_checkpoints}
 LOG_ROOT=${LOG_ROOT:-/scratch/${USER}/MAE_logs}
 
-MAX_STEPS=${MAX_STEPS:-7908}
-WARMUP_STEPS=${WARMUP_STEPS:-600}
+MAX_STEPS=${MAX_STEPS:-24}
+WARMUP_STEPS=${WARMUP_STEPS:-6}
 MAX_LR=${MAX_LR:-5e-4}
 WEIGHT_DECAY=${WEIGHT_DECAY:-0.1}
 MASK_RATIO=${MASK_RATIO:-0.15}
 MAX_SEQ_LENGTH=${MAX_SEQ_LENGTH:-256}
 BATCH_SIZE=${BATCH_SIZE:-64}
-TOTAL_BATCH_SIZE=${TOTAL_BATCH_SIZE:-4096}
+TOTAL_BATCH_SIZE=${TOTAL_BATCH_SIZE:-256}
 NUM_WORKERS=${NUM_WORKERS:-4}
-CHECKPOINT_INTERVAL=${CHECKPOINT_INTERVAL:-500}
-LOG_INTERVAL=${LOG_INTERVAL:-100}
+CHECKPOINT_INTERVAL=${CHECKPOINT_INTERVAL:-6}
+LOG_INTERVAL=${LOG_INTERVAL:-1}
 LOCAL_NPROC=${LOCAL_NPROC:-1}
 
 WANDB_PROJECT=${WANDB_PROJECT:-dnabert2-training}
@@ -122,6 +122,10 @@ torchrun_cmd=(
     --wandb-mode "$WANDB_MODE"
     --wandb-run-name "$RUN_ID"
 )
+
+# MAELM has dynamic masking/indexing patterns that are unstable with torch.compile
+# (Inductor/CUDAGraph errors). Keep compile off by default for MAELM runs.
+torchrun_cmd+=(--no-compile)
 
 if [[ -n "$WANDB_ENTITY" ]]; then
     torchrun_cmd+=(--wandb-entity "$WANDB_ENTITY")

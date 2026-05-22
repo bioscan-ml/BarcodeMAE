@@ -33,10 +33,12 @@ import json
 import math
 import os
 import random
+import sys
 import time
 import warnings
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -54,6 +56,11 @@ try:
 except ImportError:
     wandb = None
 
+# Find barcodebert in parent directory in case it was not installed
+SCRIPT_DIR = Path(__file__).parent
+ROOT_DIR = SCRIPT_DIR.parent
+sys.path.insert(0, str(ROOT_DIR))
+# sys.path.append()
 try:
     from barcodebert.maelm_model import MAELMModel as BarcodeMAELMModel
     from barcodebert.jumbo_taxonomy_classifier import compute_taxonomy_classification_loss
