@@ -9,6 +9,8 @@ fi
 ARCHITECTURE="$1"
 CONFIG_NAME="$2"
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 if [[ "$ARCHITECTURE" != "maelm" && "$ARCHITECTURE" != "bert" ]]; then
     echo "Invalid architecture: $ARCHITECTURE"
     exit 1
@@ -19,9 +21,9 @@ if [[ "$CONFIG_NAME" != "auxiliary" && "$CONFIG_NAME" != "cls" && "$CONFIG_NAME"
     exit 1
 fi
 
-PROJECT_DIR=${PROJECT_DIR:-/home/pmillana/projects/def-lila-ab/pmillana/BarcodeMAE/reproduce_dnabert_2}
+PROJECT_DIR=${PROJECT_DIR:-$SCRIPT_DIR}
 SHARDS_DIR=${SHARDS_DIR:-/scratch/${USER}/dnabert2_wds/shards_1.0}
-GUE_DATA_PATH=${GUE_DATA_PATH:-/home/pmillana/projects/def-lila-ab/pmillana/reproduce_dnabert_2/}
+GUE_DATA_PATH=${GUE_DATA_PATH:-/scratch/${USER}/dnabert2_wds}
 SPECIES_VOCAB=${SPECIES_VOCAB:-$SHARDS_DIR/species_vocab.json}
 CHECKPOINT_ROOT=${CHECKPOINT_ROOT:-/scratch/${USER}/MAE_checkpoints}
 LOG_ROOT=${LOG_ROOT:-/scratch/${USER}/MAE_logs}
@@ -47,8 +49,16 @@ RUN_PREFIX=${RUN_PREFIX:-localtest}
 ENABLE_FINETUNE=${ENABLE_FINETUNE:-1}
 TRAIN_ARGS=${TRAIN_ARGS:-}
 
-if [[ -n "${VENV_PATH:-}" ]]; then
-    source "$VENV_PATH/bin/activate"
+PYTHON_ENV_PATH="/home/$USER/dl-dev"
+if [[ ! -f "$PYTHON_ENV_PATH/bin/activate" ]]; then
+    echo "Required Python environment is missing: $PYTHON_ENV_PATH/bin/activate" >&2
+    exit 1
+fi
+source "$PYTHON_ENV_PATH/bin/activate"
+
+if ! command -v python >/dev/null 2>&1; then
+    echo "python is not available after activating $PYTHON_ENV_PATH" >&2
+    exit 1
 fi
 
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
@@ -84,6 +94,8 @@ echo "Run ID: $RUN_ID"
 echo "Architecture: $ARCHITECTURE"
 echo "Configuration: $CONFIG_NAME"
 echo "Project dir: $PROJECT_DIR"
+echo "Python env: $PYTHON_ENV_PATH"
+echo "Python executable: $(command -v python)"
 echo "Shards: $SHARDS_DIR"
 echo "GUE path: $GUE_DATA_PATH"
 echo "Checkpoint dir: $CHECKPOINT_DIR"
@@ -163,7 +175,7 @@ if [[ ! -e "$FINETUNE_MODEL_PATH" ]]; then
     exit 1
 fi
 
-bash finetune_all_maelm.sh \
+bash "$SCRIPT_DIR/finetune_all_maelm.sh" \
     "$GUE_DATA_PATH" \
     "$FINETUNE_MODEL_PATH" \
     "$RUN_ID" \

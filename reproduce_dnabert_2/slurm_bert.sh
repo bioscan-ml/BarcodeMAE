@@ -6,7 +6,7 @@
 #SBATCH --mem=64G
 #SBATCH --time=24:55:00
 #SBATCH --cpus-per-task=8
-#SBATCH --gpus=h100:1
+#SBATCH --gres=gpu:h100:1
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 
@@ -16,4 +16,11 @@ export CONFIG_NAME=auxiliary
 export ARCHITECTURE=bert
 export TRAIN_ARGS=""
 
-bash "$(dirname "$0")/slurm_train_and_finetune_common.sh"
+COMMON_LAUNCHER="${SLURM_SUBMIT_DIR:-$(pwd)}/slurm_train_and_finetune_common.sh"
+if [[ ! -f "$COMMON_LAUNCHER" ]]; then
+	echo "Could not find $COMMON_LAUNCHER" >&2
+	echo "Submit from the reproduce_dnabert_2 directory or set SLURM_SUBMIT_DIR accordingly." >&2
+	exit 1
+fi
+
+bash "$COMMON_LAUNCHER"

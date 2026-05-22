@@ -4,9 +4,11 @@ set -euo pipefail
 : "${CONFIG_NAME:?CONFIG_NAME is required}"
 : "${ARCHITECTURE:?ARCHITECTURE is required}"
 
-PROJECT_DIR=${PROJECT_DIR:-/home/pmillana/projects/def-lila-ab/pmillana/BarcodeMAE/reproduce_dnabert_2}
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+PROJECT_DIR=${PROJECT_DIR:-$SCRIPT_DIR}
 SHARDS_DIR=${SHARDS_DIR:-/scratch/${USER}/dnabert2_wds/shards_1.0}
-GUE_DATA_PATH=${GUE_DATA_PATH:-/home/pmillana/projects/def-lila-ab/pmillana/reproduce_dnabert_2/}
+GUE_DATA_PATH=${GUE_DATA_PATH:-/scratch/${USER}/dnabert2_wds}
 SPECIES_VOCAB=${SPECIES_VOCAB:-$SHARDS_DIR/species_vocab.json}
 CHECKPOINT_ROOT=${CHECKPOINT_ROOT:-/scratch/${USER}/MAE_checkpoints}
 LOG_ROOT=${LOG_ROOT:-/scratch/${USER}/MAE_logs}
@@ -36,7 +38,44 @@ module load python/3.11
 module load scipy-stack
 module load arrow
 
-source /home/pmillana/dl-dev/bin/activate
+PYTHON_ENV_PATH="/home/$USER/dl-dev"
+
+if [[ ! -f "$PYTHON_ENV_PATH/bin/activate" ]]; then
+    echo "Required Python environment is missing: $PYTHON_ENV_PATH/bin/activate" >&2
+    exit 1
+fi
+
+source "$PYTHON_ENV_PATH/bin/activate"
+
+if ! command -v python >/dev/null 2>&1; then
+    echo "python is not available after activating $PYTHON_ENV_PATH" >&2
+    exit 1
+fi
+
+# Preflight: distinguish between missing GPU allocation and CPU-only PyTorch builds.
+python - <<'PY'
+import os
+import sys
+import torch
+
+print(f"[preflight] python={sys.executable}")
+print(f"[preflight] torch={torch.__version__}")
+print(f"[preflight] torch.version.cuda={torch.version.cuda}")
+print(f"[preflight] CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')}")
+print(f"[preflight] cuda_available={torch.cuda.is_available()}")
+print(f"[preflight] cuda_device_count={torch.cuda.device_count()}")
+
+if not torch.cuda.is_available():
+    if torch.version.cuda is None:
+        raise SystemExit(
+            "[preflight] ERROR: PyTorch in /home/$USER/dl-dev appears CPU-only (torch.version.cuda is None). "
+            "Reinstall a CUDA-enabled torch build in this env."
+        )
+    raise SystemExit(
+        "[preflight] ERROR: CUDA-enabled torch is installed but no GPU is visible in this SLURM job. "
+        "Check the sbatch GPU request/partition and cluster allocation."
+    )
+PY
 
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
 export NCCL_DEBUG=${NCCL_DEBUG:-INFO}
@@ -74,7 +113,11 @@ echo "Date: $(date)"
 echo "Run ID: $RUN_ID"
 echo "Architecture: $ARCHITECTURE"
 echo "Configuration: $CONFIG_NAME"
+echo "Project dir: $PROJECT_DIR"
+echo "Python env: $PYTHON_ENV_PATH"
+echo "Python executable: $(command -v python)"
 echo "Shards: $SHARDS_DIR"
+echo "GUE path: $GUE_DATA_PATH"
 echo "Checkpoint dir: $CHECKPOINT_DIR"
 echo "Log dir: $LOG_DIR"
 echo "------------------------------------------------------"
@@ -141,7 +184,7 @@ if [[ ! -e "$FINETUNE_MODEL_PATH" ]]; then
     exit 1
 fi
 
-bash finetune_all_maelm.sh \
+bash "$SCRIPT_DIR/finetune_all_maelm.sh" \
     "$GUE_DATA_PATH" \
     "$FINETUNE_MODEL_PATH" \
     "$RUN_ID" \
