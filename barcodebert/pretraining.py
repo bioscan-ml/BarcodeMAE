@@ -473,7 +473,7 @@ def run(config):
     # Auxiliary CE head (for crossentropy_taxonomy_loss) ----------------------
     taxonomy_ce_head = None
     if getattr(config, "aux_loss_type", None) == "ce":
-        n_taxonomy_classes = int(dataset_train.taxonomy_labels.max().item()) + 1
+        n_taxonomy_classes = int(max(dataset_train.taxonomy_labels)) + 1
         taxonomy_ce_head = TaxonomyClassificationHead(
             hidden_dim=bert_config.hidden_size,
             num_classes=n_taxonomy_classes,
