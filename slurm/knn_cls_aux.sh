@@ -59,15 +59,18 @@ AUX_LOSS_TYPE="${AUX_LOSS_TYPES[$SLURM_ARRAY_TASK_ID]}"
 K_MER=6
 N_LAYERS=6
 N_HEADS=6
-ARCH="transformer"
+N_DEC_LAYERS=6
+N_DEC_HEADS=6
+ARCH="maelm"
 TAXA="genus"
 K_CLASSES=8
 M_PER_CLASS=4
 DATASET="BIOSCAN-5M"
 
-RUN_NAME="run_k${K_MER}_${N_LAYERS}L_${N_HEADS}H_${ARCH}_cls_aux${AUX_LOSS_TYPE}_${TAXA}_km${K_CLASSES}x${M_PER_CLASS}"
+RUN_NAME="run_k${K_MER}_${N_LAYERS}L_${N_HEADS}H_${N_DEC_LAYERS}DL_${N_DEC_HEADS}DH_${ARCH}_cls_aux${AUX_LOSS_TYPE}_${TAXA}_km${K_CLASSES}x${M_PER_CLASS}"
 CKPT_ROOT="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE/model_checkpoints/${DATASET}"
-CHECKPOINT="${CKPT_ROOT}/${RUN_NAME}/best_pretraining.pt"
+# Use the encoder-only checkpoint saved by --checkpoint_maelm
+CHECKPOINT="${CKPT_ROOT}/${RUN_NAME}/checkpoint_encoder.pt"
 DATA_DIR="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE/data/${DATASET}"
 
 mkdir -p final_logs/${SLURM_ARRAY_JOB_ID}

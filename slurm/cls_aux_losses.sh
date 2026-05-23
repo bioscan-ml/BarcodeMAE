@@ -73,11 +73,13 @@ K_MER=6
 STRIDE=6
 N_LAYERS=6
 N_HEADS=6
+N_DEC_LAYERS=6
+N_DEC_HEADS=6
 MASKED_LOSS_WEIGHT=0.999
 WD=0.00001
 RANDOM_TOKEN_RATIO=0.0
 MASK_TOKEN_RATIO=1.0
-ARCH="transformer"
+ARCH="maelm"
 DATASET="BIOSCAN-5M"
 K_CLASSES=8
 M_PER_CLASS=4
@@ -96,38 +98,33 @@ SUPCON_TEMP=0.07         # only used when AUX_LOSS_TYPE=supcon
 CLS_TAXA_LOSS_W=0.1
 
 # ── Names and paths ───────────────────────────────────────────────────────────
-RUN_NAME="run_k${K_MER}_${N_LAYERS}L_${N_HEADS}H_${ARCH}_cls_aux${AUX_LOSS_TYPE}_${TAXA}_km${K_CLASSES}x${M_PER_CLASS}"
+RUN_NAME="run_k${K_MER}_${N_LAYERS}L_${N_HEADS}H_${N_DEC_LAYERS}DL_${N_DEC_HEADS}DH_${ARCH}_cls_aux${AUX_LOSS_TYPE}_${TAXA}_km${K_CLASSES}x${M_PER_CLASS}"
 CHECKPOINT_DIR="./model_checkpoints/${DATASET}/${RUN_NAME}"
 CHECKPOINT="${CHECKPOINT_DIR}/checkpoint.pt"
+CHECKPOINT_ENCODER="${CHECKPOINT_DIR}/checkpoint_encoder.pt"
 mkdir -p "${CHECKPOINT_DIR}"
 mkdir -p final_logs/${SLURM_ARRAY_JOB_ID}
 mkdir -p logs
 
 echo "=========================================="
 echo "Configuration:"
-echo "  Run name:       $RUN_NAME"
-echo "  Aux loss type:  $AUX_LOSS_TYPE"
+echo "  Run name:        $RUN_NAME"
+echo "  Aux loss type:   $AUX_LOSS_TYPE"
 echo "  Aux loss weight: $AUX_LOSS_WEIGHT"
-echo "  Triplet margin: $TRIPLET_MARGIN  (ignored for supcon/ce)"
-echo "  SupCon temp:    $SUPCON_TEMP     (ignored for triplet/ce)"
-echo "  CLS BCE weight: $CLS_TAXA_LOSS_W"
-echo "  k×m sampler:    k=${K_CLASSES}, m=${M_PER_CLASS}"
+echo "  Triplet margin:  $TRIPLET_MARGIN  (ignored for supcon/ce)"
+echo "  SupCon temp:     $SUPCON_TEMP     (ignored for triplet/ce)"
+echo "  Encoder:         ${N_LAYERS}L × ${N_HEADS}H"
+echo "  Decoder:         ${N_DEC_LAYERS}L × ${N_DEC_HEADS}H"
+echo "  k×m sampler:     k=${K_CLASSES}, m=${M_PER_CLASS}"
 echo "=========================================="
 
 # ── Notes ─────────────────────────────────────────────────────────────────────
-# --use-cls-token          adds [CLS] at position 0; CLS representation is used
-#                          for the aux loss embedding.
+# MAELM extracts the CLS token directly from the encoder (maelm_model.py:192):
+#   cls_token = encoder_sequence_output[:, 0:1, :]   # always available
+# No --enable-cls-taxonomy needed: the k×m sampler loads taxonomy labels, and
+# MAELM never needs output_hidden_states for the CLS token.
 #
-# --enable-cls-taxonomy    required for two reasons:
-#   (1) causes output_hidden_states=True so CLS embedding is accessible
-#   (2) loads taxonomy labels from the dataset (needed by all three aux losses)
-#   It also enables the binary BCE pair loss (--cls-taxonomy-loss-weight).
-#
-# --aux-loss-type          activates one of: triplet | supcon | ce
-# --triplet-margin and --supcon-temperature are always passed; only the
-#   relevant one is used depending on aux-loss-type.
-#
-# No --jumbo flags — this is a pure CLS experiment.
+# --checkpoint_maelm saves the encoder only; knn_cls_aux.sh uses that file.
 # ──────────────────────────────────────────────────────────────────────────────
 
 torchrun --standalone --nproc_per_node=1 barcodebert/pretraining.py \
@@ -139,6 +136,8 @@ torchrun --standalone --nproc_per_node=1 barcodebert/pretraining.py \
     --stride ${STRIDE} \
     --n-layers ${N_LAYERS} \
     --n-heads ${N_HEADS} \
+    --decoder-n-layers ${N_DEC_LAYERS} \
+    --decoder-n-heads ${N_DEC_HEADS} \
     --separate_loss true \
     --masked-loss-weight ${MASKED_LOSS_WEIGHT} \
     --mask-token-ratio ${MASK_TOKEN_RATIO} \
@@ -154,11 +153,10 @@ torchrun --standalone --nproc_per_node=1 barcodebert/pretraining.py \
     --save-best-model \
     --log-wandb \
     --checkpoint "${CHECKPOINT}" \
+    --checkpoint_maelm "${CHECKPOINT_ENCODER}" \
     --use-cls-token \
-    --enable-cls-taxonomy \
     --taxonomy-level ${TAXA} \
     --taxonomy-max-pairs ${NUM_PAIRS} \
-    --cls-taxonomy-loss-weight ${CLS_TAXA_LOSS_W} \
     --aux-loss-type ${AUX_LOSS_TYPE} \
     --aux-loss-weight ${AUX_LOSS_WEIGHT} \
     --triplet-margin ${TRIPLET_MARGIN} \
