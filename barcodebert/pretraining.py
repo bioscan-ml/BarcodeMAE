@@ -1573,21 +1573,22 @@ def train_one_epoch(
                 if hs is not None:
                     aux_emb = hs[:, 0, :]                                       # cls
 
+            aux_metrics = None
             if aux_emb is not None:
                 with autocast() if scaler is not None else contextlib.nullcontext():
                     if aux_loss_type == "triplet":
-                        aux_loss, _ = triplet_loss_batch_hard(
+                        aux_loss, aux_metrics = triplet_loss_batch_hard(
                             aux_emb, genus_labels,
                             margin=getattr(config, "triplet_margin", 0.3),
                         )
                     elif aux_loss_type == "supcon":
-                        aux_loss, _ = supcon_loss(
+                        aux_loss, aux_metrics = supcon_loss(
                             aux_emb, genus_labels,
                             temperature=getattr(config, "supcon_temperature", 0.07),
                         )
                     elif aux_loss_type == "ce":
                         ce_head = taxonomy_ce_head.module if config.distributed else taxonomy_ce_head
-                        aux_loss, _ = crossentropy_taxonomy_loss(aux_emb, genus_labels, ce_head)
+                        aux_loss, aux_metrics = crossentropy_taxonomy_loss(aux_emb, genus_labels, ce_head)
 
                 if aux_loss is not None:
                     aux_weight = getattr(config, "aux_loss_weight", 0.1)
@@ -1765,6 +1766,17 @@ def train_one_epoch(
                     log_msg += " AuxLoss({}):{:7.4f}".format(
                         getattr(config, "aux_loss_type", "?"), aux_loss.item()
                     )
+                    if aux_metrics is not None:
+                        if "frac_active" in aux_metrics:
+                            log_msg += " FracActive:{:.2f}".format(aux_metrics["frac_active"])
+                        if "mean_pos_dist" in aux_metrics:
+                            log_msg += " PosDist:{:.3f} NegDist:{:.3f}".format(
+                                aux_metrics["mean_pos_dist"], aux_metrics["mean_neg_dist"]
+                            )
+                        if "mean_n_positives" in aux_metrics:
+                            log_msg += " AvgPos:{:.1f}".format(aux_metrics["mean_n_positives"])
+                        if "accuracy" in aux_metrics:
+                            log_msg += " CEAcc:{:.2f}%".format(aux_metrics["accuracy"] * 100)
                 log_msg += " LR: {}".format(scheduler.get_last_lr())
                 print(log_msg, flush=True)
             else:
