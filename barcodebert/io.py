@@ -174,6 +174,9 @@ def load_pretrained_model(checkpoint_path, device=None):
     if ckpt["config"].arch == "maelm" and "decoder_config" in ckpt:
         register_tokens = state_dict.get("register_tokens", None)  # save before stripping
         state_dict = {k[len("encoder.") :]: v for k, v in state_dict.items() if k.startswith("encoder.")}
+    elif ckpt["config"].arch == "maelm":
+        # Encoder-only checkpoint (no decoder_config): register_tokens saved at top level if n_registers > 0
+        register_tokens = ckpt.get("register_tokens", None)
 
     model.load_state_dict(state_dict)
 
@@ -203,9 +206,11 @@ def load_pretrained_model(checkpoint_path, device=None):
     jumbo = getattr(cfg, "jumbo", False)
     jumbo_multiplier = getattr(cfg, "jumbo_multiplier", 0) if jumbo else 0
     n_registers = getattr(cfg, "n_registers", 0) if not jumbo else 0
+    jumbo_mlp_expansion = getattr(cfg, "jumbo_mlp_expansion", 0) if jumbo else 0
     print(f"  jumbo:                     {jumbo}")
     print(f"  number of jumbo tokens (J):{jumbo_multiplier}")
     print(f"  number of register tokens: {n_registers}")
+    print(f"  jumbo_mlp_expansion: {jumbo_mlp_expansion}")
     print("------------------------------\n")
 
     return model, ckpt
@@ -299,6 +304,7 @@ def load_pretrained_encoder(checkpoint_path, device=None):
     print(f"  total_step .......... {ckpt.get('total_step', '?')}")
     print(f"  max_accuracy ........ {ckpt.get('max_accuracy', '?')}")
     print(f"  best_epoch .......... {ckpt.get('best_epoch', '?')}")
+
     print("-----------------------------------\n")
 
     return model, ckpt

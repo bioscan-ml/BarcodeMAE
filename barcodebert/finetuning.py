@@ -60,7 +60,7 @@ def _save_test_results(all_results, output_path):
 
 
 class ClassificationModel(nn.Module):
-    def __init__(self, base_model, num_labels, representation_type="tokens"):
+    def __init__(self, base_model, num_labels, representation_type="tokens", use_cls_token=False):
         """
         Args:
             representation_type: How to extract the sequence embedding.
@@ -73,6 +73,7 @@ class ClassificationModel(nn.Module):
         self.num_labels = num_labels
         self.base_model = base_model
         self.representation_type = representation_type
+        self.use_cls_token = use_cls_token
 
         if representation_type == "jumbo":
             # Flattened jumbo representation: J * D
@@ -86,42 +87,78 @@ class ClassificationModel(nn.Module):
         if representation_type != "jumbo":
             self.classifier = nn.Linear(self.hidden_size, self.num_labels)
 
-    def _last_hidden(self, outputs):
-        """Return the final hidden states as a (B, N, D) tensor regardless of
-        whether `outputs` comes from a HuggingFace BertModel (tuple-valued
-        `hidden_states`) or from our JumboBertForTokenClassification (tensor-valued
-        `hidden_states` already equal to the final patch tokens)."""
-        if hasattr(outputs, "last_hidden_state") and outputs.last_hidden_state is not None:
-            return outputs.last_hidden_state
-        hs = outputs.hidden_states
-        if isinstance(hs, (list, tuple)):
-            return hs[-1]
-        return hs  # jumbo already gives final (B, N, D)
-
     def _get_embedding(self, outputs, mask):
         rtype = self.representation_type
+        use_cls_token = self.use_cls_token
+
+        def _last_hidden(out):
+            if hasattr(out, "last_hidden_state") and out.last_hidden_state is not None:
+                return out.last_hidden_state
+            hs = out.hidden_states
+            if isinstance(hs, (list, tuple)):
+                return hs[-1]
+            return hs
+
+        if rtype == "jumbo":
+            if hasattr(outputs, "jumbo_tokens") and outputs.jumbo_tokens is not None:
+                B = outputs.jumbo_tokens.size(0)
+                return outputs.jumbo_tokens.reshape(B, -1)
+            if hasattr(outputs, "jumbo_representation"):
+                return outputs.jumbo_representation
+            raise ValueError("representation_type='jumbo' requires a Jumbo encoder with jumbo_tokens or jumbo_representation.")
 
         if rtype == "jumbo_avg":
             if not (hasattr(outputs, "jumbo_tokens") and outputs.jumbo_tokens is not None):
                 raise ValueError("representation_type='jumbo_avg' requires a Jumbo encoder.")
-            return outputs.jumbo_tokens.mean(dim=1)  # (B, D)
+            return outputs.jumbo_tokens.mean(dim=1)
 
-        if rtype == "jumbo":
-            if not (hasattr(outputs, "jumbo_tokens") and outputs.jumbo_tokens is not None):
-                raise ValueError("representation_type='jumbo' requires a Jumbo encoder.")
-            B = outputs.jumbo_tokens.size(0)
-            return outputs.jumbo_tokens.reshape(B, -1)  # (B, J*D)
+        if rtype == "all_tokens":
+            hidden_states = _last_hidden(outputs)
+            if hasattr(outputs, "jumbo_tokens") and outputs.jumbo_tokens is not None:
+                jumbo_tokens = outputs.jumbo_tokens
+                all_tokens = torch.cat([jumbo_tokens, hidden_states], dim=1)
+                B, J, _ = jumbo_tokens.shape
+                jumbo_mask = torch.ones(B, J, device=mask.device, dtype=mask.dtype)
+                full_mask = torch.cat([jumbo_mask, mask], dim=1)
+                return (all_tokens * full_mask.unsqueeze(-1)).sum(1) / full_mask.sum(1, keepdim=True)
+            return (hidden_states * mask.unsqueeze(-1)).sum(1) / mask.sum(1, keepdim=True)
 
         if rtype == "cls":
-            return self._last_hidden(outputs)[:, 0, :]  # (B, D)
+            return _last_hidden(outputs)[:, 0, :]
 
-        # default: "tokens" — mean-pool sequence tokens (same representation
-        # used when we extract per-sequence embeddings from the dataset)
-        hidden = self._last_hidden(outputs)
+        if rtype == "tokens_with_cls":
+            hidden_states = _last_hidden(outputs)
+            return (hidden_states * mask.unsqueeze(-1)).sum(1) / mask.sum(1, keepdim=True).clamp(min=1)
+
+        if rtype == "tokens_with_registers":
+            if not hasattr(outputs, "register_hidden_states") or outputs.register_hidden_states is None:
+                raise ValueError("representation_type='tokens_with_registers' requires a model with register tokens.")
+            register_states = outputs.register_hidden_states
+            hidden_states = _last_hidden(outputs)
+            seq_mask = mask.clone()
+            if use_cls_token:
+                seq_mask[:, 0] = 0
+            reg_mask = torch.ones(register_states.shape[0], register_states.shape[1], device=mask.device, dtype=mask.dtype)
+            combined = torch.cat([register_states, hidden_states], dim=1)
+            combined_mask = torch.cat([reg_mask, seq_mask], dim=1)
+            return (combined * combined_mask.unsqueeze(-1)).sum(1) / combined_mask.sum(1, keepdim=True)
+
+        if rtype == "all_with_registers":
+            if not hasattr(outputs, "register_hidden_states") or outputs.register_hidden_states is None:
+                raise ValueError("representation_type='all_with_registers' requires a model with register tokens.")
+            register_states = outputs.register_hidden_states
+            hidden_states = _last_hidden(outputs)
+            reg_mask = torch.ones(register_states.shape[0], register_states.shape[1], device=mask.device, dtype=mask.dtype)
+            combined = torch.cat([register_states, hidden_states], dim=1)
+            combined_mask = torch.cat([reg_mask, mask], dim=1)
+            return (combined * combined_mask.unsqueeze(-1)).sum(1) / combined_mask.sum(1, keepdim=True)
+
+        # default: "tokens" — mean-pool sequence tokens, excluding CLS at position 0 if present
+        hidden_states = _last_hidden(outputs)
         seq_mask = mask.clone().float()
-        sum_emb = (hidden * seq_mask.unsqueeze(-1)).sum(1)
-        embedding = sum_emb / seq_mask.sum(1, keepdim=True).clamp(min=1)
-        return embedding  # (B, D)
+        if use_cls_token:
+            seq_mask[:, 0] = 0
+        return (hidden_states * seq_mask.unsqueeze(-1)).sum(1) / seq_mask.sum(1, keepdim=True).clamp(min=1)
 
     def forward(self, input_ids=None, mask=None, labels=None):
         outputs = self.base_model(input_ids=input_ids, attention_mask=mask)
@@ -447,7 +484,7 @@ def run(config):
     # MODEL ===================================================================
 
     representation_type = getattr(config, "representation_type", "tokens")
-    model = ClassificationModel(pre_model, dataset_train.num_labels, representation_type=representation_type)
+    model = ClassificationModel(pre_model, dataset_train.num_labels, representation_type=representation_type, use_cls_token=getattr(config, "use_cls_token", False))
     print(dataset_train.num_labels, "num labels")
     print(f"Using representation_type='{representation_type}' for classification head")
 

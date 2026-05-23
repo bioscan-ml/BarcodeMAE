@@ -27,6 +27,12 @@ from barcodebert.cls_taxonomy_classifier import (
 from barcodebert.datasets import DNADataset
 from barcodebert.io import safe_save_model
 from barcodebert.jumbo_taxonomy_classifier import compute_taxonomy_classification_loss
+from barcodebert.taxonomy_aux_losses import (
+    TaxonomyClassificationHead,
+    crossentropy_taxonomy_loss,
+    supcon_loss,
+    triplet_loss_batch_hard,
+)
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../..")))
 from biological_masker import (
@@ -464,6 +470,17 @@ def run(config):
         )
         print(f"CLS taxonomy classifier created with hidden_dim={bert_config.hidden_size}")
 
+    # Auxiliary CE head (for crossentropy_taxonomy_loss) ----------------------
+    taxonomy_ce_head = None
+    if getattr(config, "aux_loss_type", None) == "ce":
+        n_taxonomy_classes = int(dataset_train.taxonomy_labels.max().item()) + 1
+        taxonomy_ce_head = TaxonomyClassificationHead(
+            hidden_dim=bert_config.hidden_size,
+            num_classes=n_taxonomy_classes,
+            dropout=0.1,
+        )
+        print(f"Aux CE head created: hidden={bert_config.hidden_size}, classes={n_taxonomy_classes}")
+
     # Configure model for distributed training --------------------------------
     print("\nModel architecture:")
     print(model, flush=True)
@@ -483,6 +500,8 @@ def run(config):
         model = model.to(device)
         if cls_taxonomy_classifier is not None:
             cls_taxonomy_classifier = cls_taxonomy_classifier.to(device)
+        if taxonomy_ce_head is not None:
+            taxonomy_ce_head = taxonomy_ce_head.to(device)
         torch.cuda.set_device(device)
         model = nn.parallel.DistributedDataParallel(
             model,
@@ -494,6 +513,14 @@ def run(config):
         if cls_taxonomy_classifier is not None:
             cls_taxonomy_classifier = nn.parallel.DistributedDataParallel(
                 cls_taxonomy_classifier,
+                device_ids=[config.local_rank],
+                output_device=config.local_rank,
+                find_unused_parameters=False,
+                static_graph=True,
+            )
+        if taxonomy_ce_head is not None:
+            taxonomy_ce_head = nn.parallel.DistributedDataParallel(
+                taxonomy_ce_head,
                 device_ids=[config.local_rank],
                 output_device=config.local_rank,
                 find_unused_parameters=False,
@@ -511,6 +538,8 @@ def run(config):
         model = model.to(device)
         if cls_taxonomy_classifier is not None:
             cls_taxonomy_classifier = cls_taxonomy_classifier.to(device)
+        if taxonomy_ce_head is not None:
+            taxonomy_ce_head = taxonomy_ce_head.to(device)
 
     # OPTIMIZATION ============================================================
     # Optimizer ---------------------------------------------------------------
@@ -563,11 +592,22 @@ def run(config):
             )
             print(f"CLS taxonomy classifier using LR: {taxonomy_lr:.2e}")
 
+        if taxonomy_ce_head is not None:
+            optimizer_params.append(
+                {"params": taxonomy_ce_head.parameters(), "lr": taxonomy_lr, "name": "taxonomy_ce_head"}
+            )
+            print(f"Taxonomy CE head using LR: {taxonomy_lr:.2e}")
+
     else:
         # Same learning rate for all parameters (original behavior)
+        extra = []
         if cls_taxonomy_classifier is not None:
-            optimizer_params = [{"params": model.parameters()}, {"params": cls_taxonomy_classifier.parameters()}]
-            print("Optimizer includes model and CLS taxonomy classifier parameters (same LR)")
+            extra.append({"params": cls_taxonomy_classifier.parameters()})
+        if taxonomy_ce_head is not None:
+            extra.append({"params": taxonomy_ce_head.parameters()})
+        if extra:
+            optimizer_params = [{"params": model.parameters()}] + extra
+            print("Optimizer includes model + aux head parameters (same LR)")
         else:
             optimizer_params = [{"params": model.parameters()}]
 
@@ -764,6 +804,12 @@ def run(config):
         elif cls_taxonomy_classifier is not None:
             print("CLS taxonomy classifier state not found in checkpoint, using fresh classifier.")
 
+        if taxonomy_ce_head is not None and "taxonomy_ce_head" in checkpoint:
+            taxonomy_ce_head.load_state_dict(checkpoint["taxonomy_ce_head"])
+            print("Loaded taxonomy CE head state from checkpoint.")
+        elif taxonomy_ce_head is not None:
+            print("Taxonomy CE head state not found in checkpoint, using fresh head.")
+
         # Verify configs match for MAELM
         if config.arch == "maelm":
             if "decoder_config" in checkpoint:
@@ -856,6 +902,7 @@ def run(config):
             scaler=scaler,
             bert_config=bert_config,
             cls_taxonomy_classifier=cls_taxonomy_classifier,
+            taxonomy_ce_head=taxonomy_ce_head,
             decoder_config=decoder_config,
             best_stats=best_stats,
             start_epoch=start_epoch,
@@ -959,6 +1006,10 @@ def run(config):
                     else cls_taxonomy_classifier
                 )
                 save_dict["cls_taxonomy_classifier"] = actual_cls_classifier
+            if taxonomy_ce_head is not None:
+                save_dict["taxonomy_ce_head"] = (
+                    taxonomy_ce_head.module if hasattr(taxonomy_ce_head, "module") else taxonomy_ce_head
+                )
             # Add scaler state if using mixed precision
             if scaler is not None:
                 save_dict["scaler"] = scaler.state_dict()
@@ -980,6 +1031,9 @@ def run(config):
                         "optimizer": optimizer,
                         "scheduler": scheduler,
                     }
+                    # Preserve register tokens so load_pretrained_model can reconstruct RegisterBertModel
+                    if actual_model.n_registers > 0:
+                        save_dict_encoder["register_tokens"] = actual_model.register_tokens.detach()
                     # Add scaler state if using mixed precision
                     if scaler is not None:
                         save_dict_encoder["scaler"] = scaler.state_dict()
@@ -1094,6 +1148,7 @@ def train_one_epoch(
     start_epoch=0,
     start_step_in_epoch=0,
     cls_taxonomy_classifier=None,
+    taxonomy_ce_head=None,
 ):
     r"""
     Train the encoder and classifier for one epoch.
@@ -1493,6 +1548,51 @@ def train_one_epoch(
                     )
                     loss = loss + cls_taxonomy_loss_weight * cls_taxonomy_loss
 
+        # Auxiliary loss (triplet / supcon / ce) ---------------------------------
+        aux_loss = None
+        aux_loss_type = getattr(config, "aux_loss_type", None)
+        if aux_loss_type is not None and genus_labels is not None:
+            # Extract (B, D) embedding from out — mirrors representation_type in representations_from_df
+            aux_emb = None
+            if getattr(config, "jumbo", False):
+                if hasattr(out, "jumbo_tokens") and out.jumbo_tokens is not None:
+                    aux_emb = out.jumbo_tokens.mean(dim=1)                      # jumbo_avg
+            elif config.arch == "maelm" and getattr(config, "use_cls_token", False):
+                cls = getattr(out, "cls_token", None)                           # (B, 1, D)
+                if cls is not None:
+                    n_reg = getattr(config, "n_registers", 0)
+                    if n_reg > 0 and getattr(out, "register_tokens", None) is not None:
+                        combined = torch.cat([cls, out.register_tokens], dim=1) # (B, 1+R, D)
+                        aux_emb = combined.mean(dim=1)                          # tokens_with_registers
+                    else:
+                        aux_emb = cls.squeeze(1)                                # cls
+            elif config.arch == "transformer" and getattr(config, "use_cls_token", False):
+                hs = getattr(out, "hidden_states", None)
+                if isinstance(hs, tuple):
+                    hs = hs[-1]
+                if hs is not None:
+                    aux_emb = hs[:, 0, :]                                       # cls
+
+            if aux_emb is not None:
+                with autocast() if scaler is not None else contextlib.nullcontext():
+                    if aux_loss_type == "triplet":
+                        aux_loss, _ = triplet_loss_batch_hard(
+                            aux_emb, genus_labels,
+                            margin=getattr(config, "triplet_margin", 0.3),
+                        )
+                    elif aux_loss_type == "supcon":
+                        aux_loss, _ = supcon_loss(
+                            aux_emb, genus_labels,
+                            temperature=getattr(config, "supcon_temperature", 0.07),
+                        )
+                    elif aux_loss_type == "ce":
+                        ce_head = taxonomy_ce_head.module if config.distributed else taxonomy_ce_head
+                        aux_loss, _ = crossentropy_taxonomy_loss(aux_emb, genus_labels, ce_head)
+
+                if aux_loss is not None:
+                    aux_weight = getattr(config, "aux_loss_weight", 0.1)
+                    loss = loss + aux_weight * aux_loss
+
         # Keep aliases for backward compatibility in logging
         genus_loss = taxonomy_loss
         genus_acc = taxonomy_acc
@@ -1661,6 +1761,10 @@ def train_one_epoch(
                         cls_taxonomy_loss.item(), cls_taxonomy_acc.item() * 100.0,
                         num_cls_taxonomy_pairs, num_cls_same_pairs, num_cls_diff_pairs,
                     )
+                if aux_loss is not None:
+                    log_msg += " AuxLoss({}):{:7.4f}".format(
+                        getattr(config, "aux_loss_type", "?"), aux_loss.item()
+                    )
                 log_msg += " LR: {}".format(scheduler.get_last_lr())
                 print(log_msg, flush=True)
             else:
@@ -1682,6 +1786,10 @@ def train_one_epoch(
                         cls_taxonomy_loss.item(), cls_taxonomy_acc.item() * 100.0,
                         num_cls_taxonomy_pairs, num_cls_same_pairs, num_cls_diff_pairs,
                     )
+                if aux_loss is not None:
+                    log_msg += " AuxLoss({}):{:7.4f}".format(
+                        getattr(config, "aux_loss_type", "?"), aux_loss.item()
+                    )
                 log_msg += " LR: {}".format(scheduler.get_last_lr())
                 print(log_msg, flush=True)
 
@@ -1700,6 +1808,10 @@ def train_one_epoch(
                     else cls_taxonomy_classifier
                 )
                 save_dict["cls_taxonomy_classifier"] = actual_cls_classifier
+            if taxonomy_ce_head is not None:
+                save_dict["taxonomy_ce_head"] = (
+                    taxonomy_ce_head.module if hasattr(taxonomy_ce_head, "module") else taxonomy_ce_head
+                )
             if scaler is not None:
                 save_dict["scaler"] = scaler.state_dict()
             print(f"[Resuming] saving checkpoint at global step {total_step}", flush=True)
@@ -2805,6 +2917,43 @@ def get_parser():
         "--run-id",
         type=str,
         help="Unique identifier for the model run or job. Used as the run ID on wandb.",
+    )
+
+    # Auxiliary taxonomy losses -----------------------------------------------
+    group = parser.add_argument_group("Auxiliary taxonomy losses")
+    group.add_argument(
+        "--aux-loss-type",
+        "--aux_loss_type",
+        dest="aux_loss_type",
+        default=None,
+        choices=["triplet", "supcon", "ce"],
+        help="Auxiliary loss applied to CLS/jumbo/register embeddings. "
+             "triplet=batch-hard triplet, supcon=supervised contrastive, ce=cross-entropy. "
+             "Default: disabled",
+    )
+    group.add_argument(
+        "--aux-loss-weight",
+        "--aux_loss_weight",
+        dest="aux_loss_weight",
+        default=0.1,
+        type=float,
+        help="Weight for the auxiliary loss term. Default: %(default)s",
+    )
+    group.add_argument(
+        "--triplet-margin",
+        "--triplet_margin",
+        dest="triplet_margin",
+        default=0.3,
+        type=float,
+        help="Margin for batch-hard triplet loss. Default: %(default)s",
+    )
+    group.add_argument(
+        "--supcon-temperature",
+        "--supcon_temperature",
+        dest="supcon_temperature",
+        default=0.07,
+        type=float,
+        help="Temperature for supervised contrastive loss. Default: %(default)s",
     )
 
     return parser

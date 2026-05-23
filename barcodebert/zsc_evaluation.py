@@ -36,7 +36,7 @@ class ModelEmbedder:
 
 class DNADataset(Dataset):
     def __init__(
-        self,
+    self,
         file_path,
         embedder,
         randomize_offset=False,
