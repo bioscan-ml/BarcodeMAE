@@ -204,8 +204,8 @@ def supcon_loss(
         return None, None
 
     # Log-probability of each positive pair, averaged per anchor
-    log_prob = sim - torch.log(denom + 1e-8)      # (N, N)
-    log_prob = log_prob.masked_fill(eye, 0.0)     # avoid 0 * (-inf) = nan at diagonal
+    log_prob = sim - sim_max - torch.log(denom + 1e-8)  # (N, N) — subtract sim_max to invert stability trick
+    log_prob = log_prob.masked_fill(eye, 0.0)            # avoid 0 * (-inf) = nan at diagonal
     mean_log_prob_pos = (pos_mask * log_prob).sum(dim=1) / n_positives.clamp(min=1)
 
     loss = -mean_log_prob_pos[has_pos].mean()
