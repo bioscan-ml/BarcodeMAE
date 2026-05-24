@@ -1362,7 +1362,11 @@ def train_one_epoch(
                     # print("MAELM is implemented")
                     out = model(masked_input, att_mask, masked_unseen_tokens, config.maelm_version)
                 elif config.arch == "transformer":
-                    out = model(masked_input, attention_mask=att_mask, output_hidden_states=enable_cls_taxonomy)
+                    need_hidden = enable_cls_taxonomy or (
+                        getattr(config, "aux_loss_type", None) is not None
+                        and getattr(config, "use_cls_token", False)
+                    )
+                    out = model(masked_input, attention_mask=att_mask, output_hidden_states=need_hidden)
 
                 logits = out.logits.view(-1, n_output_tokens)
 
@@ -1419,7 +1423,11 @@ def train_one_epoch(
             if config.arch == "maelm":
                 out = model(masked_input, att_mask, masked_unseen_tokens, config.maelm_version)
             elif config.arch == "transformer":
-                out = model(masked_input, attention_mask=att_mask, output_hidden_states=enable_cls_taxonomy)
+                need_hidden = enable_cls_taxonomy or (
+                    getattr(config, "aux_loss_type", None) is not None
+                    and getattr(config, "use_cls_token", False)
+                )
+                out = model(masked_input, attention_mask=att_mask, output_hidden_states=need_hidden)
 
             logits = out.logits.view(-1, n_output_tokens)
 
