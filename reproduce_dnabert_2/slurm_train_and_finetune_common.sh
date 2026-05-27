@@ -93,7 +93,16 @@ else
 fi
 
 export MASTER_ADDR=$(hostname)
-export MASTER_PORT=${MASTER_PORT:-12346}
+if [[ -z "${MASTER_PORT:-}" ]]; then
+    # Use a deterministic per-job port to avoid clashes when multiple jobs
+    # run concurrently on the same node. Keep a stable local fallback.
+    if [[ "${SLURM_JOB_ID:-}" =~ ^[0-9]+$ ]]; then
+        MASTER_PORT=$((15000 + (SLURM_JOB_ID % 40000)))
+    else
+        MASTER_PORT=12346
+    fi
+fi
+export MASTER_PORT
 export WORLD_SIZE=${SLURM_NTASKS:-1}
 export RANK=${SLURM_PROCID:-0}
 export LOCAL_RANK=${SLURM_LOCALID:-0}
