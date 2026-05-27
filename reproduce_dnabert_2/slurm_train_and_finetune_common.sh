@@ -23,7 +23,7 @@ BATCH_SIZE=${BATCH_SIZE:-64}
 TOTAL_BATCH_SIZE=${TOTAL_BATCH_SIZE:-4096}
 NUM_WORKERS=${NUM_WORKERS:-4}
 CHECKPOINT_INTERVAL=${CHECKPOINT_INTERVAL:-500}
-LOG_INTERVAL=${LOG_INTERVAL:-100}
+LOG_INTERVAL=${LOG_INTERVAL:-1}
 
 WANDB_PROJECT=${WANDB_PROJECT:-dnabert2-training}
 WANDB_ENTITY=${WANDB_ENTITY:-uoguelph_mlrg}
@@ -169,7 +169,34 @@ if [[ -n "$TRAIN_ARGS" ]]; then
     torchrun_cmd+=("${extra_args[@]}")
 fi
 
-"${torchrun_cmd[@]}"
+# ---------------------------------------------------------------------------
+# Time-limit guard
+# SLURM sends SIGUSR1 one hour before the wall-time limit when the job script
+# contains:  #SBATCH --signal=B:USR1@3600
+# The handler below kills torchrun gracefully so the finetuning block below
+# can still run with the latest checkpoint.
+# ---------------------------------------------------------------------------
+_PRETRAIN_INTERRUPTED=0
+_handle_timelimit() {
+    echo "[timelimit] SIGUSR1 received: ~1 h of wall time remaining." \
+         "Stopping pretraining so finetuning can still run within this allocation." >&2
+    if [[ -n "${_TRAIN_PID:-}" ]]; then
+        kill -TERM "$_TRAIN_PID" 2>/dev/null || true
+    fi
+    _PRETRAIN_INTERRUPTED=1
+}
+trap '_handle_timelimit' USR1
+
+"${torchrun_cmd[@]}" &
+_TRAIN_PID=$!
+# 'wait' can return non-zero if torchrun was killed; use || true so set -e
+# doesn't abort the script before finetuning gets a chance to run.
+wait "$_TRAIN_PID" || true
+unset _TRAIN_PID
+
+if (( _PRETRAIN_INTERRUPTED )); then
+    echo "[timelimit] Pretraining was interrupted; attempting finetuning with latest checkpoint." >&2
+fi
 
 if [[ "$ARCHITECTURE" == "maelm" ]]; then
     FINETUNE_MODEL_TYPE=maelm

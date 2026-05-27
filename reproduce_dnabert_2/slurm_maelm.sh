@@ -9,6 +9,7 @@
 #SBATCH --gres=gpu:h100:1
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
+#SBATCH --signal=B:USR1@3600
 
 set -euo pipefail
 
@@ -23,4 +24,4 @@ if [[ ! -f "$COMMON_LAUNCHER" ]]; then
 	exit 1
 fi
 
-bash "$COMMON_LAUNCHER"
+exec bash "$COMMON_LAUNCHER"
