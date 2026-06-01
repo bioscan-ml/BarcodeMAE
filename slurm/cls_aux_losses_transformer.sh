@@ -91,7 +91,7 @@ AUX_LOSS_WARMUP=5        # ramp aux weight from 0→full over this many epochs
 
 # ── Names and paths ───────────────────────────────────────────────────────────
 RUN_NAME="run_k${K_MER}_${N_LAYERS}L_${N_HEADS}H_${ARCH}_cls_aux${AUX_LOSS_TYPE}_${TAXA}_km${K_CLASSES}x${M_PER_CLASS}"
-CHECKPOINT_DIR="./model_checkpoints/${DATASET}/${RUN_NAME}"
+CHECKPOINT_DIR="./model_checkpoints/${DATASET}/aux_4/${RUN_NAME}"
 CHECKPOINT="${CHECKPOINT_DIR}/checkpoint.pt"
 mkdir -p "${CHECKPOINT_DIR}"
 mkdir -p final_logs/${SLURM_ARRAY_JOB_ID}
