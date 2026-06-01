@@ -86,7 +86,8 @@ LR=0.00007
 # ── Aux loss hyperparameters ──────────────────────────────────────────────────
 AUX_LOSS_WEIGHT=0.1
 TRIPLET_MARGIN=0.3
-SUPCON_TEMP=0.07
+SUPCON_TEMP=0.15         # raised from 0.07; softer distribution helps sparse embedding spaces
+AUX_LOSS_WARMUP=5        # ramp aux weight from 0→full over this many epochs
 
 # ── Names and paths ───────────────────────────────────────────────────────────
 RUN_NAME="run_k${K_MER}_${N_LAYERS}L_${N_HEADS}H_${ARCH}_cls_aux${AUX_LOSS_TYPE}_${TAXA}_km${K_CLASSES}x${M_PER_CLASS}"
@@ -137,7 +138,8 @@ torchrun --standalone --nproc_per_node=1 barcodebert/pretraining.py \
     --aux-loss-type ${AUX_LOSS_TYPE} \
     --aux-loss-weight ${AUX_LOSS_WEIGHT} \
     --triplet-margin ${TRIPLET_MARGIN} \
-    --supcon-temperature ${SUPCON_TEMP}
+    --supcon-temperature ${SUPCON_TEMP} \
+    --aux-loss-warmup-epochs ${AUX_LOSS_WARMUP}
 
 echo "=========================================="
 echo "Job finished at: $(date)"

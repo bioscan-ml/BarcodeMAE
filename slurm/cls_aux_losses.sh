@@ -91,7 +91,8 @@ LR=0.00007
 # ── Aux loss hyperparameters (defaults) ───────────────────────────────────────
 AUX_LOSS_WEIGHT=0.1      # weight of aux loss term in total loss
 TRIPLET_MARGIN=0.3       # only used when AUX_LOSS_TYPE=triplet
-SUPCON_TEMP=0.07         # only used when AUX_LOSS_TYPE=supcon
+SUPCON_TEMP=0.15         # only used when AUX_LOSS_TYPE=supcon; 0.07 is too sharp for weak embeddings
+AUX_LOSS_WARMUP=5        # ramp aux weight from 0→full over this many epochs (0 = no warmup)
 
 # ── CLS taxonomy loss weight (BCE pair classifier from --enable-cls-taxonomy) ─
 # This is ON by default (0.1). Set to 0.0 to isolate only the aux loss.
@@ -160,7 +161,8 @@ torchrun --standalone --nproc_per_node=1 barcodebert/pretraining.py \
     --aux-loss-type ${AUX_LOSS_TYPE} \
     --aux-loss-weight ${AUX_LOSS_WEIGHT} \
     --triplet-margin ${TRIPLET_MARGIN} \
-    --supcon-temperature ${SUPCON_TEMP}
+    --supcon-temperature ${SUPCON_TEMP} \
+    --aux-loss-warmup-epochs ${AUX_LOSS_WARMUP}
 
 echo "=========================================="
 echo "Job finished at: $(date)"

@@ -1600,6 +1600,9 @@ def train_one_epoch(
 
                 if aux_loss is not None:
                     aux_weight = getattr(config, "aux_loss_weight", 0.1)
+                    warmup_epochs = getattr(config, "aux_loss_warmup_epochs", 0)
+                    if warmup_epochs > 0:
+                        aux_weight = aux_weight * min(1.0, (epoch - 1) / warmup_epochs)
                     loss = loss + aux_weight * aux_loss
 
         # Keep aliases for backward compatibility in logging
@@ -1771,8 +1774,11 @@ def train_one_epoch(
                         num_cls_taxonomy_pairs, num_cls_same_pairs, num_cls_diff_pairs,
                     )
                 if aux_loss is not None:
-                    log_msg += " AuxLoss({}):{:7.4f}".format(
-                        getattr(config, "aux_loss_type", "?"), aux_loss.item()
+                    _aux_w = getattr(config, "aux_loss_weight", 0.1)
+                    _warmup = getattr(config, "aux_loss_warmup_epochs", 0)
+                    _eff_w = _aux_w * min(1.0, (epoch - 1) / _warmup) if _warmup > 0 else _aux_w
+                    log_msg += " AuxLoss({}):{:7.4f}(w={:.3f})".format(
+                        getattr(config, "aux_loss_type", "?"), aux_loss.item(), _eff_w
                     )
                     if aux_metrics is not None:
                         if "frac_active" in aux_metrics:
@@ -1807,8 +1813,11 @@ def train_one_epoch(
                         num_cls_taxonomy_pairs, num_cls_same_pairs, num_cls_diff_pairs,
                     )
                 if aux_loss is not None:
-                    log_msg += " AuxLoss({}):{:7.4f}".format(
-                        getattr(config, "aux_loss_type", "?"), aux_loss.item()
+                    _aux_w = getattr(config, "aux_loss_weight", 0.1)
+                    _warmup = getattr(config, "aux_loss_warmup_epochs", 0)
+                    _eff_w = _aux_w * min(1.0, (epoch - 1) / _warmup) if _warmup > 0 else _aux_w
+                    log_msg += " AuxLoss({}):{:7.4f}(w={:.3f})".format(
+                        getattr(config, "aux_loss_type", "?"), aux_loss.item(), _eff_w
                     )
                 log_msg += " LR: {}".format(scheduler.get_last_lr())
                 print(log_msg, flush=True)
@@ -2974,6 +2983,15 @@ def get_parser():
         default=0.07,
         type=float,
         help="Temperature for supervised contrastive loss. Default: %(default)s",
+    )
+    group.add_argument(
+        "--aux-loss-warmup-epochs",
+        "--aux_loss_warmup_epochs",
+        dest="aux_loss_warmup_epochs",
+        default=0,
+        type=int,
+        help="Linearly ramp aux loss weight from 0 to --aux-loss-weight over this many epochs. "
+             "0 = no warmup (full weight from epoch 1). Default: %(default)s",
     )
 
     return parser
