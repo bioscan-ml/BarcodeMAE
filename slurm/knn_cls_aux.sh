@@ -71,7 +71,7 @@ RUN_NAME="run_k${K_MER}_${N_LAYERS}L_${N_HEADS}H_${N_DEC_LAYERS}DL_${N_DEC_HEADS
 CKPT_ROOT="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE/model_checkpoints/${DATASET}"
 # Use the encoder-only checkpoint saved by --checkpoint_maelm
 # NOTE: pretraining jobs for this batch saved under aux_3/ subdirectory
-CHECKPOINT="${CKPT_ROOT}/aux_3/${RUN_NAME}/checkpoint_encoder.pt"
+CHECKPOINT="${CKPT_ROOT}/aux_4/${RUN_NAME}/checkpoint_encoder.pt"
 DATA_DIR="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE/data/${DATASET}"
 
 mkdir -p final_logs/${SLURM_ARRAY_JOB_ID}

@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=knn_cls_aux_transformer
+#SBATCH --job-name=knn_triplet_sweep
 #SBATCH --account=def-lila-ab
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
@@ -7,7 +7,7 @@
 #SBATCH --gres=gpu:h100:1
 #SBATCH --mem=64G
 #SBATCH --time=01:00:00
-#SBATCH --array=0-2%3
+#SBATCH --array=0-4%5
 #SBATCH --output=final_logs/%A/%A_%a.out
 #SBATCH --error=final_logs/%A/%A_%a.err
 
@@ -18,7 +18,6 @@ echo "Node: $SLURMD_NODENAME"
 echo "Starting at: $(date)"
 echo "=========================================="
 
-# Load modules
 module load StdEnv/2023
 module load cudacore/.12.6.3
 module load python/3.11
@@ -51,34 +50,42 @@ if torch.cuda.is_available():
     print(f'GPU memory: {props.total_memory / 1024**3:.1f} GB')
 "
 
-# ── Array index → aux loss type (must match cls_aux_losses_transformer.sh) ────
-AUX_LOSS_TYPES=("triplet" "supcon" "ce")
-AUX_LOSS_TYPE="${AUX_LOSS_TYPES[$SLURM_ARRAY_TASK_ID]}"
+# ── Must match triplet_sweep.sh exactly ──────────────────────────────────────
+#  task 0: k=8,  margin=0.5
+#  task 1: k=16, margin=0.3
+#  task 2: k=16, margin=0.5
+#  task 3: k=8,  margin=0.0
+#  task 4: k=16, margin=0.0
+K_VALUES=(8 16 16 8 16)
+M_VALUES=(4  4  4  4  4)
+MARGIN_VALUES=(0.5 0.3 0.5 0.0 0.0)
 
-# ── Checkpoint path (must mirror cls_aux_losses_transformer.sh naming) ────────
+K_CLASSES="${K_VALUES[$SLURM_ARRAY_TASK_ID]}"
+M_PER_CLASS="${M_VALUES[$SLURM_ARRAY_TASK_ID]}"
+TRIPLET_MARGIN="${MARGIN_VALUES[$SLURM_ARRAY_TASK_ID]}"
+MARGIN_STR=$(echo "${TRIPLET_MARGIN}" | tr '.' 'p')
+
 K_MER=6
 N_LAYERS=6
 N_HEADS=6
-ARCH="transformer"
+N_DEC_LAYERS=6
+N_DEC_HEADS=6
+ARCH="maelm"
 TAXA="genus"
-K_CLASSES=8
-M_PER_CLASS=4
 DATASET="BIOSCAN-5M"
 
-RUN_NAME="run_k${K_MER}_${N_LAYERS}L_${N_HEADS}H_${ARCH}_cls_aux${AUX_LOSS_TYPE}_${TAXA}_km${K_CLASSES}x${M_PER_CLASS}"
+RUN_NAME="run_k${K_MER}_${N_LAYERS}L_${N_HEADS}H_${N_DEC_LAYERS}DL_${N_DEC_HEADS}DH_${ARCH}_cls_auxtriplet_${TAXA}_km${K_CLASSES}x${M_PER_CLASS}_mg${MARGIN_STR}"
 CKPT_ROOT="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE/model_checkpoints/${DATASET}"
-# Transformer saves a single checkpoint.pt (no separate encoder file)
-CHECKPOINT="${CKPT_ROOT}/aux_4/${RUN_NAME}/checkpoint.pt"
+CHECKPOINT="${CKPT_ROOT}/aux_sweep_triplet/${RUN_NAME}/checkpoint_encoder.pt"
 DATA_DIR="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE/data/${DATASET}"
 
 mkdir -p final_logs/${SLURM_ARRAY_JOB_ID}
 
 echo "=========================================="
-echo "Evaluating aux loss type: ${AUX_LOSS_TYPE}"
+echo "Run: ${RUN_NAME}"
 echo "Checkpoint: ${CHECKPOINT}"
 echo "=========================================="
 
-# Abort early if checkpoint doesn't exist
 if [ ! -f "${CHECKPOINT}" ]; then
     echo "ERROR: checkpoint not found at ${CHECKPOINT}"
     exit 1
@@ -86,9 +93,6 @@ fi
 
 OVERALL_EXIT=0
 
-# ── Representation types to evaluate ─────────────────────────────────────────
-# cls            — CLS token at position 0 (what the aux loss was trained on)
-# tokens_with_cls — mean(CLS + sequence tokens) — useful comparison baseline
 REP_TYPES=("cls" "tokens_with_cls")
 
 for REP_TYPE in "${REP_TYPES[@]}"; do
