@@ -8,7 +8,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 PROJECT_DIR=${PROJECT_DIR:-$SCRIPT_DIR}
 SHARDS_DIR=${SHARDS_DIR:-/scratch/${USER}/dnabert2_wds/shards_1.0}
-GUE_DATA_PATH=${GUE_DATA_PATH:-/scratch/${USER}/dnabert2_wds}
+if [[ -z "${GUE_DATA_PATH:-}" ]]; then
+    # Use the project-space GUE root (no scratch fallback).
+    _gue_default_home="/home/${USER}/projects/def-lila-ab/${USER}/reproduce_dnabert_2"
+    GUE_DATA_PATH="${_gue_default_home}"
+fi
 SPECIES_VOCAB=${SPECIES_VOCAB:-$SHARDS_DIR/species_vocab.json}
 CHECKPOINT_ROOT=${CHECKPOINT_ROOT:-/scratch/${USER}/MAE_checkpoints}
 LOG_ROOT=${LOG_ROOT:-/scratch/${USER}/MAE_logs}
@@ -217,6 +221,12 @@ fi
 
 if [[ ! -e "$FINETUNE_MODEL_PATH" ]]; then
     echo "Expected finetuning model path not found: $FINETUNE_MODEL_PATH"
+    exit 1
+fi
+
+if [[ ! -d "$GUE_DATA_PATH/GUE" ]]; then
+    echo "Expected GUE directory not found at: $GUE_DATA_PATH/GUE" >&2
+    echo "Set GUE_DATA_PATH to the directory that contains the GUE folder." >&2
     exit 1
 fi
 
