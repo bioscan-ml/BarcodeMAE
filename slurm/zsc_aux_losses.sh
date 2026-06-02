@@ -109,11 +109,11 @@ CHECKPOINTS=(
     "${SWEEP}/run_k6_6L_6H_6DL_6DH_maelm_cls_auxtriplet_genus_km16x4_mg0p5/checkpoint_encoder.pt"
     "${SWEEP}/run_k6_6L_6H_6DL_6DH_maelm_cls_auxtriplet_genus_km8x4_mg0p0/checkpoint_encoder.pt"
     "${SWEEP}/run_k6_6L_6H_6DL_6DH_maelm_cls_auxtriplet_genus_km16x4_mg0p0/checkpoint_encoder.pt"
-    "${SWEEP}/run_k6_6L_6H_transformer_cls_auxtriplet_genus_km8x4_mg0p5/checkpoint.pt"
-    "${SWEEP}/run_k6_6L_6H_transformer_cls_auxtriplet_genus_km16x4_mg0p3/checkpoint.pt"
-    "${SWEEP}/run_k6_6L_6H_transformer_cls_auxtriplet_genus_km16x4_mg0p5/checkpoint.pt"
-    "${SWEEP}/run_k6_6L_6H_transformer_cls_auxtriplet_genus_km8x4_mg0p0/checkpoint.pt"
-    "${SWEEP}/run_k6_6L_6H_transformer_cls_auxtriplet_genus_km16x4_mg0p0/checkpoint.pt"
+    "${CKPT_ROOT}/aux_4/run_k6_6L_6H_transformer_cls_auxtriplet_genus_km8x4_mg0p5/checkpoint.pt"
+    "${CKPT_ROOT}/aux_4/run_k6_6L_6H_transformer_cls_auxtriplet_genus_km16x4_mg0p3/checkpoint.pt"
+    "${CKPT_ROOT}/aux_4/run_k6_6L_6H_transformer_cls_auxtriplet_genus_km16x4_mg0p5/checkpoint.pt"
+    "${CKPT_ROOT}/aux_4/run_k6_6L_6H_transformer_cls_auxtriplet_genus_km8x4_mg0p0/checkpoint.pt"
+    "${CKPT_ROOT}/aux_4/run_k6_6L_6H_transformer_cls_auxtriplet_genus_km16x4_mg0p0/checkpoint.pt"
 )
 
 RUN_NAME="${RUN_NAMES[$SLURM_ARRAY_TASK_ID]}"

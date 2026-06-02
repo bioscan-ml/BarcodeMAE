@@ -74,7 +74,7 @@ DATASET="BIOSCAN-5M"
 
 RUN_NAME="run_k${K_MER}_${N_LAYERS}L_${N_HEADS}H_${ARCH}_cls_auxtriplet_${TAXA}_km${K_CLASSES}x${M_PER_CLASS}_mg${MARGIN_STR}"
 CKPT_ROOT="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE/model_checkpoints/${DATASET}"
-CHECKPOINT="${CKPT_ROOT}/aux_sweep_triplet/${RUN_NAME}/checkpoint.pt"
+CHECKPOINT="${CKPT_ROOT}/aux_4/${RUN_NAME}/checkpoint.pt"
 DATA_DIR="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE/data/${DATASET}"
 
 mkdir -p final_logs/${SLURM_ARRAY_JOB_ID}
