@@ -9,7 +9,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR=${PROJECT_DIR:-$SCRIPT_DIR}
 SHARDS_DIR=${SHARDS_DIR:-/scratch/${USER}/dnabert2_wds/shards_1.0}
 if [[ -z "${GUE_DATA_PATH:-}" ]]; then
-    # Use the project-space GUE root (no scratch fallback).
     _gue_default_home="/home/${USER}/projects/def-lila-ab/${USER}/reproduce_dnabert_2"
     GUE_DATA_PATH="${_gue_default_home}"
 fi
@@ -56,6 +55,13 @@ if ! command -v python >/dev/null 2>&1; then
     exit 1
 fi
 
+# Avoid stale submit-shell GPU masks when SLURM did not provide a mapping.
+# This can happen when users export CUDA_VISIBLE_DEVICES before calling sbatch.
+if [[ -n "${CUDA_VISIBLE_DEVICES:-}" && -z "${SLURM_STEP_GPUS:-}" && -z "${SLURM_JOB_GPUS:-}" ]]; then
+    echo "[preflight] Unsetting inherited CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}" >&2
+    unset CUDA_VISIBLE_DEVICES
+fi
+
 # Preflight: distinguish between missing GPU allocation and CPU-only PyTorch builds.
 python - <<'PY'
 import os
@@ -66,8 +72,16 @@ print(f"[preflight] python={sys.executable}")
 print(f"[preflight] torch={torch.__version__}")
 print(f"[preflight] torch.version.cuda={torch.version.cuda}")
 print(f"[preflight] CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')}")
+print(f"[preflight] SLURM_JOB_GPUS={os.environ.get('SLURM_JOB_GPUS', '<unset>')}")
+print(f"[preflight] SLURM_STEP_GPUS={os.environ.get('SLURM_STEP_GPUS', '<unset>')}")
 print(f"[preflight] cuda_available={torch.cuda.is_available()}")
 print(f"[preflight] cuda_device_count={torch.cuda.device_count()}")
+
+try:
+    if torch.cuda.device_count() > 0:
+        _ = torch.cuda.get_device_name(0)
+except Exception as e:
+    print(f"[preflight] cuda_device_query_error={e}")
 
 if not torch.cuda.is_available():
     if torch.version.cuda is None:
@@ -81,7 +95,10 @@ if not torch.cuda.is_available():
     )
 PY
 
-export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+# Respect SLURM-provided visibility; do not force a default GPU index.
+if [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]; then
+    export CUDA_VISIBLE_DEVICES
+fi
 export NCCL_DEBUG=${NCCL_DEBUG:-INFO}
 export NCCL_IB_DISABLE=${NCCL_IB_DISABLE:-1}
 export PYTHONUNBUFFERED=1

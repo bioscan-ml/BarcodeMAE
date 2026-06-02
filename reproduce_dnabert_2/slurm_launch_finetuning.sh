@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH --account=def-lila-ab
 #SBATCH --job-name=dnabert2_finetune_24h
-#SBATCH --output=dnabert2_finetune_24h_%j.out
-#SBATCH --error=dnabert2_finetune_24h_%j.err
+#SBATCH --output=finetune_24h_%j.out
+#SBATCH --error=finetune_24h_%j.err
 #SBATCH --mem=16G
-#SBATCH --time=0-12:00:00
+#SBATCH --time=0-5:00:00
 #SBATCH --cpus-per-task=8
 #SBATCH --gpus=nvidia_h100_80gb_hbm3_2g.20gb:1
 #SBATCH --nodes=1
