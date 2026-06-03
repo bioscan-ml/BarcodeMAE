@@ -152,11 +152,20 @@ echo "Checkpoint dir: $CHECKPOINT_DIR"
 echo "Log dir: $LOG_DIR"
 echo "------------------------------------------------------"
 
+# Derive torchrun local process count from allocated GPUs/tasks on this node.
+if [[ -n "${SLURM_GPUS_ON_NODE:-}" && "${SLURM_GPUS_ON_NODE}" =~ ^[0-9]+$ ]]; then
+    NPROC_PER_NODE="$SLURM_GPUS_ON_NODE"
+elif [[ -n "${SLURM_NTASKS_PER_NODE:-}" && "${SLURM_NTASKS_PER_NODE}" =~ ^[0-9]+$ ]]; then
+    NPROC_PER_NODE="$SLURM_NTASKS_PER_NODE"
+else
+    NPROC_PER_NODE=1
+fi
+
 torchrun_cmd=(
     torchrun
-    --nproc_per_node=1
-    --nnodes=1
-    --node_rank=0
+    --nproc_per_node="$NPROC_PER_NODE"
+    --nnodes="${SLURM_JOB_NUM_NODES:-1}"
+    --node_rank="${SLURM_NODEID:-0}"
     --master_addr="$MASTER_ADDR"
     --master_port="$MASTER_PORT"
     main_train.py

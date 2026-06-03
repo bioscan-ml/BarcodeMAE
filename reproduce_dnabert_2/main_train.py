@@ -187,10 +187,15 @@ def make_dataset(
     shuffle_buf: int = 10_000,
     resampled: bool = False,
     world_size: int = 1,
+    rank: int = 0,
     require_label: bool = False,
 ):
     if world_size > 1:
-        ds = wds.WebDataset(pattern, resampled=resampled, nodesplitter=wds.shardlists.split_by_node)
+        if isinstance(pattern, (list, tuple)):
+            pattern = list(pattern)[rank::world_size]
+            if not pattern:
+                raise ValueError(f"No shards assigned to rank {rank} out of world_size={world_size}")
+        ds = wds.WebDataset(pattern, resampled=resampled, shardshuffle=True)
     else:
         ds = wds.WebDataset(pattern, resampled=resampled, shardshuffle=True)
 
@@ -268,7 +273,7 @@ def balanced_batch_pipeline(src, k: int, m: int, batch_size: int, buffer_size: i
         )
 
 
-def setup_data_loader(config: TrainingConfig, ddp_world_size: int, device: str,
+def setup_data_loader(config: TrainingConfig, ddp_world_size: int, rank: int, device: str,
                       master_process: bool, resolved_shards):
     assert config.total_batch_size % (config.batch_size * ddp_world_size) == 0
     grad_accum_steps = config.total_batch_size // (config.batch_size * ddp_world_size)
@@ -282,6 +287,7 @@ def setup_data_loader(config: TrainingConfig, ddp_world_size: int, device: str,
         config.shuffle_buffer,
         resampled=True,
         world_size=ddp_world_size,
+        rank=rank,
         require_label=(config.k_classes > 0),
     )
     cpu_workers = min(get_num_cpu_available(), config.num_workers)
@@ -726,11 +732,12 @@ def train(config: TrainingConfig):
             config.shuffle_buffer,
             resampled=True,
             world_size=world_size,
+            rank=rank,
             require_label=True,
         )
         train_loader = balanced_batch_pipeline(iter(raw_ds), k=k, m=m, batch_size=config.batch_size)
     else:
-        train_loader, grad_accum_steps = setup_data_loader(config, world_size, device, master, resolved_shards)
+        train_loader, grad_accum_steps = setup_data_loader(config, world_size, rank, device, master, resolved_shards)
 
     # Model
     model, original_model, dnabert_config = create_model(config, device, ddp, local_rank)
@@ -783,6 +790,7 @@ def train(config: TrainingConfig):
                     config.shuffle_buffer,
                     resampled=True,
                     world_size=world_size,
+                    rank=rank,
                     require_label=(config.k_classes > 0),
                 )
                 if config.k_classes > 0:
@@ -791,7 +799,7 @@ def train(config: TrainingConfig):
                         batch_size=config.batch_size
                     )
                 else:
-                    train_loader, _ = setup_data_loader(config, world_size, device, master, resolved_shards)
+                    train_loader, _ = setup_data_loader(config, world_size, rank, device, master, resolved_shards)
                 batch = next(train_loader)
 
             masked_input, att_mask, targets, mask_positions, species_labels = process_batch_mlm(batch, config)
