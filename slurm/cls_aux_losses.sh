@@ -100,7 +100,7 @@ CLS_TAXA_LOSS_W=0.1
 
 # ── Names and paths ───────────────────────────────────────────────────────────
 RUN_NAME="run_k${K_MER}_${N_LAYERS}L_${N_HEADS}H_${N_DEC_LAYERS}DL_${N_DEC_HEADS}DH_${ARCH}_cls_aux${AUX_LOSS_TYPE}_${TAXA}_km${K_CLASSES}x${M_PER_CLASS}"
-CHECKPOINT_DIR="./model_checkpoints/${DATASET}/aux_4/${RUN_NAME}"
+CHECKPOINT_DIR="./model_checkpoints/${DATASET}/aux_sweep_triplet/${RUN_NAME}"
 CHECKPOINT="${CHECKPOINT_DIR}/checkpoint.pt"
 CHECKPOINT_ENCODER="${CHECKPOINT_DIR}/checkpoint_encoder.pt"
 mkdir -p "${CHECKPOINT_DIR}"
