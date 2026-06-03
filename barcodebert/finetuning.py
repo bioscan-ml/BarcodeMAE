@@ -1296,7 +1296,7 @@ def get_parser():
         "--representation_type",
         dest="representation_type",
         default="tokens",
-        choices=["tokens", "jumbo_avg", "jumbo", "cls"],
+        choices=["tokens", "tokens_with_cls", "jumbo_avg", "jumbo", "cls"],
         help=(
             "How to extract the embedding for the classification head. "
             "'tokens': mean-pool sequence tokens (default). "
