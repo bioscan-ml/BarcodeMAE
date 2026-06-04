@@ -155,11 +155,19 @@ echo "------------------------------------------------------"
 # Derive torchrun local process count from allocated GPUs/tasks on this node.
 if [[ -n "${SLURM_GPUS_ON_NODE:-}" && "${SLURM_GPUS_ON_NODE}" =~ ^[0-9]+$ ]]; then
     NPROC_PER_NODE="$SLURM_GPUS_ON_NODE"
+elif [[ -n "${SLURM_STEP_GPUS:-}" ]]; then
+    # Common format: "0,1,2,3"
+    NPROC_PER_NODE=$(( $(awk -F',' '{print NF}' <<<"$SLURM_STEP_GPUS") ))
+elif [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]; then
+    # Fallback when SLURM encodes GPU allocation via CUDA visibility mask.
+    NPROC_PER_NODE=$(( $(awk -F',' '{print NF}' <<<"$CUDA_VISIBLE_DEVICES") ))
 elif [[ -n "${SLURM_NTASKS_PER_NODE:-}" && "${SLURM_NTASKS_PER_NODE}" =~ ^[0-9]+$ ]]; then
     NPROC_PER_NODE="$SLURM_NTASKS_PER_NODE"
 else
     NPROC_PER_NODE=1
 fi
+
+echo "[launcher] NPROC_PER_NODE=$NPROC_PER_NODE (SLURM_GPUS_ON_NODE=${SLURM_GPUS_ON_NODE:-<unset>} SLURM_STEP_GPUS=${SLURM_STEP_GPUS:-<unset>} CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<unset>})"
 
 torchrun_cmd=(
     torchrun

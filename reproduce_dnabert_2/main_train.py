@@ -195,7 +195,12 @@ def make_dataset(
             pattern = list(pattern)[rank::world_size]
             if not pattern:
                 raise ValueError(f"No shards assigned to rank {rank} out of world_size={world_size}")
-        ds = wds.WebDataset(pattern, resampled=resampled, shardshuffle=True)
+        ds = wds.WebDataset(
+            pattern,
+            resampled=resampled,
+            nodesplitter=wds.shardlists.split_by_node,
+            shardshuffle=True,
+        )
     else:
         ds = wds.WebDataset(pattern, resampled=resampled, shardshuffle=True)
 
