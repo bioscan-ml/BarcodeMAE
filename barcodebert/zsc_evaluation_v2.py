@@ -198,7 +198,7 @@ def run(config):
     print(f"Total time: {time.time() - t_start:.1f}s")
 
     model_name = os.path.join(*os.path.split(config.pretrained_checkpoint_path)[-2:])
-    with open("ZSC_RESULTS.txt", "a") as f:
+    with open(getattr(config, "results_file", "ZSC_RESULTS.txt"), "a") as f:
         f.write(f"\n{config.run_name}_{model_name}_{rep_type}\t{ami:.4f}")
 
     if config.log_wandb:
@@ -246,6 +246,14 @@ def get_parser():
         choices=["tokens", "tokens_with_cls", "cls", "jumbo", "jumbo_avg",
                  "all_tokens", "tokens_with_registers", "all_with_registers"],
         help="How to extract the sequence embedding from the model",
+    )
+    group.add_argument(
+        "--results-file",
+        "--results_file",
+        dest="results_file",
+        default="ZSC_RESULTS.txt",
+        type=str,
+        help="File to append ZSC AMI results to. Default: %(default)s",
     )
 
     group = parser.add_argument_group("ZSC parameters")

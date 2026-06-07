@@ -251,7 +251,7 @@ def run(config):
     print(f"\nThe code finished after: {int(hour)}:{int(minutes):02d}:{seconds:02.0f} (hh:mm:ss)\n")
 
     model_name = os.path.join(*os.path.split(config.pretrained_checkpoint_path)[-2:])
-    with open("KNN_RESULTS.txt", "a") as f:
+    with open(getattr(config, "results_file", "KNN_RESULTS.txt"), "a") as f:
         for k, results in all_results.items():
             acc = results["Unseen"]["accuracy"]
             f.write(f"\n{config.run_name}_{model_name}_k{k}\t {acc:.4f}")
@@ -385,6 +385,14 @@ def get_parser():
             "'all_tokens' (average of jumbo + sequence tokens). "
             "Default: %(default)s"
         ),
+    )
+    group.add_argument(
+        "--results-file",
+        "--results_file",
+        dest="results_file",
+        default="KNN_RESULTS.txt",
+        type=str,
+        help="File to append KNN accuracy results to. Default: %(default)s",
     )
 
     return parser
