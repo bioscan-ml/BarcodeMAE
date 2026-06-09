@@ -673,11 +673,14 @@ def run(config):
         slurm_array_job_id = os.environ.get("SLURM_ARRAY_JOB_ID")
         slurm_array_task_id = os.environ.get("SLURM_ARRAY_TASK_ID")
         if slurm_array_job_id is not None:
-            # We're in a SLURM job array - use array job ID as run_id so all tasks share the same run
-            config.run_id = f"slurm_array_{slurm_array_job_id}"
+            # Include task ID so each array task gets its own wandb run
+            if slurm_array_task_id is not None:
+                config.run_id = f"slurm_{slurm_array_job_id}_t{slurm_array_task_id}"
+            else:
+                config.run_id = f"slurm_{slurm_array_job_id}"
             if config.global_rank == 0:
                 print(f"SLURM job array detected: Array Job ID={slurm_array_job_id}, Task ID={slurm_array_task_id}")
-                print(f"All tasks in this array will log to wandb run_id: {config.run_id}")
+                print(f"wandb run_id: {config.run_id}")
 
     # If we're using wandb, initialize the run, or resume it if the job was preempted.
     if config.log_wandb and config.global_rank == 0:

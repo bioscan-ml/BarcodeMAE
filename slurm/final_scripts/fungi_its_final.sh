@@ -65,7 +65,7 @@ AUX_TASK="${AUX_TASKS[$SLURM_ARRAY_TASK_ID]}"
 
 # ── Fixed pretraining config ──────────────────────────────────────────────────
 DATASET="ITS-5M"
-DATA_DIR="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE/data/${DATASET}"
+DATA_DIR="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE_final/BarcodeMAE/data/${DATASET}"
 K_MER=6; STRIDE=6; N_LAYERS=6; N_HEADS=6; N_DEC_LAYERS=6; N_DEC_HEADS=6
 BATCH_SIZE=128; LR=0.00007; WD=0.00001
 MASKED_LOSS_WEIGHT=0.999; MASK_TOKEN_RATIO=1.0; RANDOM_TOKEN_RATIO=0.0
@@ -74,7 +74,7 @@ K_CLASSES=16; M_PER_CLASS=4; NUM_PAIRS=128; TAXA="genus"
 TRIPLET_MARGIN=0.0; CLS_TAXA_LOSS_W=0.1
 
 # ── Fixed finetuning config ───────────────────────────────────────────────────
-FT_TAXA="species"; FT_LR=0.0007; FT_EPOCHS=12; FT_WD=0.00001; FT_BATCH=64
+FT_TAXA="species"; FT_LR=0.00008; FT_EPOCHS=12; FT_WD=0.00001; FT_BATCH=64
 
 # ── Naming ────────────────────────────────────────────────────────────────────
 [ "$HAS_CLS_VAL" = "no" ] && CLS_LABEL="nocls" || CLS_LABEL="cls_${AUX_TASK}"
@@ -121,14 +121,18 @@ if [ "$HAS_CLS_VAL" = "yes" ]; then
     esac
 fi
 
-# ── Pretraining ───────────────────────────────────────────────────────────────
-echo "=== PRETRAINING ==="
-torchrun --standalone --nproc_per_node=1 barcodebert/pretraining.py "${PRETRAIN_ARGS[@]}"
-[ $? -ne 0 ] && echo "ERROR: Pretraining failed" && exit 1
-echo "Pretraining done at: $(date)"
-
-# ── Finetuning checkpoint ─────────────────────────────────────────────────────
+# ── Pretraining (skip if checkpoint already exists) ───────────────────────────
 [ "${ARCH}" = "maelm" ] && FT_CKPT="${CHECKPOINT_ENC}" || FT_CKPT="${CHECKPOINT}"
+
+if [ -f "${FT_CKPT}" ]; then
+    echo "=== PRETRAINING SKIPPED (checkpoint exists: ${FT_CKPT}) ==="
+else
+    echo "=== PRETRAINING ==="
+    torchrun --standalone --nproc_per_node=1 barcodebert/pretraining.py "${PRETRAIN_ARGS[@]}"
+    [ $? -ne 0 ] && echo "ERROR: Pretraining failed" && exit 1
+    echo "Pretraining done at: $(date)"
+fi
+
 [ ! -f "${FT_CKPT}" ] && echo "ERROR: no finetuning checkpoint at ${FT_CKPT}" && exit 1
 
 [ "$HAS_CLS_VAL" = "no" ] && FT_REP_TYPES=("tokens") || FT_REP_TYPES=("tokens" "cls" "tokens_with_cls")

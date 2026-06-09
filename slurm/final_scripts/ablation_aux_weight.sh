@@ -78,7 +78,11 @@ AUX_WEIGHT="${WEIGHTS[$SLURM_ARRAY_TASK_ID]}"
 
 # ── Dataset (overridable via --export=DATASET=...) ────────────────────────────
 DATASET="${DATASET:-BIOSCAN-5M}"
-DATA_DIR="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE/data/${DATASET}"
+if [ "${DATASET}" = "ITS-5M" ]; then
+    DATA_DIR="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE_final/BarcodeMAE/data/${DATASET}"
+else
+    DATA_DIR="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE/data/${DATASET}"
+fi
 
 # ── Fixed config ──────────────────────────────────────────────────────────────
 K_MER=6; STRIDE=6; N_LAYERS=6; N_HEADS=6; N_DEC_LAYERS=6; N_DEC_HEADS=6
@@ -165,7 +169,7 @@ if [ "${DATASET}" = "BIOSCAN-5M" ]; then
 
 else
     # ── Finetuning (ITS-5M) ───────────────────────────────────────────────────
-    FT_TAXA="species"; FT_LR=0.0007; FT_EPOCHS=12; FT_WD=0.00001; FT_BATCH=64
+    FT_TAXA="species"; FT_LR=0.00008; FT_EPOCHS=12; FT_WD=0.00001; FT_BATCH=64
     for REPR in "tokens" "cls" "tokens_with_cls"; do
         FT_RUN="${RUN_NAME}_ft_${FT_TAXA}_${REPR}_ep${FT_EPOCHS}"
         FT_REPR_DIR="${CKPT_BASE}/finetune/${REPR}"
