@@ -60,13 +60,17 @@ def triplet_loss_batch_hard(
     labels: torch.Tensor,
     margin: float = 0.3,
     distance: str = "cosine",
+    mining: str = "batch_hard",
 ) -> tuple:
     """
-    Batch-hard triplet loss (Hermans et al., 2017).
+    Batch triplet loss (Hermans et al., 2017), with either batch-hard or
+    uniform-random mining of the positive/negative per anchor.
 
     For every valid anchor:
-      - hardest positive  = same-label sample with the LARGEST distance
-      - hardest negative  = different-label sample with the SMALLEST distance
+      - mining="batch_hard": positive = same-label sample with the LARGEST
+        distance; negative = different-label sample with the SMALLEST distance.
+      - mining="random": positive/negative are each drawn uniformly at random
+        from the valid same-label / different-label candidates.
 
     Parameters
     ----------
@@ -74,6 +78,7 @@ def triplet_loss_batch_hard(
     labels     : (B,)  integer labels; values < 0 are treated as unlabelled and skipped
     margin     : additive margin (soft-margin variant uses softplus instead)
     distance   : "cosine" or "euclidean"
+    mining     : "batch_hard" or "random"
 
     Returns
     -------
@@ -81,6 +86,8 @@ def triplet_loss_batch_hard(
     metrics : dict with keys "loss", "frac_active" (triplets with loss > 0),
               "mean_pos_dist", "mean_neg_dist"  — or None
     """
+    if mining not in ("batch_hard", "random"):
+        raise ValueError(f"mining must be 'batch_hard' or 'random', got {mining!r}")
     valid = labels >= 0
     if valid.sum() < 2:
         return None, None
@@ -115,18 +122,35 @@ def triplet_loss_batch_hard(
     if valid_anchor.sum() == 0:
         return None, None
 
-    # Hardest positive: max distance among same-label pairs
-    # Replace invalid positions with -inf so max ignores them
-    pos_dist_mat = dist.masked_fill(~same_mask, float("-inf"))
-    hardest_pos_dist = pos_dist_mat[valid_anchor].max(dim=1).values   # (A,)
+    if mining == "batch_hard":
+        # Hardest positive: max distance among same-label pairs
+        # Replace invalid positions with -inf so max ignores them
+        pos_dist_mat = dist.masked_fill(~same_mask, float("-inf"))
+        anchor_pos_dist = pos_dist_mat[valid_anchor].max(dim=1).values   # (A,)
 
-    # Hardest negative: min distance among different-label pairs
-    # Replace invalid positions with +inf so min ignores them
-    neg_dist_mat = dist.masked_fill(~diff_mask, float("inf"))
-    hardest_neg_dist = neg_dist_mat[valid_anchor].min(dim=1).values   # (A,)
+        # Hardest negative: min distance among different-label pairs
+        # Replace invalid positions with +inf so min ignores them
+        neg_dist_mat = dist.masked_fill(~diff_mask, float("inf"))
+        anchor_neg_dist = neg_dist_mat[valid_anchor].min(dim=1).values   # (A,)
+    else:
+        # Uniform-random mining: for each anchor, pick one positive and one
+        # negative uniformly at random from its valid candidates. Sampled via
+        # Gumbel noise added to a masked score so it works batched on GPU.
+        gumbel_pos = -torch.log(-torch.log(torch.rand_like(dist) + 1e-20) + 1e-20)
+        gumbel_neg = -torch.log(-torch.log(torch.rand_like(dist) + 1e-20) + 1e-20)
+
+        pos_pick_score = gumbel_pos.masked_fill(~same_mask, float("-inf"))
+        neg_pick_score = gumbel_neg.masked_fill(~diff_mask, float("-inf"))
+
+        pos_idx = pos_pick_score[valid_anchor].argmax(dim=1)   # (A,)
+        neg_idx = neg_pick_score[valid_anchor].argmax(dim=1)   # (A,)
+
+        anchor_dist = dist[valid_anchor]                        # (A, N)
+        anchor_pos_dist = anchor_dist.gather(1, pos_idx.unsqueeze(1)).squeeze(1)  # (A,)
+        anchor_neg_dist = anchor_dist.gather(1, neg_idx.unsqueeze(1)).squeeze(1)  # (A,)
 
     # Triplet loss with soft margin (smoother gradients than hard hinge)
-    raw = hardest_pos_dist - hardest_neg_dist + margin
+    raw = anchor_pos_dist - anchor_neg_dist + margin
     loss = F.softplus(raw).mean()
 
     with torch.no_grad():
@@ -134,8 +158,8 @@ def triplet_loss_batch_hard(
         metrics = {
             "loss": loss.item(),
             "frac_active": frac_active,
-            "mean_pos_dist": hardest_pos_dist.mean().item(),
-            "mean_neg_dist": hardest_neg_dist.mean().item(),
+            "mean_pos_dist": anchor_pos_dist.mean().item(),
+            "mean_neg_dist": anchor_neg_dist.mean().item(),
         }
 
     return loss, metrics

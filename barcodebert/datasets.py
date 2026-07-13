@@ -217,7 +217,20 @@ class DNADataset(Dataset):
             self.labels = df["species_index"].to_list()
             self.num_labels = 22_622
             # Load taxonomy labels if requested
-            if self.return_taxonomy_level:
+            if self.return_taxonomy_level == "bin":
+                # BIN (Barcode Index Number) is already integer-encoded in dna_bin_index;
+                # unlike the other taxonomy levels there's no "<level>_name" text column
+                # to factorize, so it's handled separately here.
+                if "dna_bin_index" in df.columns:
+                    bin_col = df["dna_bin_index"]
+                    unknown_mask = bin_col.isna()
+                    num_unknown = int(unknown_mask.sum())
+                    self.taxonomy_labels = bin_col.fillna(-1).astype(int).tolist()
+                    print(f"Taxonomy labels: {len(self.taxonomy_labels)} total, {num_unknown} marked as UNKNOWN (-1)")
+                else:
+                    print("Warning: Column 'dna_bin_index' not found. Using dummy labels.")
+                    self.taxonomy_labels = [0] * len(self.labels)
+            elif self.return_taxonomy_level:
                 taxonomy_column = f"{self.return_taxonomy_level}_name"
                 if taxonomy_column in df.columns:
                     # Replace empty strings and NaN with 'UNKNOWN'

@@ -166,6 +166,8 @@ def run(config):
     taxonomy_level = (
         config.taxonomy_level_for_classification if hasattr(config, "taxonomy_level_for_classification") else "genus"
     )
+    if taxonomy_level == "bin" and config.dataset_name != "BIOSCAN-5M":
+        raise ValueError("--taxonomy-level bin is only supported for --dataset BIOSCAN-5M.")
 
     # Check if CLS token taxonomy classification is enabled
     use_cls_token = config.use_cls_token if hasattr(config, "use_cls_token") else False
@@ -1591,6 +1593,7 @@ def train_one_epoch(
                         aux_loss, aux_metrics = triplet_loss_batch_hard(
                             aux_emb, genus_labels,
                             margin=getattr(config, "triplet_margin", 0.3),
+                            mining=getattr(config, "triplet_mining", "batch_hard"),
                         )
                     elif aux_loss_type == "supcon":
                         aux_loss, aux_metrics = supcon_loss(
@@ -2684,8 +2687,9 @@ def get_parser():
         dest="taxonomy_level_for_classification",
         type=str,
         default="genus",
-        choices=["phylum", "class", "order", "family", "genus", "species"],
-        help="Taxonomic level for binary classification task. Default: %(default)s",
+        choices=["phylum", "class", "order", "family", "genus", "species", "bin"],
+        help="Taxonomic level for the auxiliary/binary classification task. "
+             "'bin' (Barcode Index Number) is only supported for BIOSCAN-5M. Default: %(default)s",
     )
 
     group.add_argument(
@@ -2977,7 +2981,17 @@ def get_parser():
         dest="triplet_margin",
         default=0.3,
         type=float,
-        help="Margin for batch-hard triplet loss. Default: %(default)s",
+        help="Margin for triplet loss. Default: %(default)s",
+    )
+    group.add_argument(
+        "--triplet-mining",
+        "--triplet_mining",
+        dest="triplet_mining",
+        default="batch_hard",
+        choices=["batch_hard", "random"],
+        help="Positive/negative mining strategy for triplet loss. "
+             "batch_hard=hardest pos/neg per anchor, random=uniform sampling. "
+             "Default: %(default)s",
     )
     group.add_argument(
         "--supcon-temperature",

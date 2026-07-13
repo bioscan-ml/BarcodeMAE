@@ -1,15 +1,22 @@
 #!/usr/bin/env python
 """
-KNN evaluation with a RANDOMLY INITIALIZED BertModel encoder.
+KNN evaluation with a RANDOMLY INITIALIZED encoder (maelm or encoder-only/transformer).
 
 This script replicates knn_probing.py but skips loading a checkpoint.
 The model weights are random — useful as a baseline to confirm that
 pretrained models actually learn something meaningful.
 
+--arch maelm mirrors the encoder used inside MAELMModel during MAE
+pretraining (a plain BertModel, since the decoder never contributes to
+downstream embeddings). --arch transformer mirrors the encoder-only
+BertForTokenClassification used for vanilla (non-MAE) pretraining, with
+its token-classification head stripped to nn.Identity.
+
 Usage:
     python random_knn.py \
         --dataset BIOSCAN-5M \
         --data-dir ./BarcodeMAE/data/ \
+        --arch maelm \
         --k-mer 6 \
         --n-layers 6 \
         --n-heads 6 \
@@ -17,6 +24,7 @@ Usage:
         --taxon genus \
         --n-neighbors 1
 """
+
 
 import os
 import resource
@@ -31,7 +39,7 @@ import torch.optim
 from sklearn.neighbors import KNeighborsClassifier
 from torch import nn
 from torchtext.vocab import vocab as build_vocab_from_dict
-from transformers import BertConfig, BertModel
+from transformers import BertConfig, BertForTokenClassification, BertModel
 
 from barcodebert.datasets import KmerTokenizer, representations_from_df
 
@@ -42,8 +50,16 @@ def build_random_encoder(
     n_heads,
     hidden_size,
     max_position_embeddings,
+    arch="maelm",
 ):
-    """Build a randomly initialized BertModel (MAELM encoder architecture)."""
+    """Build a randomly initialized encoder.
+
+    arch="maelm" builds a plain BertModel, matching the encoder used inside
+    MAELMModel (the decoder never contributes to downstream embeddings, so it
+    is omitted here). arch="transformer" builds a BertForTokenClassification
+    with its classification head stripped to nn.Identity, matching the
+    encoder-only architecture used for vanilla (non-MAE) pretraining.
+    """
     bert_config = BertConfig(
         vocab_size=vocab_size,
         num_hidden_layers=n_layers,
@@ -52,7 +68,13 @@ def build_random_encoder(
         output_hidden_states=True,
         max_position_embeddings=max_position_embeddings,
     )
-    model = BertModel(bert_config)
+    if arch == "maelm":
+        model = BertModel(bert_config)
+    elif arch == "transformer":
+        model = BertForTokenClassification(bert_config)
+        model.classifier = nn.Identity()
+    else:
+        raise ValueError(f"Unknown arch: {arch!r}. Must be 'maelm' or 'transformer'.")
     model.eval()
     return model
 
@@ -83,7 +105,7 @@ def run(config):
 
     # ── Random model ──────────────────────────────────────────────────────────
     print(
-        f"Building randomly initialized BertModel: "
+        f"Building randomly initialized {config.arch} encoder: "
         f"layers={config.n_layers}, heads={config.n_heads}, "
         f"hidden={config.encoder_embed_dim}, vocab={vocab_size}"
     )
@@ -93,6 +115,7 @@ def run(config):
         n_heads=config.n_heads,
         hidden_size=config.encoder_embed_dim,
         max_position_embeddings=max_position_embeddings,
+        arch=config.arch,
     )
     model = model.to(device)
 
@@ -151,21 +174,33 @@ def run(config):
     for name, X_part, _ in partitions:
         neigh_dist[name], neigh_ind[name] = clf.kneighbors(X_part, n_neighbors=max_k)
 
+    all_results = {}  # k -> {partition -> metrics}
     for k in config.n_neighbors:
         print(f"\n{'='*50}\nk = {k}\n{'='*50}")
+        all_results[k] = {}
         for name, X_part, y_part in partitions:
             ind_k = neigh_ind[name][:, :k]
             neighbor_labels = clf._y[ind_k]
             majority_idx = np.array([np.bincount(row).argmax() for row in neighbor_labels])
             y_pred = clf.classes_[majority_idx]
 
-            acc = 100.0 * sklearn.metrics.accuracy_score(y_part, y_pred)
-            bal = 100.0 * sklearn.metrics.balanced_accuracy_score(y_part, y_pred)
-            f1_macro = 100.0 * sklearn.metrics.f1_score(y_part, y_pred, average="macro")
+            res = {
+                "accuracy": 100.0 * sklearn.metrics.accuracy_score(y_part, y_pred),
+                "accuracy-balanced": 100.0 * sklearn.metrics.balanced_accuracy_score(y_part, y_pred),
+                "f1-micro": 100.0 * sklearn.metrics.f1_score(y_part, y_pred, average="micro"),
+                "f1-macro": 100.0 * sklearn.metrics.f1_score(y_part, y_pred, average="macro"),
+                "f1-support": 100.0 * sklearn.metrics.f1_score(y_part, y_pred, average="weighted"),
+            }
+            all_results[k][name] = res
             print(f"\n{name} (k={k}):")
-            print(f"  accuracy ............. {acc:6.2f} %")
-            print(f"  accuracy-balanced .... {bal:6.2f} %")
-            print(f"  f1-macro ............. {f1_macro:6.2f} %")
+            for metric_name, v in res.items():
+                print(f"  {metric_name + ' ':.<24s} {v:6.2f} %")
+
+    model_name = f"random_{config.arch}"
+    with open(config.results_file, "a") as f:
+        for k, results in all_results.items():
+            acc = results["Unseen"]["accuracy"]
+            f.write(f"\n{config.run_name}_{model_name}_k{k}\t{acc:.4f}")
 
     total = time.time() - t0
     h, rem = divmod(total, 3600)
@@ -177,7 +212,7 @@ def get_parser():
     import argparse
 
     p = argparse.ArgumentParser(
-        description="KNN evaluation with a randomly initialized maelm-style BertModel encoder."
+        description="KNN evaluation with a randomly initialized (untrained) encoder."
     )
     # Dataset
     p.add_argument("--dataset", default="BIOSCAN-5M", choices=["BIOSCAN-5M", "CANADA-1.5M"])
@@ -185,6 +220,13 @@ def get_parser():
     p.add_argument("--taxon", default="genus")
 
     # Model architecture
+    p.add_argument(
+        "--arch",
+        default="maelm",
+        choices=["maelm", "transformer"],
+        help="maelm=plain BertModel (MAELM encoder), transformer=encoder-only "
+             "BertForTokenClassification with head stripped. Default: %(default)s",
+    )
     p.add_argument("--k-mer", "--k_mer", dest="k_mer", type=int, default=6)
     p.add_argument("--stride", type=int, default=1)
     p.add_argument("--max-len", "--max_len", dest="max_len", type=int, default=660)
@@ -204,6 +246,14 @@ def get_parser():
         dest="representation_type",
         default="tokens",
         choices=["tokens", "tokens_with_cls", "cls", "all_tokens"],
+    )
+    p.add_argument(
+        "--run-name", "--run_name", dest="run_name", default="random_knn",
+        help="Run name prefix for results file. Default: %(default)s",
+    )
+    p.add_argument(
+        "--results-file", "--results_file", dest="results_file", default="RANDOM_KNN_RESULTS.txt",
+        help="File to append KNN accuracy results to. Default: %(default)s",
     )
 
     return p
