@@ -5,6 +5,7 @@ import contextlib
 import math
 import os
 import shutil
+import subprocess
 import sys
 import time
 from datetime import datetime
@@ -46,6 +47,72 @@ from barcodebert.jumbo_transformer import create_jumbo_transformer_model
 from barcodebert.maelm_model import MAELMModel
 
 BASE_BATCH_SIZE = 128
+
+
+def run_epoch_knn_eval(config, epoch, eval_ckpt_path):
+    r"""
+    Run the full KNN evaluation (same script/metrics as a post-hoc
+    knn_probing.py / knn_its.py run, on the whole train + test data) against
+    the checkpoint just saved for this epoch, as a subprocess.
+
+    Non-fatal: a failure here is printed as a warning and pretraining
+    continues, since this is a monitoring aid (watch for overfitting epoch
+    by epoch), not part of the training objective.
+    """
+    if not eval_ckpt_path or not os.path.isfile(eval_ckpt_path):
+        print(f"Skipping epoch-{epoch} KNN eval: checkpoint not found at {eval_ckpt_path}")
+        return
+
+    run_tag = f"{config.run_name}_epoch{epoch}" if getattr(config, "run_name", None) else f"epoch{epoch}"
+    representation_type = getattr(config, "knn_eval_representation_type", "tokens")
+    neighbors = [str(k) for k in getattr(config, "knn_eval_neighbors", [1])]
+    metric = getattr(config, "knn_eval_metric", "cosine")
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+
+    if config.dataset_name == "ITS-5M":
+        script = os.path.join(script_dir, "knn_its.py")
+        results_file = getattr(config, "knn_eval_results_file", None) or "results_final/KNN_ITS_RESULTS_epochwise.txt"
+        cmd = [
+            sys.executable, script,
+            "--pretrained-checkpoint", eval_ckpt_path,
+            "--data-dir", config.data_dir,
+            "--run-name", f"knn_its_{run_tag}",
+            "--n-neighbors", *neighbors,
+            "--metric", metric,
+            "--representation-type", representation_type,
+            "--results-file", results_file,
+        ]
+    else:
+        script = os.path.join(script_dir, "knn_probing.py")
+        results_file = getattr(config, "knn_eval_results_file", None) or "results_final/KNN_RESULTS_epochwise.txt"
+        cmd = [
+            sys.executable, script,
+            "--pretrained-checkpoint", eval_ckpt_path,
+            "--dataset", config.dataset_name,
+            "--data-dir", config.data_dir,
+            "--representation_type", representation_type,
+            "--taxon", getattr(config, "knn_eval_taxon", "genus"),
+            "--n-neighbors", *neighbors,
+            "--run-name", f"knn_{run_tag}",
+            "--results-file", results_file,
+        ]
+
+    if getattr(config, "log_wandb", False):
+        cmd += ["--log-wandb", "--wandb-project", config.wandb_project]
+
+    results_dir = os.path.dirname(results_file)
+    if results_dir:
+        os.makedirs(results_dir, exist_ok=True)
+
+    print(f"=== Epoch {epoch}: running full KNN evaluation ({os.path.basename(script)}) ===", flush=True)
+    t_start = time.time()
+    result = subprocess.run(cmd)
+    dt = time.time() - t_start
+    if result.returncode != 0:
+        print(f"WARNING: epoch-{epoch} KNN eval failed (exit code {result.returncode}) after {dt:.1f}s "
+              "— continuing pretraining.", flush=True)
+    else:
+        print(f"Epoch {epoch} KNN eval done in {dt:.1f}s -> {results_file}", flush=True)
 
 
 def run(config):
@@ -1083,6 +1150,15 @@ def run(config):
                 ckpt_path_best = os.path.join(config.model_output_dir, "best_pretraining.pt")
                 print(f"Copying model to {ckpt_path_best}")
                 shutil.copyfile(config.checkpoint_path, ckpt_path_best)
+
+            # Epoch-wise KNN evaluation (opt-in overfitting monitor) --------------
+            knn_eval_every_epoch = getattr(config, "knn_eval_every_epoch", 0)
+            if knn_eval_every_epoch and epoch % knn_eval_every_epoch == 0:
+                if config.arch == "maelm" and getattr(config, "checkpoint_path_encoder", None):
+                    knn_eval_ckpt = _epoch_ckpt_path(config.checkpoint_path_encoder, epoch)
+                else:
+                    knn_eval_ckpt = _epoch_ckpt_path(config.checkpoint_path, epoch)
+                run_epoch_knn_eval(config, epoch, knn_eval_ckpt)
 
         t_end_save = time.time()
         timing_stats["saving"] = t_end_save - t_start_save
@@ -3009,6 +3085,66 @@ def get_parser():
         type=int,
         help="Linearly ramp aux loss weight from 0 to --aux-loss-weight over this many epochs. "
              "0 = no warmup (full weight from epoch 1). Default: %(default)s",
+    )
+
+    # Epoch-wise KNN evaluation (overfitting monitor) --------------------------
+    group = parser.add_argument_group("Epoch-wise KNN evaluation")
+    group.add_argument(
+        "--knn-eval-every-epoch",
+        "--knn_eval_every_epoch",
+        dest="knn_eval_every_epoch",
+        default=0,
+        type=int,
+        help="Run the full KNN evaluation (same script/metrics as a post-hoc knn_probing.py / "
+             "knn_its.py run, over the WHOLE train+test data, not a subsample) after every N "
+             "epochs, using that epoch's freshly-saved checkpoint. Runs as a subprocess and is "
+             "non-fatal on failure. 0 disables it (default). Warning: this reruns a full KNN "
+             "pass every N epochs, which can add substantial wall-clock time — budget SLURM "
+             "--time accordingly. Default: %(default)s",
+    )
+    group.add_argument(
+        "--knn-eval-taxon",
+        "--knn_eval_taxon",
+        dest="knn_eval_taxon",
+        default="genus",
+        type=str,
+        help="Taxonomic level for the epoch-wise KNN probe (BIOSCAN-5M/CANADA-1.5M only; "
+             "ITS-5M is always evaluated at species level by knn_its.py). Default: %(default)s",
+    )
+    group.add_argument(
+        "--knn-eval-representation-type",
+        "--knn_eval_representation_type",
+        dest="knn_eval_representation_type",
+        default="tokens",
+        choices=["tokens", "cls", "tokens_with_cls"],
+        help="Representation type for the epoch-wise KNN probe. Default: %(default)s",
+    )
+    group.add_argument(
+        "--knn-eval-neighbors",
+        "--knn_eval_neighbors",
+        dest="knn_eval_neighbors",
+        default=[1],
+        type=int,
+        nargs="+",
+        help="Neighborhood size(s) for the epoch-wise KNN probe. Default: %(default)s",
+    )
+    group.add_argument(
+        "--knn-eval-metric",
+        "--knn_eval_metric",
+        dest="knn_eval_metric",
+        default="cosine",
+        type=str,
+        help="Distance metric for the epoch-wise KNN probe. Default: %(default)s",
+    )
+    group.add_argument(
+        "--knn-eval-results-file",
+        "--knn_eval_results_file",
+        dest="knn_eval_results_file",
+        default=None,
+        type=str,
+        help="File to append epoch-wise KNN results to. Defaults to "
+             "results_final/KNN_RESULTS_epochwise.txt (BIOSCAN-5M/CANADA-1.5M) or "
+             "results_final/KNN_ITS_RESULTS_epochwise.txt (ITS-5M).",
     )
 
     return parser
