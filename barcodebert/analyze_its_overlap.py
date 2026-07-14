@@ -13,16 +13,19 @@ variation). Test Sets 1 (Yeast) and 3 (MycoAI) instead have high overlap on
 BOTH axes (86.73% / 100.00% identical barcodes), which looks like train/test
 leakage of literal duplicate specimens rather than natural species overlap.
 
-This script uses mycoai.data.Data for fasta parsing — the SAME loader
-DNADataset uses for ITS-5M (barcodebert/datasets.py) — rather than a naive
-line-by-line fasta parser, because mycoai's Data(..., allow_duplicates=False)
-(used for "test" files) drops rows that are duplicates on the (sequence,
-species) pair, parsed from the fasta headers. A plain re-parse of the raw
-fasta file does NOT reproduce this and will over-count (raises a mismatch
-error against *_labels.csv, which was generated against the deduplicated
-count). Using mycoai directly guarantees this script sees exactly what the
-training/eval pipeline sees, with no risk of reimplementing the header
-parsing/dedup logic slightly wrong.
+IMPORTANT — this does NOT use the *_labels.csv files. Their 'species' column
+is a pre-built CLASSIFICATION label: a contiguous integer index factorized
+against a fixed vocabulary (built from the training species), where any test
+species NOT in that vocabulary collapses into a single '9999999' unknown
+bucket, indistinguishable from every other novel species. Using it for an
+overlap AUDIT is circular (every "known" index is trivially "in training" by
+construction) and undercounts true species diversity. Instead this script
+uses mycoai.data.Data's own per-file UNITE-header parsing (the same parser
+DNADataset uses, tax_parser='unite' by default) to get the raw (genus,
+species) taxonomy string pair fresh from each fasta file's headers — no
+cross-file vocabulary, no collapsing of novel species. Species identity is
+keyed on (genus, species) together, not species-epithet alone, since UNITE
+species epithets can collide across unrelated genera.
 
 Usage:
     python analyze_its_overlap.py --data-dir ./BarcodeMAE/data/ITS-5M
@@ -32,6 +35,7 @@ import argparse
 import os
 
 import pandas as pd
+from mycoai import utils as mycoai_utils
 from mycoai.data import Data
 
 TEST_SETS = [
@@ -39,53 +43,43 @@ TEST_SETS = [
     ("Test2 (Filamentous)", "test2.fasta"),
     ("Test3 (MycoAI)", "test3.fasta"),
 ]
-UNKNOWN_LABEL = 9999999
 
 
-def load_split(fasta_path, taxonomic_level):
-    labels_path = fasta_path.replace(".fasta", "_labels.csv")
-    if not os.path.isfile(labels_path):
-        raise FileNotFoundError(f"Labels file not found: {labels_path}")
+def load_split(fasta_path):
     if not os.path.isfile(fasta_path):
         raise FileNotFoundError(f"Fasta file not found: {fasta_path}")
-
-    # Mirrors datasets.py's DNADataset ITS-5M loading exactly.
+    # Mirrors datasets.py's DNADataset ITS-5M loading: allow_duplicates=True
+    # for "train" files, False for "test" files. tax_parser defaults to
+    # 'unite', so fungi_data.data already has genus/species parsed straight
+    # from each header — no external labels file needed.
     allow_duplicates = "train" in os.path.basename(fasta_path)
     fungi_data = Data(fasta_path, allow_duplicates=allow_duplicates)
-    sequences = fungi_data.data["sequence"].tolist()
-
-    labels_df = pd.read_csv(labels_path)
-
-    if len(sequences) != len(labels_df):
-        raise ValueError(
-            f"Mismatch between mycoai-loaded fasta records ({len(sequences)}, "
-            f"allow_duplicates={allow_duplicates}) and label rows ({len(labels_df)}) "
-            f"for {fasta_path} — is this the right labels file?"
-        )
-    if taxonomic_level not in labels_df.columns:
-        raise KeyError(
-            f"Column '{taxonomic_level}' not found in {labels_path}. "
-            f"Available columns: {list(labels_df.columns)}"
-        )
-
-    df = labels_df.copy()
-    df["sequence"] = sequences
-    return df
+    return fungi_data.data
 
 
-def compute_overlap(train_df, test_df, taxonomic_level):
-    train_species = set(train_df.loc[train_df[taxonomic_level] != UNKNOWN_LABEL, taxonomic_level])
+def species_key(df):
+    """(genus, species) tuples, excluding rows where species is unresolved."""
+    known = df[df["species"] != mycoai_utils.UNKNOWN_STR]
+    return known, list(zip(known["genus"], known["species"]))
+
+
+def compute_overlap(train_df, test_df):
+    _, train_keys = species_key(train_df)
+    train_species = set(train_keys)
     train_seqs = set(train_df["sequence"])
 
-    test_known = test_df[test_df[taxonomic_level] != UNKNOWN_LABEL]
-    unique_test_species = set(test_known[taxonomic_level].unique())
+    _, test_keys = species_key(test_df)
+    unique_test_species = set(test_keys)
     species_overlap = unique_test_species & train_species
 
     is_barcode_dup = test_df["sequence"].isin(train_seqs)
     n_barcode_overlap = int(is_barcode_dup.sum())
 
     # Same-species-different-barcode breakdown ---------------------------------
-    is_shared_species = test_df[taxonomic_level].isin(species_overlap)
+    test_species_col = list(zip(test_df["genus"], test_df["species"]))
+    is_shared_species = pd.Series(
+        [k in species_overlap for k in test_species_col], index=test_df.index
+    )
     n_shared_species_specimens = int(is_shared_species.sum())
     n_shared_species_and_dup_barcode = int((is_shared_species & is_barcode_dup).sum())
     n_shared_species_novel_barcode = n_shared_species_specimens - n_shared_species_and_dup_barcode
@@ -103,19 +97,19 @@ def compute_overlap(train_df, test_df, taxonomic_level):
     }
 
 
-def run(data_dir, taxonomic_level="species"):
+def run(data_dir):
     train_path = os.path.join(data_dir, "trainset.fasta")
     print(f"Loading train set: {train_path}")
-    train_df = load_split(train_path, taxonomic_level)
-    print(f"  {len(train_df)} train specimens, "
-          f"{train_df.loc[train_df[taxonomic_level] != UNKNOWN_LABEL, taxonomic_level].nunique()} known species\n")
+    train_df = load_split(train_path)
+    _, train_keys = species_key(train_df)
+    print(f"  {len(train_df)} train specimens, {len(set(train_keys))} known (genus, species) taxa\n")
 
     rows = []
     for name, fname in TEST_SETS:
         fpath = os.path.join(data_dir, fname)
         print(f"Loading {name}: {fpath}")
-        test_df = load_split(fpath, taxonomic_level)
-        stats = compute_overlap(train_df, test_df, taxonomic_level)
+        test_df = load_split(fpath)
+        stats = compute_overlap(train_df, test_df)
         rows.append((name, stats))
 
         print(f"  Species overlap:  {stats['species_overlap_n']:>6d} / {stats['species_total']:<6d} "
@@ -146,15 +140,13 @@ def run(data_dir, taxonomic_level="species"):
 def get_parser():
     p = argparse.ArgumentParser(description="Verify ITS-5M train/test overlap numbers (Table 6).")
     p.add_argument("--data-dir", "--data_dir", dest="data_dir", required=True,
-                    help="Path to ITS-5M data directory (containing trainset.fasta, test1-3.fasta + *_labels.csv).")
-    p.add_argument("--taxonomic-level", "--taxonomic_level", dest="taxonomic_level", default="species",
-                    help="Label column to use for species-level overlap. Default: %(default)s")
+                    help="Path to ITS-5M data directory (containing trainset.fasta, test1-3.fasta).")
     return p
 
 
 def cli():
     args = get_parser().parse_args()
-    run(args.data_dir, args.taxonomic_level)
+    run(args.data_dir)
 
 
 if __name__ == "__main__":
