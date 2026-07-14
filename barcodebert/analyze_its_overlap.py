@@ -84,6 +84,17 @@ def compute_overlap(train_df, test_df):
     n_shared_species_and_dup_barcode = int((is_shared_species & is_barcode_dup).sum())
     n_shared_species_novel_barcode = n_shared_species_specimens - n_shared_species_and_dup_barcode
 
+    # Clean subset: specimens whose exact barcode is NOT in training (removes
+    # anything literally seen during pretraining/KNN-gallery construction)
+    # AND whose species label is resolved (drops '?'/unknown-species rows —
+    # they can't be classified as "same species" or "novel species" at all,
+    # so they shouldn't pad either the numerator or denominator here).
+    # Species overlap recomputed on just this subset.
+    clean_df = test_df[~is_barcode_dup]
+    clean_known_df, clean_keys = species_key(clean_df)
+    clean_unique_species = set(clean_keys)
+    clean_species_overlap = clean_unique_species & train_species
+
     return {
         "species_total": len(unique_test_species),
         "species_overlap_n": len(species_overlap),
@@ -94,6 +105,11 @@ def compute_overlap(train_df, test_df):
         "shared_species_specimens": n_shared_species_specimens,
         "shared_species_dup_barcode": n_shared_species_and_dup_barcode,
         "shared_species_novel_barcode": n_shared_species_novel_barcode,
+        "clean_total": len(clean_known_df),
+        "clean_species_total": len(clean_unique_species),
+        "clean_species_overlap_n": len(clean_species_overlap),
+        "clean_species_overlap_pct": (100.0 * len(clean_species_overlap) / len(clean_unique_species)
+                                       if clean_unique_species else float("nan")),
     }
 
 
@@ -120,6 +136,10 @@ def run(data_dir):
         print(f"    - {stats['shared_species_dup_barcode']} are EXACT duplicate barcodes (leakage)")
         print(f"    - {stats['shared_species_novel_barcode']} are a DIFFERENT individual of the same species "
               f"(same species, different barcode)")
+        print(f"  CLEAN subset (barcode-duplicates AND unknown-species specimens removed — "
+              f"{stats['clean_total']} / {stats['barcode_total']} specimens remain):")
+        print(f"    Species overlap:  {stats['clean_species_overlap_n']:>6d} / {stats['clean_species_total']:<6d} "
+              f"({stats['clean_species_overlap_pct']:6.2f}%)")
         print()
 
     print("=" * 100)
