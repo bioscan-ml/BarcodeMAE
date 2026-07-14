@@ -15,7 +15,7 @@
 #
 # Submit for BIOSCAN-5M:  sbatch --export=DATASET=BIOSCAN-5M ablation_aux_weight.sh
 # Submit for ITS-5M:      sbatch --export=DATASET=ITS-5M     ablation_aux_weight.sh
-# (ITS submission chains pretrain → finetune; BIOSCAN chains pretrain → KNN/ZSC)
+# (ITS submission chains pretrain → KNN (knn_its.py); BIOSCAN chains pretrain → KNN/ZSC)
 # ============================================================================
 #SBATCH --job-name=abl_aux_weight
 #SBATCH --account=def-lila-ab
@@ -80,15 +80,17 @@ AUX_WEIGHT="${WEIGHTS[$SLURM_ARRAY_TASK_ID]}"
 DATASET="${DATASET:-BIOSCAN-5M}"
 if [ "${DATASET}" = "ITS-5M" ]; then
     DATA_DIR="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE_final/BarcodeMAE/data/${DATASET}"
+    EPOCHS=15
 else
     DATA_DIR="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE/data/${DATASET}"
+    EPOCHS=35
 fi
 
 # ── Fixed config ──────────────────────────────────────────────────────────────
 K_MER=6; STRIDE=6; N_LAYERS=6; N_HEADS=6; N_DEC_LAYERS=6; N_DEC_HEADS=6
 BATCH_SIZE=128; LR=0.00007; WD=0.00001
 MASKED_LOSS_WEIGHT=0.999; MASK_TOKEN_RATIO=1.0; RANDOM_TOKEN_RATIO=0.0
-EPOCHS=35; AUX_LOSS_WARMUP=5
+AUX_LOSS_WARMUP=5
 K_CLASSES=16; M_PER_CLASS=4; NUM_PAIRS=128; TAXA="genus"
 TRIPLET_MARGIN=0.0; CLS_TAXA_LOSS_W=${AUX_WEIGHT}   # binary uses same weight var
 
@@ -168,19 +170,20 @@ if [ "${DATASET}" = "BIOSCAN-5M" ]; then
     done
 
 else
-    # ── Finetuning (ITS-5M) ───────────────────────────────────────────────────
-    FT_TAXA="species"; FT_LR=0.00008; FT_EPOCHS=12; FT_WD=0.00001; FT_BATCH=64
+    # ── KNN (ITS-5M) ──────────────────────────────────────────────────────────
+    # knn_its.py hardcodes species level — same target the old finetuning eval
+    # used, so results stay directly comparable.
     for REPR in "tokens" "cls" "tokens_with_cls"; do
-        FT_RUN="${RUN_NAME}_ft_${FT_TAXA}_${REPR}_ep${FT_EPOCHS}"
-        FT_REPR_DIR="${CKPT_BASE}/finetune/${REPR}"
-        mkdir -p "${FT_REPR_DIR}"
-        torchrun --standalone --nproc_per_node=1 barcodebert/finetuning.py \
-            --run-name "${FT_RUN}" --dataset "${DATASET}" --data-dir "${DATA_DIR}" \
-            --pretrained-checkpoint "${EVAL_CKPT}" --checkpoint "${FT_REPR_DIR}/${FT_RUN}.pt" \
-            --taxonomic-level "${FT_TAXA}" --representation-type "${REPR}" \
-            --batch-size ${FT_BATCH} --lr ${FT_LR} --weight-decay ${FT_WD} \
-            --epochs ${FT_EPOCHS} --max-norm 0.5 --mixed-precision --save-best-model \
-            --wandb-project "${WANDB_PROJECT}" --log-wandb
+        python barcodebert/knn_its.py \
+            --pretrained-checkpoint "${EVAL_CKPT}" \
+            --data-dir              "${DATA_DIR}" \
+            --run-name              "knn_its_${RUN_NAME}_${REPR}" \
+            --n-neighbors           1 3 5 7 \
+            --metric                cosine \
+            --representation-type   "${REPR}" \
+            --results-file          results_final/KNN_ITS_RESULTS_final_abl_weight.txt \
+            --log-wandb \
+            --wandb-project         "${WANDB_PROJECT}"
         EC=$?; [ ${EC} -ne 0 ] && OVERALL_EXIT=${EC}
     done
 fi

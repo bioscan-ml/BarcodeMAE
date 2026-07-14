@@ -15,21 +15,23 @@
 #
 # 4 tasks (0-3):  aux task = [none, binary, triplet, ce]   (all CLS-enabled, maelm, genus)
 #
-# Epoch-wise KNN logs: results_final/KNN_ITS_RESULTS_epochwise.txt (appended
-# after every epoch — never overwritten, so nothing is lost even if the job
-# times out partway through).
-# Final (species-level) finetuning eval: same as fungi_its_final.sh
+# Pretraining ONLY — no finetuning step. Epoch-wise KNN logs land in
+# results_final/KNN_ITS_RESULTS_epochwise.txt (appended after every epoch —
+# never overwritten, so nothing is lost even if the job times out partway
+# through). The last epoch's entry there is your "final" number; there is no
+# separate final-eval step in this script.
 # Checkpoints: main_checkpoints_final/ablations/knn_monitor/ITS-5M/
 #
 # Time budget: fungi_its_final.sh (no epoch-wise eval) needs 28h for 15
-# pretraining epochs + finetuning. This script also runs a full knn_its.py
-# pass (train gallery + all 3 fungi test sets) after EVERY one of those 15
-# epochs, which is significant added wall-clock — bumped to 72h accordingly.
-# If that's not enough and the job times out mid-pretraining, pretraining.py
-# resumes automatically from the last saved epoch checkpoint on resubmission
-# (no results are lost — just `sbatch` this script again). Check your
-# account's actual max walltime (e.g. `sacctmgr show assoc user=$USER
-# format=account,maxwall`) since 72h may exceed what def-lila-ab allows.
+# pretraining epochs + finetuning; this script drops the finetuning step but
+# adds a full knn_its.py pass (train gallery + all 3 fungi test sets) after
+# EVERY one of those 15 epochs, which is significant added wall-clock —
+# 72h budgeted accordingly. If that's not enough and the job times out
+# mid-pretraining, pretraining.py resumes automatically from the last saved
+# epoch checkpoint on resubmission (no results are lost — just `sbatch` this
+# script again). Check your account's actual max walltime (e.g. `sacctmgr
+# show assoc user=$USER format=account,maxwall`) since 72h may exceed what
+# def-lila-ab allows.
 #
 # Submit:  sbatch fungi_its_knn_monitor.sh
 # ============================================================================
@@ -90,7 +92,10 @@ KNN_EVAL_REPR="tokens"
 # ── Naming (distinct from fungi_its_final.sh so pretraining is never skipped) ──
 RUN_NAME="knnmon_its_k${K_MER}_${N_LAYERS}L${N_HEADS}H_${N_DEC_LAYERS}DL${N_DEC_HEADS}DH_${ARCH}_cls_${AUX_TASK}"
 
-CKPT_BASE="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE/main_checkpoints_final/ablations/knn_monitor/${DATASET}/${RUN_NAME}"
+# Checkpoint root derived from DATA_DIR so it always lives in the same
+# directory tree as the dataset (DATA_DIR = .../data/${DATASET}).
+DATA_ROOT="$(dirname "$(dirname "${DATA_DIR}")")"
+CKPT_BASE="${DATA_ROOT}/main_checkpoints_final/ablations/knn_monitor/${DATASET}/${RUN_NAME}"
 CHECKPOINT="${CKPT_BASE}/checkpoint.pt"
 CHECKPOINT_ENC="${CKPT_BASE}/checkpoint_encoder.pt"
 mkdir -p "${CKPT_BASE}"
@@ -129,29 +134,9 @@ esac
 
 echo "=== PRETRAINING (with epoch-wise KNN monitoring every ${KNN_EVAL_EVERY} epoch(s)) ==="
 torchrun --standalone --nproc_per_node=1 barcodebert/pretraining.py "${PRETRAIN_ARGS[@]}"
-[ $? -ne 0 ] && echo "ERROR: Pretraining failed" && exit 1
+EC=$?
+[ ${EC} -ne 0 ] && echo "ERROR: Pretraining failed" && exit ${EC}
 echo "Pretraining done at: $(date)"
 
-FT_CKPT="${CHECKPOINT_ENC}"
-[ ! -f "${FT_CKPT}" ] && echo "ERROR: no finetuning checkpoint at ${FT_CKPT}" && exit 1
-
-OVERALL_EXIT=0
-
-# ── Final finetuning eval (species level) — same as fungi_its_final.sh ────────
-FT_TAXA="species"; FT_LR=0.00008; FT_EPOCHS=12; FT_WD=0.00001; FT_BATCH=64
-for REPR in "tokens" "cls" "tokens_with_cls"; do
-    FT_RUN="${RUN_NAME}_ft_${FT_TAXA}_${REPR}_ep${FT_EPOCHS}"
-    FT_REPR_DIR="${CKPT_BASE}/finetune/${REPR}"
-    mkdir -p "${FT_REPR_DIR}"
-    torchrun --standalone --nproc_per_node=1 barcodebert/finetuning.py \
-        --run-name "${FT_RUN}" --dataset "${DATASET}" --data-dir "${DATA_DIR}" \
-        --pretrained-checkpoint "${FT_CKPT}" --checkpoint "${FT_REPR_DIR}/${FT_RUN}.pt" \
-        --taxonomic-level "${FT_TAXA}" --representation-type "${REPR}" \
-        --batch-size ${FT_BATCH} --lr ${FT_LR} --weight-decay ${FT_WD} \
-        --epochs ${FT_EPOCHS} --max-norm 0.5 --mixed-precision --save-best-model \
-        --wandb-project "${WANDB_PROJECT}" --log-wandb
-    EC=$?; [ ${EC} -ne 0 ] && OVERALL_EXIT=${EC}
-done
-
-echo "All done at: $(date) | exit: ${OVERALL_EXIT}"
-exit ${OVERALL_EXIT}
+echo "All done at: $(date) | exit: ${EC}"
+exit ${EC}

@@ -17,6 +17,12 @@
 #
 # Results: results_final/RANDOM_KNN_RESULTS.txt (BIOSCAN-5M)
 #          results_final/RANDOM_KNN_ITS_RESULTS.txt (ITS-5M)
+#
+# Time budget: representations_from_df / extract_representations embed ONE
+# sequence at a time (no batching), so this is slower than the row count
+# alone suggests. 2h was too tight (hit the wall on the ITS-5M run). Bumped
+# to 8h. Unlike pretraining there's no resume/checkpoint here — a timeout
+# loses the whole embedding pass, so this needs headroom.
 # ============================================================================
 #SBATCH --job-name=random_baseline_knn
 #SBATCH --account=def-lila-ab
@@ -25,7 +31,7 @@
 #SBATCH --gres=gpu:h100:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=128G
-#SBATCH --time=02:00:00
+#SBATCH --time=08:00:00
 #SBATCH --array=0-1
 #SBATCH --output=final_logs/%A/%A_%a.out
 #SBATCH --error=final_logs/%A/%A_%a.err

@@ -52,15 +52,17 @@ TRIPLET_MARGIN="${MARGINS[$SLURM_ARRAY_TASK_ID]}"
 DATASET="${DATASET:-BIOSCAN-5M}"
 if [ "${DATASET}" = "ITS-5M" ]; then
     DATA_DIR="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE_final/BarcodeMAE/data/${DATASET}"
+    EPOCHS=15
 else
     DATA_DIR="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE/data/${DATASET}"
+    EPOCHS=35
 fi
 
 # ── Fixed config ──────────────────────────────────────────────────────────────
 K_MER=6; STRIDE=6; N_LAYERS=6; N_HEADS=6; N_DEC_LAYERS=6; N_DEC_HEADS=6
 BATCH_SIZE=128; LR=0.00007; WD=0.00001
 MASKED_LOSS_WEIGHT=0.999; MASK_TOKEN_RATIO=1.0; RANDOM_TOKEN_RATIO=0.0
-EPOCHS=35; AUX_LOSS_WEIGHT=0.1; AUX_LOSS_WARMUP=5
+AUX_LOSS_WEIGHT=0.1; AUX_LOSS_WARMUP=5
 K_CLASSES=16; M_PER_CLASS=4; TAXA="genus"
 
 MARGIN_STR=$(echo "${TRIPLET_MARGIN}" | tr '.' 'p')  # 0.3 → 0p3
