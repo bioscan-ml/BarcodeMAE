@@ -13,12 +13,16 @@ variation). Test Sets 1 (Yeast) and 3 (MycoAI) instead have high overlap on
 BOTH axes (86.73% / 100.00% identical barcodes), which looks like train/test
 leakage of literal duplicate specimens rather than natural species overlap.
 
-This script recomputes both overlap metrics directly from the raw
-trainset.fasta / test{1,2,3}.fasta + *_labels.csv files (independent of
-DNADataset/mycoai, so it has no extra dependencies) to confirm Table 6, and
-additionally reports — for test specimens whose SPECIES is shared with
-training — how many of those specimens are exact literal-sequence duplicates
-vs genuinely different individuals of the same species.
+This script uses mycoai.data.Data for fasta parsing — the SAME loader
+DNADataset uses for ITS-5M (barcodebert/datasets.py) — rather than a naive
+line-by-line fasta parser, because mycoai's Data(..., allow_duplicates=False)
+(used for "test" files) drops rows that are duplicates on the (sequence,
+species) pair, parsed from the fasta headers. A plain re-parse of the raw
+fasta file does NOT reproduce this and will over-count (raises a mismatch
+error against *_labels.csv, which was generated against the deduplicated
+count). Using mycoai directly guarantees this script sees exactly what the
+training/eval pipeline sees, with no risk of reimplementing the header
+parsing/dedup logic slightly wrong.
 
 Usage:
     python analyze_its_overlap.py --data-dir ./BarcodeMAE/data/ITS-5M
@@ -28,6 +32,7 @@ import argparse
 import os
 
 import pandas as pd
+from mycoai.data import Data
 
 TEST_SETS = [
     ("Test1 (Yeast)", "test1.fasta"),
@@ -37,26 +42,6 @@ TEST_SETS = [
 UNKNOWN_LABEL = 9999999
 
 
-def read_fasta(fasta_path):
-    """Parse a fasta file into a list of sequences (one per record, in order)."""
-    sequences = []
-    with open(fasta_path) as f:
-        current = []
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            if line.startswith(">"):
-                if current:
-                    sequences.append("".join(current))
-                    current = []
-            else:
-                current.append(line)
-        if current:
-            sequences.append("".join(current))
-    return sequences
-
-
 def load_split(fasta_path, taxonomic_level):
     labels_path = fasta_path.replace(".fasta", "_labels.csv")
     if not os.path.isfile(labels_path):
@@ -64,13 +49,18 @@ def load_split(fasta_path, taxonomic_level):
     if not os.path.isfile(fasta_path):
         raise FileNotFoundError(f"Fasta file not found: {fasta_path}")
 
-    sequences = read_fasta(fasta_path)
+    # Mirrors datasets.py's DNADataset ITS-5M loading exactly.
+    allow_duplicates = "train" in os.path.basename(fasta_path)
+    fungi_data = Data(fasta_path, allow_duplicates=allow_duplicates)
+    sequences = fungi_data.data["sequence"].tolist()
+
     labels_df = pd.read_csv(labels_path)
 
     if len(sequences) != len(labels_df):
         raise ValueError(
-            f"Mismatch between fasta records ({len(sequences)}) and label rows "
-            f"({len(labels_df)}) for {fasta_path} — is this the right labels file?"
+            f"Mismatch between mycoai-loaded fasta records ({len(sequences)}, "
+            f"allow_duplicates={allow_duplicates}) and label rows ({len(labels_df)}) "
+            f"for {fasta_path} — is this the right labels file?"
         )
     if taxonomic_level not in labels_df.columns:
         raise KeyError(
