@@ -5,12 +5,18 @@
 # Sanity-check baseline: run KNN eval with an UNTRAINED encoder to confirm
 # that pretrained checkpoints actually learn something beyond random
 # projections. Uses random_knn.py (BIOSCAN-5M) / random_knn_its.py (fungi
-# ITS-5M), representation_type=tokens, no CLS token — matching the "nocls"
-# baseline config used in the main experiments (bioscan5m_final.sh /
-# fungi_its_final.sh, task 0/5).
+# ITS-5M). Architecture: transformer only (untrained BertForTokenClassification,
+# head stripped).
 #
-# 2 tasks (0-1): maelm, transformer — same arch grid as the other ablation
-# scripts. DATASET is an env var like the rest of slurm/final_scripts/*.sh.
+# 3 tasks (0-2):
+#   0: nocls,             representation_type=tokens
+#   1: --use-cls-token,   representation_type=cls
+#   2: --use-cls-token,   representation_type=tokens_with_cls
+# Each task builds its own fresh random model — cheap (no training), so
+# there's no cost concern running these as separate tasks/models per
+# representation type.
+#
+# DATASET is an env var like the rest of slurm/final_scripts/*.sh.
 #
 # Submit for BIOSCAN-5M:  sbatch --export=DATASET=BIOSCAN-5M random_baseline_knn.sh
 # Submit for ITS-5M:      sbatch --export=DATASET=ITS-5M     random_baseline_knn.sh
@@ -32,7 +38,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=128G
 #SBATCH --time=08:00:00
-#SBATCH --array=0-1
+#SBATCH --array=0-2
 #SBATCH --output=final_logs/%A/%A_%a.out
 #SBATCH --error=final_logs/%A/%A_%a.err
 
@@ -56,8 +62,14 @@ nvidia-smi
 python -c "import torch; print(f'PyTorch {torch.__version__} | CUDA {torch.cuda.is_available()} | {torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"no GPU\"}')"
 
 # ── Grid ──────────────────────────────────────────────────────────────────────
-ARCHS=("maelm" "transformer")
-ARCH="${ARCHS[$SLURM_ARRAY_TASK_ID]}"
+ARCH="transformer"
+CLS_LABELS=("nocls"  "cls" "cls"            )
+REPR_TYPES=("tokens" "cls" "tokens_with_cls")
+
+CLS_LABEL="${CLS_LABELS[$SLURM_ARRAY_TASK_ID]}"
+REPR_TYPE="${REPR_TYPES[$SLURM_ARRAY_TASK_ID]}"
+USE_CLS_ARGS=()
+[ "${CLS_LABEL}" = "cls" ] && USE_CLS_ARGS=(--use-cls-token)
 
 # ── Dataset (overridable via --export=DATASET=...) ────────────────────────────
 DATASET="${DATASET:-BIOSCAN-5M}"
@@ -69,16 +81,17 @@ fi
 
 K_MER=6; STRIDE=6; N_LAYERS=6; N_HEADS=6; ENCODER_DIM=768
 
-RUN_NAME="random_k${K_MER}_${N_LAYERS}L${N_HEADS}H_${ARCH}_nocls"
+RUN_NAME="random_k${K_MER}_${N_LAYERS}L${N_HEADS}H_${ARCH}_${CLS_LABEL}_${REPR_TYPE}"
 
-echo "Dataset: ${DATASET} | Arch: ${ARCH} | Run: ${RUN_NAME}"
+echo "Dataset: ${DATASET} | Arch: ${ARCH} | CLS: ${CLS_LABEL} | Repr: ${REPR_TYPE} | Run: ${RUN_NAME}"
 
 if [ "${DATASET}" = "BIOSCAN-5M" ]; then
     python barcodebert/random_knn.py \
         --dataset "${DATASET}" --data-dir "${DATA_DIR}" \
         --arch "${ARCH}" --k-mer ${K_MER} --stride ${STRIDE} \
         --n-layers ${N_LAYERS} --n-heads ${N_HEADS} --encoder-embed-dim ${ENCODER_DIM} \
-        --taxon genus --n-neighbors 1 3 5 7 --representation-type tokens \
+        "${USE_CLS_ARGS[@]}" \
+        --taxon genus --n-neighbors 1 3 5 7 --representation-type "${REPR_TYPE}" \
         --run-name "${RUN_NAME}" \
         --results-file results_final/RANDOM_KNN_RESULTS.txt
     EC=$?
@@ -87,7 +100,8 @@ else
         --data-dir "${DATA_DIR}" \
         --arch "${ARCH}" --k-mer ${K_MER} --stride ${STRIDE} \
         --n-layers ${N_LAYERS} --n-heads ${N_HEADS} --encoder-embed-dim ${ENCODER_DIM} \
-        --n-neighbors 1 3 5 7 --representation-type tokens \
+        "${USE_CLS_ARGS[@]}" \
+        --n-neighbors 1 3 5 7 --representation-type "${REPR_TYPE}" \
         --run-name "${RUN_NAME}" \
         --results-file results_final/RANDOM_KNN_ITS_RESULTS.txt
     EC=$?
