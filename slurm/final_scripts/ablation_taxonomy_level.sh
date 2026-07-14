@@ -16,6 +16,10 @@
 # KNN/ZSC evaluation is run at genus level (same as main experiments)
 # so results are directly comparable.
 #
+# Time budget: 24h. This script has no finetuning step (pretrain -> KNN/ZSC
+# only), so it needs less than fungi_its_final.sh's 28h (which does include
+# finetuning) despite BIOSCAN-5M running more epochs (35 vs ITS-5M's 15).
+#
 # Submit for BIOSCAN-5M:  sbatch --export=DATASET=BIOSCAN-5M ablation_taxonomy_level.sh
 # Submit for ITS-5M:      sbatch --export=DATASET=ITS-5M     ablation_taxonomy_level.sh
 # ============================================================================
@@ -26,7 +30,7 @@
 #SBATCH --gres=gpu:h100:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=128G
-#SBATCH --time=48:00:00
+#SBATCH --time=24:00:00
 #SBATCH --array=0-11%4
 #SBATCH --output=final_logs/%A/%A_%a.out
 #SBATCH --error=final_logs/%A/%A_%a.err
