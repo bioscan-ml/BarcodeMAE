@@ -71,6 +71,12 @@ def species_key(df):
     return known, list(zip(known["genus"], known["species"]))
 
 
+def genus_key(df):
+    """genus values, excluding rows where genus is unresolved."""
+    known = df[df["genus"] != mycoai_utils.UNKNOWN_STR]
+    return known, known["genus"].tolist()
+
+
 def find_substring_duplicates(train_known_df, candidates):
     """For each candidate test specimen (same species as some train specimen,
     but not an exact-sequence duplicate), check whether its sequence is a
@@ -101,10 +107,15 @@ def find_substring_duplicates(train_known_df, candidates):
     return flagged
 
 
-def compute_overlap(train_df, train_known_df, train_species, train_seqs, test_df):
+def compute_overlap(train_df, train_known_df, train_species, train_genera, train_seqs, test_df):
     _, test_keys = species_key(test_df)
     unique_test_species = set(test_keys)
     species_overlap = unique_test_species & train_species
+
+    # Genus-level overlap (same idea as species, one taxonomic rank up) --------
+    _, test_genus_keys = genus_key(test_df)
+    unique_test_genera = set(test_genus_keys)
+    genus_overlap = unique_test_genera & train_genera
 
     is_barcode_dup = test_df["sequence"].isin(train_seqs)
     n_barcode_overlap = int(is_barcode_dup.sum())
@@ -136,10 +147,32 @@ def compute_overlap(train_df, train_known_df, train_species, train_seqs, test_df
 
     n_unknown_species = int((~is_known_species).sum())
 
+    # Task-specific specimen counts -------------------------------------------
+    # Task A (species-level KNN): clean specimens whose SPECIES is in training
+    # — same species, genuinely different individual/barcode. Well-posed
+    # species-level classification (the answer key exists in the gallery).
+    is_clean_species_seen = is_clean & is_shared_species
+    task_species_level_n = int(is_clean_species_seen.sum())
+
+    # Task B (genus-level KNN on unseen species): clean specimens whose SPECIES
+    # is novel (not in training at all) but whose GENUS is in training. Species
+    # can't be predicted (no gallery entry), but genus can.
+    is_known_genus = test_df["genus"] != mycoai_utils.UNKNOWN_STR
+    is_genus_in_train = test_df["genus"].isin(train_genera)
+    is_clean_species_novel = is_clean & ~is_shared_species
+    is_clean_species_novel_genus_seen = is_clean_species_novel & is_known_genus & is_genus_in_train
+    task_genus_level_n = int(is_clean_species_novel_genus_seen.sum())
+
+    # Specimens where even genus is novel — unusable at species OR genus level.
+    task_unusable_n = int((is_clean_species_novel & ~(is_known_genus & is_genus_in_train)).sum())
+
     return {
         "species_total": len(unique_test_species),
         "species_overlap_n": len(species_overlap),
         "species_overlap_pct": 100.0 * len(species_overlap) / len(unique_test_species) if unique_test_species else float("nan"),
+        "genus_total": len(unique_test_genera),
+        "genus_overlap_n": len(genus_overlap),
+        "genus_overlap_pct": 100.0 * len(genus_overlap) / len(unique_test_genera) if unique_test_genera else float("nan"),
         "barcode_total": len(test_df),
         "barcode_overlap_n": n_barcode_overlap,
         "barcode_overlap_pct": 100.0 * n_barcode_overlap / len(test_df) if len(test_df) else float("nan"),
@@ -153,6 +186,9 @@ def compute_overlap(train_df, train_known_df, train_species, train_seqs, test_df
         "clean_species_overlap_n": len(clean_species_overlap),
         "clean_species_overlap_pct": (100.0 * len(clean_species_overlap) / len(clean_unique_species)
                                        if clean_unique_species else float("nan")),
+        "task_species_level_n": task_species_level_n,
+        "task_genus_level_n": task_genus_level_n,
+        "task_unusable_n": task_unusable_n,
     }
 
 
@@ -213,19 +249,24 @@ def run(data_dir, show_examples=0):
     train_df = load_split(train_path)
     train_known_df, train_keys = species_key(train_df)
     train_species = set(train_keys)
+    _, train_genus_keys = genus_key(train_df)
+    train_genera = set(train_genus_keys)
     train_seqs = set(train_df["sequence"])
-    print(f"  {len(train_df)} train specimens, {len(train_species)} known (genus, species) taxa\n")
+    print(f"  {len(train_df)} train specimens, {len(train_species)} known (genus, species) taxa, "
+          f"{len(train_genera)} known genera\n")
 
     rows = []
     for name, fname in TEST_SETS:
         fpath = os.path.join(data_dir, fname)
         print(f"Loading {name}: {fpath}")
         test_df = load_split(fpath)
-        stats = compute_overlap(train_df, train_known_df, train_species, train_seqs, test_df)
+        stats = compute_overlap(train_df, train_known_df, train_species, train_genera, train_seqs, test_df)
         rows.append((name, stats))
 
         print(f"  Species overlap:  {stats['species_overlap_n']:>6d} / {stats['species_total']:<6d} "
               f"({stats['species_overlap_pct']:6.2f}%)")
+        print(f"  Genus overlap:    {stats['genus_overlap_n']:>6d} / {stats['genus_total']:<6d} "
+              f"({stats['genus_overlap_pct']:6.2f}%)")
         print(f"  Barcode overlap:  {stats['barcode_overlap_n']:>6d} / {stats['barcode_total']:<6d} "
               f"({stats['barcode_overlap_pct']:6.2f}%)")
         print(f"  Of the {stats['shared_species_specimens']} test specimens whose species IS in training:")
@@ -244,21 +285,41 @@ def run(data_dir, show_examples=0):
     print("CLEAN COMPLETE TABLE — exact duplicates, substring duplicates, and unknown-species specimens all removed")
     print("=" * 130)
     header = (f"{'Test Set':<22}{'Total':>8}{'ExactDup':>10}{'SubstrDup':>11}{'UnkSpecies':>12}"
-              f"{'Clean':>8}{'Clean SpOverlap':>18}{'Clean SpNovel':>16}")
+              f"{'Clean':>8}{'Clean SpOverlap':>18}")
     print(header)
     for name, stats in rows:
-        n_clean_novel_species = stats["clean_species_total"] - stats["clean_species_overlap_n"]
         print(f"{name:<22}{stats['barcode_total']:>8d}{stats['barcode_overlap_n']:>10d}"
               f"{stats['substring_dup_n']:>11d}{stats['unknown_species_n']:>12d}"
               f"{stats['clean_total']:>8d}"
-              f"{stats['clean_species_overlap_n']:>10d}/{stats['clean_species_total']:<6d}"
-              f"{n_clean_novel_species:>16d}")
+              f"{stats['clean_species_overlap_n']:>10d}/{stats['clean_species_total']:<6d}")
     print("=" * 130)
     print("Clean = barcode not seen in training AND species is resolved AND not a substring/trim duplicate.")
-    print("'Clean SpOverlap' = of the clean specimens' unique species, how many are still in the training vocabulary")
-    print("  (same species, genuinely different individual — the realistic 'ID a new specimen' scenario).")
-    print("'Clean SpNovel' = unique species among the clean specimens that are NOT in training at all")
-    print("  (the strictest true out-of-distribution generalization test).")
+    print("'Clean SpOverlap' = of the clean specimens' unique species, how many are still in the training vocabulary.\n")
+
+    print("=" * 130)
+    print("GENUS-LEVEL OVERLAP (train vs each full test set, mirrors the species-overlap table)")
+    print("=" * 130)
+    print(f"{'Test Set':<22}{'GenusOverlap':>16}{'GenusPct':>12}")
+    for name, stats in rows:
+        print(f"{name:<22}{stats['genus_overlap_n']:>10d}/{stats['genus_total']:<5d}{stats['genus_overlap_pct']:>11.2f}%")
+    print("=" * 130 + "\n")
+
+    print("=" * 130)
+    print("EVALUABLE TASK COUNTS — a KNN gallery built from train can only ever predict a label that exists in")
+    print("train, so these are the only two well-posed evaluation tasks on the clean (leakage-free) specimens:")
+    print("=" * 130)
+    print(f"{'Test Set':<22}{'A: species-level':>18}{'B: genus-level':>16}{'Unusable':>10}")
+    for name, stats in rows:
+        print(f"{name:<22}{stats['task_species_level_n']:>18d}{stats['task_genus_level_n']:>16d}{stats['task_unusable_n']:>10d}")
+    print("(A = species-in-train specimens; B = species-novel-but-genus-in-train specimens; "
+          "Unusable = both novel)")
+    print("=" * 130)
+    print("A: same species, genuinely different barcode — tests whether two individuals of the same species land")
+    print("   close together in embedding space (realistic 'ID a new specimen of a known species' scenario).")
+    print("B: species never seen in training at all, but its genus was — species-level prediction is impossible")
+    print("   by construction (no gallery entry for that species), so evaluate genus-level prediction instead.")
+    print("Unusable: neither the species nor the genus exists in training — not evaluable at either rank with")
+    print("          a closed-set KNN/classification gallery built from this train set.")
 
 
 def get_parser():
