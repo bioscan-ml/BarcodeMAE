@@ -1,7 +1,8 @@
 #!/usr/bin/env python
 """Verify the ITS-5M train/test overlap numbers (species overlap and identical
-barcode overlap) and break down WHY species overlap can be much higher than
-identical-barcode overlap.
+barcode overlap), break down WHY species overlap can be much higher than
+identical-barcode overlap, and build a "clean" table after removing all
+leakage (exact duplicates AND same-species substring/trimming duplicates).
 
 Motivation: Table 6 in the paper reports, for each of the 3 fungi test sets,
 how many of its species/barcodes are also present in the training set. Test
@@ -12,6 +13,12 @@ specimen with a different exact ITS sequence (normal intraspecific sequence
 variation). Test Sets 1 (Yeast) and 3 (MycoAI) instead have high overlap on
 BOTH axes (86.73% / 100.00% identical barcodes), which looks like train/test
 leakage of literal duplicate specimens rather than natural species overlap.
+
+On top of exact-string duplicates, some "same species, different barcode"
+pairs turn out to be the SAME physical read trimmed to different lengths
+(one sequence is an exact substring of the other) rather than a genuinely
+different individual — this script also detects and excludes those as a
+second, softer leakage category.
 
 IMPORTANT — this does NOT use the *_labels.csv files. Their 'species' column
 is a pre-built CLASSIFICATION label: a contiguous integer index factorized
@@ -29,6 +36,7 @@ species epithets can collide across unrelated genera.
 
 Usage:
     python analyze_its_overlap.py --data-dir ./BarcodeMAE/data/ITS-5M
+    python analyze_its_overlap.py --data-dir ./BarcodeMAE/data/ITS-5M --show-examples 10
 """
 
 import argparse
@@ -63,11 +71,37 @@ def species_key(df):
     return known, list(zip(known["genus"], known["species"]))
 
 
-def compute_overlap(train_df, test_df):
-    _, train_keys = species_key(train_df)
-    train_species = set(train_keys)
-    train_seqs = set(train_df["sequence"])
+def find_substring_duplicates(train_known_df, candidates):
+    """For each candidate test specimen (same species as some train specimen,
+    but not an exact-sequence duplicate), check whether its sequence is a
+    substring of — or contains as a substring — any TRAIN sequence of the
+    SAME species. That indicates the same physical read trimmed differently,
+    not a genuinely different individual. Only searches within the relevant
+    species (not the full 5.2M-row train set) to stay fast.
 
+    Returns a set of candidate row-index values flagged as substring-dupes.
+    """
+    if len(candidates) == 0:
+        return set()
+
+    needed_species = set(zip(candidates["genus"], candidates["species"]))
+    train_known_df = train_known_df.copy()
+    train_known_df["_key"] = list(zip(train_known_df["genus"], train_known_df["species"]))
+    relevant_train = train_known_df[train_known_df["_key"].isin(needed_species)]
+    species_to_train_seqs = relevant_train.groupby("_key")["sequence"].apply(lambda s: list(set(s)))
+
+    flagged = set()
+    for idx, row in candidates.iterrows():
+        key = (row["genus"], row["species"])
+        test_seq = row["sequence"]
+        for train_seq in species_to_train_seqs.get(key, []):
+            if test_seq in train_seq or train_seq in test_seq:
+                flagged.add(idx)
+                break
+    return flagged
+
+
+def compute_overlap(train_df, train_known_df, train_species, train_seqs, test_df):
     _, test_keys = species_key(test_df)
     unique_test_species = set(test_keys)
     species_overlap = unique_test_species & train_species
@@ -75,25 +109,32 @@ def compute_overlap(train_df, test_df):
     is_barcode_dup = test_df["sequence"].isin(train_seqs)
     n_barcode_overlap = int(is_barcode_dup.sum())
 
-    # Same-species-different-barcode breakdown ---------------------------------
     test_species_col = list(zip(test_df["genus"], test_df["species"]))
     is_shared_species = pd.Series(
         [k in species_overlap for k in test_species_col], index=test_df.index
     )
+    is_known_species = test_df["species"] != mycoai_utils.UNKNOWN_STR
+
     n_shared_species_specimens = int(is_shared_species.sum())
     n_shared_species_and_dup_barcode = int((is_shared_species & is_barcode_dup).sum())
     n_shared_species_novel_barcode = n_shared_species_specimens - n_shared_species_and_dup_barcode
 
-    # Clean subset: specimens whose exact barcode is NOT in training (removes
-    # anything literally seen during pretraining/KNN-gallery construction)
-    # AND whose species label is resolved (drops '?'/unknown-species rows —
-    # they can't be classified as "same species" or "novel species" at all,
-    # so they shouldn't pad either the numerator or denominator here).
-    # Species overlap recomputed on just this subset.
-    clean_df = test_df[~is_barcode_dup]
-    clean_known_df, clean_keys = species_key(clean_df)
+    # Substring/trimming duplicates: same species, not an exact match, but one
+    # sequence is a substring of the other (same physical read, different trim).
+    candidates = test_df[is_shared_species & ~is_barcode_dup]
+    substring_dup_idx = find_substring_duplicates(train_known_df, candidates)
+    is_substring_dup = test_df.index.to_series().isin(substring_dup_idx)
+    n_substring_dup = len(substring_dup_idx)
+
+    # Fully clean: known species, not an exact duplicate, not a substring
+    # duplicate. Species overlap recomputed on just this subset.
+    is_clean = is_known_species & ~is_barcode_dup & ~is_substring_dup
+    clean_df = test_df[is_clean]
+    _, clean_keys = species_key(clean_df)
     clean_unique_species = set(clean_keys)
     clean_species_overlap = clean_unique_species & train_species
+
+    n_unknown_species = int((~is_known_species).sum())
 
     return {
         "species_total": len(unique_test_species),
@@ -105,7 +146,9 @@ def compute_overlap(train_df, test_df):
         "shared_species_specimens": n_shared_species_specimens,
         "shared_species_dup_barcode": n_shared_species_and_dup_barcode,
         "shared_species_novel_barcode": n_shared_species_novel_barcode,
-        "clean_total": len(clean_known_df),
+        "substring_dup_n": n_substring_dup,
+        "unknown_species_n": n_unknown_species,
+        "clean_total": len(clean_df),
         "clean_species_total": len(clean_unique_species),
         "clean_species_overlap_n": len(clean_species_overlap),
         "clean_species_overlap_pct": (100.0 * len(clean_species_overlap) / len(clean_unique_species)
@@ -122,8 +165,6 @@ def sample_novel_barcode_examples(train_df, test_df, n=10, seed=0):
     train_seqs = set(train_df["sequence"])
 
     train_known_df, _ = species_key(train_df)
-    # One representative train sequence per (genus, species) — cheap to build
-    # (~14.7K groups), avoids storing all 5.2M sequences grouped.
     train_repr = train_known_df.groupby(["genus", "species"])["sequence"].first()
 
     test_species_col = list(zip(test_df["genus"], test_df["species"]))
@@ -170,15 +211,17 @@ def run(data_dir, show_examples=0):
     train_path = os.path.join(data_dir, "trainset.fasta")
     print(f"Loading train set: {train_path}")
     train_df = load_split(train_path)
-    _, train_keys = species_key(train_df)
-    print(f"  {len(train_df)} train specimens, {len(set(train_keys))} known (genus, species) taxa\n")
+    train_known_df, train_keys = species_key(train_df)
+    train_species = set(train_keys)
+    train_seqs = set(train_df["sequence"])
+    print(f"  {len(train_df)} train specimens, {len(train_species)} known (genus, species) taxa\n")
 
     rows = []
     for name, fname in TEST_SETS:
         fpath = os.path.join(data_dir, fname)
         print(f"Loading {name}: {fpath}")
         test_df = load_split(fpath)
-        stats = compute_overlap(train_df, test_df)
+        stats = compute_overlap(train_df, train_known_df, train_species, train_seqs, test_df)
         rows.append((name, stats))
 
         print(f"  Species overlap:  {stats['species_overlap_n']:>6d} / {stats['species_total']:<6d} "
@@ -189,29 +232,33 @@ def run(data_dir, show_examples=0):
         print(f"    - {stats['shared_species_dup_barcode']} are EXACT duplicate barcodes (leakage)")
         print(f"    - {stats['shared_species_novel_barcode']} are a DIFFERENT individual of the same species "
               f"(same species, different barcode)")
-        print(f"  CLEAN subset (barcode-duplicates AND unknown-species specimens removed — "
-              f"{stats['clean_total']} / {stats['barcode_total']} specimens remain):")
-        print(f"    Species overlap:  {stats['clean_species_overlap_n']:>6d} / {stats['clean_species_total']:<6d} "
-              f"({stats['clean_species_overlap_pct']:6.2f}%)")
+        print(f"      - of which {stats['substring_dup_n']} are SUBSTRING duplicates (same read, different "
+              f"trim — soft leakage, not a real different individual)")
         print()
 
         if show_examples > 0:
             examples = sample_novel_barcode_examples(train_df, test_df, n=show_examples)
             print_examples(examples, name)
 
-    print("=" * 100)
-    print(f"{'Test Set':<22}{'SpeciesOverlap':>16}{'SpeciesPct':>12}{'BarcodeOverlap':>16}{'BarcodePct':>12}")
+    print("=" * 130)
+    print("CLEAN COMPLETE TABLE — exact duplicates, substring duplicates, and unknown-species specimens all removed")
+    print("=" * 130)
+    header = (f"{'Test Set':<22}{'Total':>8}{'ExactDup':>10}{'SubstrDup':>11}{'UnkSpecies':>12}"
+              f"{'Clean':>8}{'Clean SpOverlap':>18}{'Clean SpNovel':>16}")
+    print(header)
     for name, stats in rows:
-        print(f"{name:<22}"
-              f"{stats['species_overlap_n']:>10d}/{stats['species_total']:<5d}"
-              f"{stats['species_overlap_pct']:>11.2f}%"
-              f"{stats['barcode_overlap_n']:>10d}/{stats['barcode_total']:<5d}"
-              f"{stats['barcode_overlap_pct']:>11.2f}%")
-    print("=" * 100)
-    print("\nCompare the 'SpeciesPct'/'BarcodePct' columns above against Table 6:")
-    print("  Test1 (Yeast):       species 53.24% | barcode 86.73%")
-    print("  Test2 (Filamentous): species 47.86% | barcode  6.48%")
-    print("  Test3 (MycoAI):      species 100.00%| barcode 100.00%")
+        n_clean_novel_species = stats["clean_species_total"] - stats["clean_species_overlap_n"]
+        print(f"{name:<22}{stats['barcode_total']:>8d}{stats['barcode_overlap_n']:>10d}"
+              f"{stats['substring_dup_n']:>11d}{stats['unknown_species_n']:>12d}"
+              f"{stats['clean_total']:>8d}"
+              f"{stats['clean_species_overlap_n']:>10d}/{stats['clean_species_total']:<6d}"
+              f"{n_clean_novel_species:>16d}")
+    print("=" * 130)
+    print("Clean = barcode not seen in training AND species is resolved AND not a substring/trim duplicate.")
+    print("'Clean SpOverlap' = of the clean specimens' unique species, how many are still in the training vocabulary")
+    print("  (same species, genuinely different individual — the realistic 'ID a new specimen' scenario).")
+    print("'Clean SpNovel' = unique species among the clean specimens that are NOT in training at all")
+    print("  (the strictest true out-of-distribution generalization test).")
 
 
 def get_parser():
