@@ -113,7 +113,60 @@ def compute_overlap(train_df, test_df):
     }
 
 
-def run(data_dir):
+def sample_novel_barcode_examples(train_df, test_df, n=10, seed=0):
+    """Sample up to n (species, test_seq, one_train_seq_of_same_species) examples
+    from the "same species, different barcode" category, for eyeballing whether
+    the sequences really are meaningfully different (not near-identical)."""
+    _, train_keys = species_key(train_df)
+    train_species = set(train_keys)
+    train_seqs = set(train_df["sequence"])
+
+    train_known_df, _ = species_key(train_df)
+    # One representative train sequence per (genus, species) — cheap to build
+    # (~14.7K groups), avoids storing all 5.2M sequences grouped.
+    train_repr = train_known_df.groupby(["genus", "species"])["sequence"].first()
+
+    test_species_col = list(zip(test_df["genus"], test_df["species"]))
+    is_shared_species = pd.Series(
+        [k in train_species for k in test_species_col], index=test_df.index
+    )
+    is_barcode_dup = test_df["sequence"].isin(train_seqs)
+    candidates = test_df[is_shared_species & ~is_barcode_dup]
+
+    sample = candidates.sample(n=min(n, len(candidates)), random_state=seed)
+    examples = []
+    for _, row in sample.iterrows():
+        key = (row["genus"], row["species"])
+        train_seq = train_repr.loc[key]
+        test_seq = row["sequence"]
+        same_len = len(train_seq) == len(test_seq)
+        pct_identity = (
+            100.0 * sum(a == b for a, b in zip(train_seq, test_seq)) / len(test_seq)
+            if same_len and len(test_seq) > 0 else None
+        )
+        examples.append({
+            "genus": row["genus"], "species": row["species"],
+            "test_id": row["id"], "test_seq": test_seq, "test_len": len(test_seq),
+            "train_seq": train_seq, "train_len": len(train_seq),
+            "pct_identity": pct_identity,
+        })
+    return examples
+
+
+def print_examples(examples, name):
+    print(f"--- {name}: {len(examples)} sampled 'same species, different barcode' examples ---")
+    for ex in examples:
+        print(f"  {ex['genus']} {ex['species']}  (test id={ex['test_id']})")
+        print(f"    test  ({ex['test_len']:>4d} bp): {ex['test_seq']}")
+        print(f"    train ({ex['train_len']:>4d} bp): {ex['train_seq']}")
+        if ex["pct_identity"] is not None:
+            print(f"    same length — {ex['pct_identity']:.1f}% identical position-by-position")
+        else:
+            print(f"    different lengths ({ex['test_len']} vs {ex['train_len']} bp) — not directly comparable position-by-position")
+        print()
+
+
+def run(data_dir, show_examples=0):
     train_path = os.path.join(data_dir, "trainset.fasta")
     print(f"Loading train set: {train_path}")
     train_df = load_split(train_path)
@@ -142,6 +195,10 @@ def run(data_dir):
               f"({stats['clean_species_overlap_pct']:6.2f}%)")
         print()
 
+        if show_examples > 0:
+            examples = sample_novel_barcode_examples(train_df, test_df, n=show_examples)
+            print_examples(examples, name)
+
     print("=" * 100)
     print(f"{'Test Set':<22}{'SpeciesOverlap':>16}{'SpeciesPct':>12}{'BarcodeOverlap':>16}{'BarcodePct':>12}")
     for name, stats in rows:
@@ -161,12 +218,16 @@ def get_parser():
     p = argparse.ArgumentParser(description="Verify ITS-5M train/test overlap numbers (Table 6).")
     p.add_argument("--data-dir", "--data_dir", dest="data_dir", required=True,
                     help="Path to ITS-5M data directory (containing trainset.fasta, test1-3.fasta).")
+    p.add_argument("--show-examples", "--show_examples", dest="show_examples", type=int, default=0,
+                    help="For each test set, print this many sampled 'same species, different barcode' "
+                         "examples (test sequence + one same-species train sequence) so you can eyeball "
+                         "whether they're really different. 0 = don't show (default).")
     return p
 
 
 def cli():
     args = get_parser().parse_args()
-    run(args.data_dir)
+    run(args.data_dir, args.show_examples)
 
 
 if __name__ == "__main__":
