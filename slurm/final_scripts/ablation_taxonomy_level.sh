@@ -13,12 +13,16 @@
 #   tasks  8- 9: transformer + triplet, levels [family, order]
 #   tasks 10-11: transformer + ce,      levels [family, order]
 #
-# KNN/ZSC evaluation is run at genus level (same as main experiments)
-# so results are directly comparable.
+# BIOSCAN-5M: KNN/ZSC evaluation is run at genus level (same as main
+# experiments) so results are directly comparable.
+# ITS-5M: pretraining only, no eval — species-level knn_its.py eval is
+# superseded by the leakage-free knn_its_clean.py pipeline (see
+# its_knn_clean_eval.sh), run separately once these checkpoints exist.
 #
-# Time budget: 24h. This script has no finetuning step (pretrain -> KNN/ZSC
-# only), so it needs less than fungi_its_final.sh's 28h (which does include
-# finetuning) despite BIOSCAN-5M running more epochs (35 vs ITS-5M's 15).
+# Time budget: 24h. Should have generous headroom for both datasets: BIOSCAN
+# has no finetuning step (pretrain -> KNN/ZSC only, so less than
+# fungi_its_final.sh's 28h despite more epochs), and ITS-5M has neither
+# finetuning nor eval at all now (pretrain only).
 #
 # Submit for BIOSCAN-5M:  sbatch --export=DATASET=BIOSCAN-5M ablation_taxonomy_level.sh
 # Submit for ITS-5M:      sbatch --export=DATASET=ITS-5M     ablation_taxonomy_level.sh
@@ -107,7 +111,10 @@ else
     RUN_NAME="abl_taxa${TAXA}_k${K_MER}_${N_LAYERS}L${N_HEADS}H_${ARCH}_cls_${AUX_TASK}"
 fi
 
-CKPT_BASE="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE/main_checkpoints_final/ablations/taxonomy_level/${DATASET}/${RUN_NAME}"
+# Checkpoint root derived from DATA_DIR so it always lives in the same
+# directory tree as the dataset (DATA_DIR = .../data/${DATASET}).
+DATA_ROOT="$(dirname "$(dirname "${DATA_DIR}")")"
+CKPT_BASE="${DATA_ROOT}/main_checkpoints_final/ablations/taxonomy_level/${DATASET}/${RUN_NAME}"
 CHECKPOINT="${CKPT_BASE}/checkpoint.pt"
 CHECKPOINT_ENC="${CKPT_BASE}/checkpoint_encoder.pt"
 mkdir -p "${CKPT_BASE}"
@@ -171,23 +178,10 @@ if [ "${DATASET}" = "BIOSCAN-5M" ]; then
             --wandb-project "${WANDB_PROJECT}" --log-wandb
         EC=$?; [ ${EC} -ne 0 ] && OVERALL_EXIT=${EC}
     done
-else
-    # Evaluate at species level (knn_its.py hardcodes species — same target
-    # used by the main experiments' finetuning eval → directly comparable)
-    for REPR in "tokens" "cls" "tokens_with_cls"; do
-        python barcodebert/knn_its.py \
-            --pretrained-checkpoint "${EVAL_CKPT}" \
-            --data-dir              "${DATA_DIR}" \
-            --run-name              "knn_its_${RUN_NAME}_${REPR}" \
-            --n-neighbors           1 3 5 7 \
-            --metric                cosine \
-            --representation-type   "${REPR}" \
-            --results-file          results_final/KNN_ITS_RESULTS_final_abl_taxalevel.txt \
-            --log-wandb \
-            --wandb-project         "${WANDB_PROJECT}"
-        EC=$?; [ ${EC} -ne 0 ] && OVERALL_EXIT=${EC}
-    done
 fi
+# ITS-5M: pretraining only, no eval here — knn_its.py's species-level eval is
+# superseded by the leakage-free knn_its_clean.py pipeline (see
+# its_knn_clean_eval.sh), which will cover these checkpoints once trained.
 
 echo "All done at: $(date) | exit: ${OVERALL_EXIT}"
 exit ${OVERALL_EXIT}

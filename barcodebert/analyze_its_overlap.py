@@ -164,7 +164,20 @@ def compute_overlap(train_df, train_known_df, train_species, train_genera, train
     task_genus_level_n = int(is_clean_species_novel_genus_seen.sum())
 
     # Specimens where even genus is novel — unusable at species OR genus level.
-    task_unusable_n = int((is_clean_species_novel & ~(is_known_genus & is_genus_in_train)).sum())
+    is_clean_unusable = is_clean_species_novel & ~(is_known_genus & is_genus_in_train)
+    task_unusable_n = int(is_clean_unusable.sum())
+
+    # Full per-specimen task label, for CSV export. The known-species branches
+    # below are collectively exhaustive over (barcode_dup, substring_dup,
+    # shared_species, genus_seen), so every known-species row gets overwritten;
+    # "_uncategorized_bug" is a canary that should never survive to output.
+    task_series = pd.Series("unknown_species", index=test_df.index)
+    task_series[is_known_species] = "_uncategorized_bug"
+    task_series[is_known_species & is_barcode_dup] = "exact_duplicate"
+    task_series[is_known_species & ~is_barcode_dup & is_substring_dup] = "substring_duplicate"
+    task_series[is_clean_species_seen] = "species_level"          # Task A
+    task_series[is_clean_species_novel_genus_seen] = "genus_level"  # Task B
+    task_series[is_clean_unusable] = "unusable"
 
     return {
         "species_total": len(unique_test_species),
@@ -189,6 +202,7 @@ def compute_overlap(train_df, train_known_df, train_species, train_genera, train
         "task_species_level_n": task_species_level_n,
         "task_genus_level_n": task_genus_level_n,
         "task_unusable_n": task_unusable_n,
+        "task_series": task_series,
     }
 
 
@@ -243,7 +257,22 @@ def print_examples(examples, name):
         print()
 
 
-def run(data_dir, show_examples=0):
+def export_task_csv(test_df, stats, out_path):
+    """Write id, genus, species, task for every specimen in this test set.
+    Downstream eval scripts filter on task in {"species_level", "genus_level"}
+    to get the exact leakage-free query sets for Task A / Task B."""
+    out_df = pd.DataFrame({
+        "id": test_df["id"],
+        "genus": test_df["genus"],
+        "species": test_df["species"],
+        "task": stats["task_series"],
+    })
+    out_df.to_csv(out_path, index=False)
+    print(f"  Wrote {len(out_df)} rows -> {out_path}")
+    print(f"    task counts: {out_df['task'].value_counts().to_dict()}")
+
+
+def run(data_dir, show_examples=0, export_dir=None):
     train_path = os.path.join(data_dir, "trainset.fasta")
     print(f"Loading train set: {train_path}")
     train_df = load_split(train_path)
@@ -262,6 +291,11 @@ def run(data_dir, show_examples=0):
         test_df = load_split(fpath)
         stats = compute_overlap(train_df, train_known_df, train_species, train_genera, train_seqs, test_df)
         rows.append((name, stats))
+
+        if export_dir:
+            os.makedirs(export_dir, exist_ok=True)
+            tag = fname.replace(".fasta", "")
+            export_task_csv(test_df, stats, os.path.join(export_dir, f"{tag}_tasks.csv"))
 
         print(f"  Species overlap:  {stats['species_overlap_n']:>6d} / {stats['species_total']:<6d} "
               f"({stats['species_overlap_pct']:6.2f}%)")
@@ -330,12 +364,17 @@ def get_parser():
                     help="For each test set, print this many sampled 'same species, different barcode' "
                          "examples (test sequence + one same-species train sequence) so you can eyeball "
                          "whether they're really different. 0 = don't show (default).")
+    p.add_argument("--export-dir", "--export_dir", dest="export_dir", default=None,
+                    help="If set, write <test>_tasks.csv per test set here: id, genus, species, task "
+                         "(task in {species_level, genus_level, unusable, exact_duplicate, "
+                         "substring_duplicate, unknown_species}). Feed species_level/genus_level rows "
+                         "into knn_its_clean.py for the leakage-free evaluation.")
     return p
 
 
 def cli():
     args = get_parser().parse_args()
-    run(args.data_dir, args.show_examples)
+    run(args.data_dir, args.show_examples, args.export_dir)
 
 
 if __name__ == "__main__":
