@@ -1,9 +1,141 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
 from typing import Optional, Tuple, Union
 from transformers import BertForTokenClassification, BertModel, BertPreTrainedModel
+from transformers.models.bert.modeling_bert import BertSelfAttention
 from transformers.modeling_outputs import SequenceClassifierOutput
+
+from RoPE import RotaryPositionalEmbeddings
+
+
+class ZeroPositionalEmbedding(nn.Module):
+    def __init__(self, hidden_size: int):
+        super().__init__()
+        self.hidden_size = hidden_size
+
+    def forward(self, position_ids: torch.LongTensor) -> torch.Tensor:
+        return torch.zeros(
+            *position_ids.shape,
+            self.hidden_size,
+            device=position_ids.device,
+            dtype=torch.float32,
+        )
+
+
+class RotaryBertSelfAttention(BertSelfAttention):
+    def __init__(self, config):
+        super().__init__(config)
+        self.rope = RotaryPositionalEmbeddings(
+            self.attention_head_size,
+            max_seq_len=config.max_position_embeddings,
+            scale=True,
+        )
+
+    # Compatibility shim: some HF versions do not expose this helper on BertSelfAttention.
+    def transpose_for_scores(self, x: torch.Tensor) -> torch.Tensor:
+        new_x_shape = x.size()[:-1] + (self.num_attention_heads, self.attention_head_size)
+        x = x.view(new_x_shape)
+        return x.permute(0, 2, 1, 3)
+
+    def _apply_rope(self, tensor: torch.Tensor, input_pos: Optional[torch.Tensor] = None) -> torch.Tensor:
+        rotated = tensor.permute(0, 2, 1, 3)
+        rotated = self.rope(rotated, input_pos=input_pos)
+        return rotated.permute(0, 2, 1, 3)
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.FloatTensor] = None,
+        head_mask: Optional[torch.FloatTensor] = None,
+        encoder_hidden_states: Optional[torch.FloatTensor] = None,
+        encoder_attention_mask: Optional[torch.FloatTensor] = None,
+        past_key_value: Optional[Tuple[Tuple[torch.FloatTensor]]] = None,
+        past_key_values: Optional[Tuple[Tuple[torch.FloatTensor]]] = None,
+        output_attentions: Optional[bool] = False,
+        **kwargs,
+    ) -> Tuple[torch.Tensor]:
+        # HF versions differ on the kwarg name: some use past_key_value, others past_key_values.
+        if past_key_values is not None:
+            past_key_value = past_key_values
+
+        if encoder_hidden_states is not None:
+            raise NotImplementedError("RotaryBertSelfAttention only supports self-attention in this model.")
+
+        mixed_query_layer = self.query(hidden_states)
+
+        if past_key_value is not None:
+            key_layer_new = self.transpose_for_scores(self.key(hidden_states))
+            value_layer_new = self.transpose_for_scores(self.value(hidden_states))
+            past_length = past_key_value[0].shape[2]
+            position_ids = torch.arange(
+                past_length,
+                past_length + hidden_states.shape[1],
+                device=hidden_states.device,
+            )
+        else:
+            key_layer_new = self.transpose_for_scores(self.key(hidden_states))
+            value_layer = self.transpose_for_scores(self.value(hidden_states))
+            position_ids = None
+
+        query_layer = self.transpose_for_scores(mixed_query_layer)
+
+        query_layer = self._apply_rope(query_layer, input_pos=position_ids)
+        if past_key_value is not None:
+            key_layer = torch.cat([
+                past_key_value[0],
+                self._apply_rope(key_layer_new, input_pos=position_ids),
+            ], dim=2)
+            value_layer = torch.cat([past_key_value[1], value_layer_new], dim=2)
+        else:
+            key_layer = self._apply_rope(key_layer_new)
+
+        use_cache = self.is_decoder
+        if self.is_decoder:
+            past_key_value = (key_layer, value_layer)
+
+        if output_attentions or head_mask is not None:
+            attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
+            attention_scores = attention_scores / math.sqrt(self.attention_head_size)
+
+            if attention_mask is not None:
+                attention_scores = attention_scores + attention_mask
+
+            attention_probs = nn.functional.softmax(attention_scores, dim=-1)
+            attention_probs = self.dropout(attention_probs)
+
+            if head_mask is not None:
+                attention_probs = attention_probs * head_mask
+
+            context_layer = torch.matmul(attention_probs, value_layer)
+        else:
+            context_layer = F.scaled_dot_product_attention(
+                query_layer,
+                key_layer,
+                value_layer,
+                attn_mask=attention_mask,
+                dropout_p=self.dropout.p if self.training else 0.0,
+                is_causal=False,
+            )
+            attention_probs = None
+
+        context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
+        new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
+        context_layer = context_layer.view(new_context_layer_shape)
+
+        outputs = (context_layer, attention_probs) if output_attentions else (context_layer,)
+
+        if use_cache:
+            outputs = outputs + (past_key_value,)
+        return outputs
+
+
+def _apply_rope_to_bert_model(model: BertModel) -> None:
+    model.embeddings.position_embeddings = ZeroPositionalEmbedding(model.config.hidden_size)
+    for layer in model.encoder.layer:
+        layer.attention.self = RotaryBertSelfAttention(model.config)
+        layer.attention.self.position_embedding_type = "absolute"
 
 
 class MAELMModel(nn.Module):
@@ -12,9 +144,11 @@ class MAELMModel(nn.Module):
         super(MAELMModel, self).__init__()
         # Encoder BERT model
         self.encoder = BertModel(encoder_config)
+        _apply_rope_to_bert_model(self.encoder)
 
         # Decoder BERT model with token classification head
         self.decoder = BertForTokenClassification(decoder_config)
+        _apply_rope_to_bert_model(self.decoder.bert)
 
         # Encoder Embeddings (word and positional)
         self.encoder_embedding = self.encoder.embeddings.word_embeddings
@@ -209,6 +343,7 @@ class MAELMForSequenceClassification(BertPreTrainedModel):
         super().__init__(config)
         self.num_labels = config.num_labels
         self.encoder = BertModel(config)
+        _apply_rope_to_bert_model(self.encoder)
         self.classifier = nn.Linear(config.hidden_size, config.num_labels)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.post_init()

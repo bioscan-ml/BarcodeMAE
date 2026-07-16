@@ -103,7 +103,7 @@ class TrainingConfig:
     min_lr_ratio: float = 0.1
     warmup_steps: int = int(TRUE_EPOCH_STEPS*0.15)
     max_steps: int = TRUE_EPOCH_STEPS
-    weight_decay: float = 0.1
+    weight_decay: float = 1e-5
     mask_ratio: float = 0.15
     scheduler: str = "auto"             # "auto" | "linear" | "cosine"
 
