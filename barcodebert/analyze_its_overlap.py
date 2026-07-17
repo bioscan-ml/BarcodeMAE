@@ -137,6 +137,17 @@ def compute_overlap(train_df, train_known_df, train_species, train_genera, train
     is_substring_dup = test_df.index.to_series().isin(substring_dup_idx)
     n_substring_dup = len(substring_dup_idx)
 
+    # Among the "species overlap remaining after removing exact-duplicate
+    # barcodes" specimens (candidates, above): how many distinct species do
+    # they belong to, and on average how many of these specimens does each
+    # of those species have? (Not yet substring-deduped -- this is the raw
+    # "different barcode, same species" population.)
+    n_shared_species_novel_barcode_unique_species = len(set(zip(candidates["genus"], candidates["species"])))
+    shared_species_novel_barcode_avg_per_species = (
+        len(candidates) / n_shared_species_novel_barcode_unique_species
+        if n_shared_species_novel_barcode_unique_species else float("nan")
+    )
+
     # Fully clean: known species, not an exact duplicate, not a substring
     # duplicate. Species overlap recomputed on just this subset.
     is_clean = is_known_species & ~is_barcode_dup & ~is_substring_dup
@@ -192,6 +203,8 @@ def compute_overlap(train_df, train_known_df, train_species, train_genera, train
         "shared_species_specimens": n_shared_species_specimens,
         "shared_species_dup_barcode": n_shared_species_and_dup_barcode,
         "shared_species_novel_barcode": n_shared_species_novel_barcode,
+        "shared_species_novel_barcode_unique_species": n_shared_species_novel_barcode_unique_species,
+        "shared_species_novel_barcode_avg_per_species": shared_species_novel_barcode_avg_per_species,
         "substring_dup_n": n_substring_dup,
         "unknown_species_n": n_unknown_species,
         "clean_total": len(clean_df),
@@ -307,6 +320,8 @@ def run(data_dir, show_examples=0, export_dir=None):
         print(f"    - {stats['shared_species_dup_barcode']} are EXACT duplicate barcodes (leakage)")
         print(f"    - {stats['shared_species_novel_barcode']} are a DIFFERENT individual of the same species "
               f"(same species, different barcode)")
+        print(f"      - across {stats['shared_species_novel_barcode_unique_species']} unique species "
+              f"(avg {stats['shared_species_novel_barcode_avg_per_species']:.2f} barcodes/species)")
         print(f"      - of which {stats['substring_dup_n']} are SUBSTRING duplicates (same read, different "
               f"trim — soft leakage, not a real different individual)")
         print()
