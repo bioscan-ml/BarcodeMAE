@@ -165,6 +165,16 @@ def compute_overlap(train_df, train_known_df, train_species, train_genera, train
     is_clean_species_seen = is_clean & is_shared_species
     task_species_level_n = int(is_clean_species_seen.sum())
 
+    # Same as shared_species_novel_barcode_unique_species/avg_per_species
+    # above, but on the FINAL clean population (substring duplicates also
+    # removed) -- i.e. what's actually left for the species-level task.
+    clean_seen_df = test_df[is_clean_species_seen]
+    task_species_level_unique_species = len(set(zip(clean_seen_df["genus"], clean_seen_df["species"])))
+    task_species_level_avg_per_species = (
+        task_species_level_n / task_species_level_unique_species
+        if task_species_level_unique_species else float("nan")
+    )
+
     # Task B (genus-level KNN on unseen species): clean specimens whose SPECIES
     # is novel (not in training at all) but whose GENUS is in training. Species
     # can't be predicted (no gallery entry), but genus can.
@@ -213,6 +223,8 @@ def compute_overlap(train_df, train_known_df, train_species, train_genera, train
         "clean_species_overlap_pct": (100.0 * len(clean_species_overlap) / len(clean_unique_species)
                                        if clean_unique_species else float("nan")),
         "task_species_level_n": task_species_level_n,
+        "task_species_level_unique_species": task_species_level_unique_species,
+        "task_species_level_avg_per_species": task_species_level_avg_per_species,
         "task_genus_level_n": task_genus_level_n,
         "task_unusable_n": task_unusable_n,
         "task_series": task_series,
@@ -324,6 +336,9 @@ def run(data_dir, show_examples=0, export_dir=None):
               f"(avg {stats['shared_species_novel_barcode_avg_per_species']:.2f} barcodes/species)")
         print(f"      - of which {stats['substring_dup_n']} are SUBSTRING duplicates (same read, different "
               f"trim — soft leakage, not a real different individual)")
+        print(f"    -> after also removing substring duplicates: {stats['task_species_level_n']} left, "
+              f"across {stats['task_species_level_unique_species']} unique species "
+              f"(avg {stats['task_species_level_avg_per_species']:.2f} barcodes/species)")
         print()
 
         if show_examples > 0:
