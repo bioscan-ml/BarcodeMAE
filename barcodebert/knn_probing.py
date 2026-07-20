@@ -16,6 +16,7 @@ from torchtext.vocab import vocab as build_vocab_from_dict
 
 from barcodebert import utils
 from barcodebert.datasets import BPETokenizer, KmerTokenizer, representations_from_df
+from barcodebert.evaluation import knn_results_path, knn_vote
 from barcodebert.io import load_pretrained_model
 
 
@@ -222,8 +223,9 @@ def run(config):
         for partition_name, X_part, y_part in partitions:
             # Use the k closest neighbors from precomputed distances
             ind_k = neigh_ind[partition_name][:, :k]
+            dist_k = neigh_dist[partition_name][:, :k]
             neighbor_labels = clf._y[ind_k]  # encoded class indices, shape (N, k)
-            majority_idx = np.array([np.bincount(row).argmax() for row in neighbor_labels])
+            majority_idx = knn_vote(neighbor_labels, dist_k, weights=config.knn_weights)
             y_pred = clf.classes_[majority_idx]  # map back to original labels
             res_part = {}
             res_part["count"] = len(y_part)
@@ -251,7 +253,8 @@ def run(config):
     print(f"\nThe code finished after: {int(hour)}:{int(minutes):02d}:{seconds:02.0f} (hh:mm:ss)\n")
 
     model_name = os.path.join(*os.path.split(config.pretrained_checkpoint_path)[-2:])
-    with open(getattr(config, "results_file", "KNN_RESULTS.txt"), "a") as f:
+    results_file = knn_results_path(getattr(config, "results_file", "KNN_RESULTS.txt"), config.knn_weights)
+    with open(results_file, "a") as f:
         for k, results in all_results.items():
             acc = results["Unseen"]["accuracy"]
             f.write(f"\n{config.run_name}_{model_name}_k{k}\t {acc:.4f}")
@@ -350,6 +353,16 @@ def get_parser():
         default="cosine",
         type=str,
         help="Distance metric to use for kNN. Default: %(default)s",
+    )
+    group.add_argument(
+        "--knn-weights",
+        "--knn_weights",
+        default="uniform",
+        type=str,
+        choices=["uniform", "distance"],
+        help="Vote weighting for kNN label assignment. 'uniform': every neighbor gets one vote"
+        " (plain majority vote). 'distance': neighbors are weighted by 1/distance (closer"
+        " neighbors count more; 'soft' kNN). Default: %(default)s",
     )
 
     # Data args ---------------------------------------------------------------

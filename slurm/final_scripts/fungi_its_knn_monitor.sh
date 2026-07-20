@@ -33,6 +33,15 @@
 # show assoc user=$USER format=account,maxwall`) since 72h may exceed what
 # def-lila-ab allows.
 #
+# KNN_EVAL_REPR selects which representation the epoch-wise probe evaluates
+# (tokens / cls / tokens_with_cls). Each value is a FULLY INDEPENDENT
+# pretraining run (its own checkpoint path, own random init/trajectory) —
+# submit once per representation type you want monitored:
+#
+#   sbatch                             fungi_its_knn_monitor.sh   # tokens (default)
+#   sbatch --export=KNN_EVAL_REPR=cls             fungi_its_knn_monitor.sh
+#   sbatch --export=KNN_EVAL_REPR=tokens_with_cls fungi_its_knn_monitor.sh
+#
 # Submit:  sbatch fungi_its_knn_monitor.sh
 # ============================================================================
 #SBATCH --job-name=its_knn_monitor
@@ -85,12 +94,17 @@ PRETRAIN_EPOCHS=15; AUX_LOSS_WEIGHT=0.1; AUX_LOSS_WARMUP=5
 K_CLASSES=16; M_PER_CLASS=4; NUM_PAIRS=128; TAXA="genus"
 TRIPLET_MARGIN=0.0; CLS_TAXA_LOSS_W=0.1
 
-# ── Epoch-wise KNN probe config ────────────────────────────────────────────────
+# ── Epoch-wise KNN probe config (overridable via --export=KNN_EVAL_REPR=...) ──
 KNN_EVAL_EVERY=1
-KNN_EVAL_REPR="tokens"
+KNN_EVAL_REPR="${KNN_EVAL_REPR:-tokens}"
+case "${KNN_EVAL_REPR}" in
+    tokens|cls|tokens_with_cls) ;;
+    *) echo "ERROR: KNN_EVAL_REPR must be tokens, cls, or tokens_with_cls (got '${KNN_EVAL_REPR}')" && exit 1 ;;
+esac
 
-# ── Naming (distinct from fungi_its_final.sh so pretraining is never skipped) ──
-RUN_NAME="knnmon_its_k${K_MER}_${N_LAYERS}L${N_HEADS}H_${N_DEC_LAYERS}DL${N_DEC_HEADS}DH_${ARCH}_cls_${AUX_TASK}"
+# ── Naming (distinct from fungi_its_final.sh so pretraining is never skipped;
+#    repr suffix keeps the 3 independent per-representation runs separate) ────
+RUN_NAME="knnmon_its_k${K_MER}_${N_LAYERS}L${N_HEADS}H_${N_DEC_LAYERS}DL${N_DEC_HEADS}DH_${ARCH}_cls_${AUX_TASK}_${KNN_EVAL_REPR}"
 
 # Checkpoint root derived from DATA_DIR so it always lives in the same
 # directory tree as the dataset (DATA_DIR = .../data/${DATASET}).
@@ -100,7 +114,7 @@ CHECKPOINT="${CKPT_BASE}/checkpoint.pt"
 CHECKPOINT_ENC="${CKPT_BASE}/checkpoint_encoder.pt"
 mkdir -p "${CKPT_BASE}"
 
-echo "Arch: ${ARCH} | Aux: ${AUX_TASK} | Taxa: ${TAXA} | Run: ${RUN_NAME}"
+echo "Arch: ${ARCH} | Aux: ${AUX_TASK} | Taxa: ${TAXA} | Probe repr: ${KNN_EVAL_REPR} | Run: ${RUN_NAME}"
 
 # ── Pretraining args ──────────────────────────────────────────────────────────
 PRETRAIN_ARGS=(

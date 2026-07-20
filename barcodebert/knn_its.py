@@ -20,6 +20,7 @@ from torchtext.vocab import vocab as build_vocab_from_dict
 
 from barcodebert import utils
 from barcodebert.datasets import DNADataset, KmerTokenizer
+from barcodebert.evaluation import knn_results_path, knn_vote
 from barcodebert.io import load_pretrained_model
 
 
@@ -201,7 +202,7 @@ def run(config):
         for name, (X_test, y_test) in test_data.items():
             neigh_dist, neigh_ind = clf.kneighbors(X_test, n_neighbors=k)
             neighbor_labels = clf._y[neigh_ind]
-            majority_idx = np.array([np.bincount(row).argmax() for row in neighbor_labels])
+            majority_idx = knn_vote(neighbor_labels, neigh_dist, weights=config.knn_weights)
             y_pred = clf.classes_[majority_idx]
 
             res = {
@@ -223,7 +224,8 @@ def run(config):
 
     # ── Save results ──────────────────────────────────────────────────────────
     model_name = os.path.join(*os.path.split(config.pretrained_checkpoint_path)[-2:])
-    with open(config.results_file, "a") as f:
+    results_file = knn_results_path(config.results_file, config.knn_weights)
+    with open(results_file, "a") as f:
         for k, results in all_results.items():
             for name, res in results.items():
                 tag = name.split()[0].lower()  # test1, test2, test3
@@ -265,6 +267,11 @@ def get_parser():
                         help="KNN neighbor counts. Default: 1 3 5 7")
     parser.add_argument("--metric", default="cosine",
                         help="Distance metric for KNN. Default: cosine")
+    parser.add_argument("--knn-weights", "--knn_weights", dest="knn_weights",
+                        default="uniform", choices=["uniform", "distance"],
+                        help="Vote weighting for kNN label assignment. 'uniform': every neighbor"
+                        " gets one vote. 'distance': neighbors weighted by 1/distance ('soft' kNN)."
+                        " Default: uniform")
     parser.add_argument("--representation-type", "--representation_type", dest="representation_type",
                         default="tokens", choices=["tokens", "cls", "tokens_with_cls"],
                         help="Representation type. Default: tokens")

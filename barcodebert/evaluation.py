@@ -2,12 +2,84 @@
 Evaluation routines.
 """
 
+import os
+
 import numpy as np
 import sklearn.metrics
 import torch
 import torch.nn.functional as F
 
 from . import utils
+
+
+def knn_results_path(results_file, weights):
+    r"""
+    Route distance-weighted ("soft") kNN results to a separate file from
+    uniform-vote results, so the two never collide/overwrite each other in
+    the same results file under an identical run-name tag.
+
+    weights="uniform" (the default): returns results_file unchanged.
+    weights="distance": inserts "distance_" into the filename, right after
+    a leading "KNN_" if present (e.g. "KNN_RESULTS.txt" ->
+    "KNN_distance_RESULTS.txt"), otherwise prefixes "distance_".
+    """
+    if weights != "distance":
+        return results_file
+    dirname, basename = os.path.split(results_file)
+    if basename.startswith("KNN_"):
+        basename = "KNN_distance_" + basename[len("KNN_") :]
+    else:
+        basename = "distance_" + basename
+    return os.path.join(dirname, basename)
+
+
+def knn_vote(neighbor_labels, neighbor_dists=None, weights="uniform"):
+    r"""
+    Majority-vote (or distance-weighted vote) over each query's k nearest
+    neighbors' (already class-index-encoded) labels.
+
+    Parameters
+    ----------
+    neighbor_labels : np.ndarray of shape (n_queries, k)
+        Encoded class index of each of the k nearest neighbors, per query
+        (e.g. ``clf._y[neigh_ind]`` from a fitted sklearn KNeighborsClassifier).
+    neighbor_dists : np.ndarray of shape (n_queries, k), optional
+        Distance to each neighbor, in the same order as neighbor_labels.
+        Required if weights="distance".
+    weights : {"uniform", "distance"}, default="uniform"
+        "uniform": every neighbor gets one vote (plain majority vote).
+        "distance": each neighbor's vote is weighted by 1/distance, so
+        closer neighbors count more (matches sklearn's own
+        KNeighborsClassifier(weights="distance") convention, including its
+        handling of exact matches: if any neighbor is at distance 0, only
+        those zero-distance neighbors vote).
+
+    Returns
+    -------
+    np.ndarray of shape (n_queries,)
+        Encoded class index predicted for each query.
+    """
+    if weights == "uniform":
+        return np.array([np.bincount(row).argmax() for row in neighbor_labels])
+    if weights != "distance":
+        raise ValueError(f"Unknown weights mode: {weights!r} (expected 'uniform' or 'distance')")
+    if neighbor_dists is None:
+        raise ValueError("neighbor_dists is required when weights='distance'")
+
+    preds = np.empty(len(neighbor_labels), dtype=neighbor_labels.dtype)
+    for i, (labels_row, dists_row) in enumerate(zip(neighbor_labels, neighbor_dists)):
+        zero_mask = dists_row == 0
+        if zero_mask.any():
+            # Exact matches: only they get a vote (infinite weight in the limit).
+            labels_row = labels_row[zero_mask]
+            w = np.ones(zero_mask.sum())
+        else:
+            w = 1.0 / dists_row
+        class_weights = {}
+        for lbl, wt in zip(labels_row, w):
+            class_weights[lbl] = class_weights.get(lbl, 0.0) + wt
+        preds[i] = max(class_weights, key=class_weights.get)
+    return preds
 
 
 def evaluate(

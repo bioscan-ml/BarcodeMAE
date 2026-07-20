@@ -69,9 +69,11 @@ from mycoai.data import Data
 from sklearn.neighbors import KNeighborsClassifier
 from torch import nn
 from torchtext.vocab import vocab as build_vocab_from_dict
+from tqdm import tqdm
 
 from barcodebert import utils
 from barcodebert.datasets import KmerTokenizer
+from barcodebert.evaluation import knn_results_path, knn_vote
 from barcodebert.io import load_pretrained_model
 from barcodebert.random_knn import build_random_encoder
 
@@ -92,7 +94,7 @@ def extract_representations(sequences, model, tokenizer, representation_type, us
     embeddings = []
 
     with torch.no_grad():
-        for seq in sequences:
+        for seq in tqdm(sequences, desc=f"  embedding ({representation_type})", mininterval=10.0):
             x, att_mask = tokenizer(seq)
 
             if use_cls_token:
@@ -150,7 +152,7 @@ def fit_knn(X_all, labels_col, max_k, metric):
     return clf
 
 
-def evaluate_task(clf, X_all, labels_col, task_mask, n_neighbors_list):
+def evaluate_task(clf, X_all, labels_col, task_mask, n_neighbors_list, weights="uniform"):
     """Evaluate one (test set, task) combo: rows selected by task_mask,
     labelled by labels_col, against a KNN classifier already fit on the
     appropriate gallery."""
@@ -179,7 +181,7 @@ def evaluate_task(clf, X_all, labels_col, task_mask, n_neighbors_list):
 
     results = {}
     for k in n_neighbors_list:
-        majority_idx = np.array([np.bincount(row[:k]).argmax() for row in neighbor_labels])
+        majority_idx = knn_vote(neighbor_labels[:, :k], neigh_dist[:, :k], weights=weights)
         y_pred = clf.classes_[majority_idx]
         results[k] = {
             "count": len(y_query),
@@ -200,6 +202,8 @@ def run(config):
     print(f"\nFound {torch.cuda.device_count()} GPUs and {utils.get_num_cpu_available()} CPUs.", flush=True)
 
     device = torch.device("cuda") if torch.cuda.is_available() else "cpu"
+
+    results_file = knn_results_path(config.results_file, config.knn_weights)
 
     # ── Model ─────────────────────────────────────────────────────────────────
     if config.pretrained_checkpoint_path:
@@ -259,13 +263,29 @@ def run(config):
     print(f"  genus gallery:   {len(clf_genus._y)} specimens, {len(clf_genus.classes_)} classes")
 
     # ── Query per test set: embed once, evaluate both tasks ───────────────────
-    all_results = {}  # all_results[task][k][test_name] = metrics dict
+    # Results are saved incrementally (right after each test set), not batched
+    # to the end — a later test set failing (e.g. malformed ids in an external
+    # benchmark file) must not lose results already computed for earlier ones.
+    model_name = os.path.basename(config.pretrained_checkpoint_path) if config.pretrained_checkpoint_path else f"random_{config.arch}"
+    all_results = {}  # all_results[task][k][test_name] = metrics dict, for wandb logging at the end
     for name, tag in TEST_SETS:
-        test_df = Data(os.path.join(config.data_dir, f"{tag}.fasta"), allow_duplicates=False).data
         tasks_df = pd.read_csv(os.path.join(config.tasks_dir, f"{tag}_tasks.csv"))
-        task_by_id = dict(zip(tasks_df["id"], tasks_df["task"]))
+        keep_ids = set(tasks_df.loc[tasks_df["task"].isin(TASKS), "id"])
+        if not keep_ids:
+            print(f"\n{name}: 0 query specimens across both tasks — skipping (no fasta load needed)")
+            continue
+
+        test_df = Data(os.path.join(config.data_dir, f"{tag}.fasta"), allow_duplicates=False).data
+        # id -> task via boolean masks + .isin(), NOT .map()/reindex: robust to
+        # duplicate or NaN ids in the source fasta (seen in practice for the
+        # MycoAI benchmark file), since .isin() only checks membership by value.
+        species_ids = set(tasks_df.loc[tasks_df["task"] == "species_level", "id"])
+        genus_ids = set(tasks_df.loc[tasks_df["task"] == "genus_level", "id"])
         test_df = test_df.copy()
-        test_df["task"] = test_df["id"].map(task_by_id)
+        test_df["task"] = np.where(
+            test_df["id"].isin(species_ids), "species_level",
+            np.where(test_df["id"].isin(genus_ids), "genus_level", "other"),
+        )
 
         relevant = test_df[test_df["task"].isin(TASKS)].reset_index(drop=True)
         print(f"\n{name}: {len(relevant)} query specimens across both tasks "
@@ -278,26 +298,25 @@ def run(config):
             relevant["sequence"].tolist(), model, tokenizer, config.representation_type, use_cls, device
         )
 
+        tag_lower = name.split()[0].lower()
         for task in TASKS:
             print(f"  --- {task} ---")
             clf = clf_species if task == "species_level" else clf_genus
             label_col = relevant["species"] if task == "species_level" else relevant["genus"]
             task_mask = relevant["task"] == task
-            res_by_k = evaluate_task(clf, X_query, label_col, task_mask, config.n_neighbors)
-            for k, res in res_by_k.items():
-                all_results.setdefault(task, {}).setdefault(k, {})[name] = res
-                print(f"  [{task}] k={k}: accuracy={res['accuracy']:.2f}% "
-                      f"balanced={res['accuracy-balanced']:.2f}% f1-macro={res['f1-macro']:.2f}% "
-                      f"(n={res['count']})")
+            res_by_k = evaluate_task(clf, X_query, label_col, task_mask, config.n_neighbors,
+                                      weights=config.knn_weights)
 
-    # ── Save results ─────────────────────────────────────────────────────────
-    model_name = os.path.basename(config.pretrained_checkpoint_path) if config.pretrained_checkpoint_path else f"random_{config.arch}"
-    with open(config.results_file, "a") as f:
-        for task, by_k in all_results.items():
-            for k, results in by_k.items():
-                for name, res in results.items():
-                    tag = name.split()[0].lower()
-                    f.write(f"\n{config.run_name}_{task}_{model_name}_{tag}_k{k}\t{res['accuracy']:.4f}")
+            # Save + log each (task, k) result as soon as it's computed — don't
+            # wait for the rest of this test set, let alone the other test sets.
+            with open(results_file, "a") as f:
+                for k, res in res_by_k.items():
+                    all_results.setdefault(task, {}).setdefault(k, {})[name] = res
+                    print(f"  [{task}] k={k}: accuracy={res['accuracy']:.2f}% "
+                          f"balanced={res['accuracy-balanced']:.2f}% f1-macro={res['f1-macro']:.2f}% "
+                          f"(n={res['count']})")
+                    f.write(f"\n{config.run_name}_{task}_{model_name}_{tag_lower}_k{k}\t{res['accuracy']:.4f}")
+        print(f"  -> saved {name} results to {results_file}")
 
     dt_total = time.time() - t_start
     mem = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6
@@ -339,6 +358,10 @@ def get_parser():
     group.add_argument("--n-neighbors", "--n_neighbors", dest="n_neighbors", default=[1, 3, 5, 7],
                         type=int, nargs="+")
     group.add_argument("--metric", default="cosine")
+    group.add_argument("--knn-weights", "--knn_weights", dest="knn_weights",
+                        default="uniform", choices=["uniform", "distance"],
+                        help="Vote weighting for kNN label assignment. 'uniform': every neighbor"
+                        " gets one vote. 'distance': neighbors weighted by 1/distance ('soft' kNN).")
     group.add_argument("--representation-type", "--representation_type", dest="representation_type",
                         default="tokens", choices=["tokens", "cls", "tokens_with_cls"])
 

@@ -63,13 +63,10 @@ DATA_DIR="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE_final/BarcodeM
 TASKS_DIR="${DATA_DIR}/tasks"
 [ ! -d "${TASKS_DIR}" ] && echo "ERROR: ${TASKS_DIR} not found — run its_export_tasks.sh first" && exit 1
 
-# Main checkpoints (fungi_its_final.sh) live under the BarcodeMAE_final root
-# (same root as DATA_DIR for ITS-5M). Mining-ablation checkpoints
-# (ablation_triplet_mining.sh) live under the OLD non-_final root instead —
-# confirmed from the real KNN_ITS_RESULTS_final_abl_mining.txt checkpoint
-# paths. These two are NOT the same root; don't "fix" them to match.
+# Both main (fungi_its_final.sh) and mining-ablation (ablation_triplet_mining.sh)
+# checkpoints for ITS-5M live under the BarcodeMAE_final root (same root as DATA_DIR).
 MAIN_CKPT_ROOT="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE_final/BarcodeMAE/main_checkpoints_final/${DATASET}"
-MINING_CKPT_ROOT="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE/main_checkpoints_final/ablations/triplet_mining/${DATASET}"
+MINING_CKPT_ROOT="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE_final/BarcodeMAE/main_checkpoints_final/ablations/triplet_mining/${DATASET}"
 
 K_MER=6; N_LAYERS=6; N_HEADS=6
 
