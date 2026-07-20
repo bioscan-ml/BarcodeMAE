@@ -9,10 +9,9 @@
 # evaluation.py, so this never collides with the existing uniform-vote
 # results.
 #
-# Array restricted to indices 0-31,33-34 (34 of 35) -- index 32 (random
-# baseline / transformer / nocls / tokens) is excluded here because it
-# hasn't completed even the uniform-vote pass yet (failed from a GPU
-# hardware fault, not yet resubmitted). Add it back in once that lands.
+# Covers all 35 indices (0-34) -- all checkpoints, including index 32
+# (random baseline / transformer / nocls / tokens, which failed once from a
+# GPU hardware fault but has since completed on the uniform-vote pass).
 #
 # REQUIRES its_export_tasks.sh to have been run first (produces
 # data/ITS-5M/tasks/test{1,2,3}_tasks.csv) -- same requirement as
@@ -30,7 +29,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=128G
 #SBATCH --time=05:00:00
-#SBATCH --array=0-31,33-34%6
+#SBATCH --array=0-34%6
 #SBATCH --output=final_logs/%A/%A_%a.out
 #SBATCH --error=final_logs/%A/%A_%a.err
 
@@ -97,15 +96,14 @@ for ARCH in "maelm" "transformer"; do
     add_config "${MINING_CKPT_ROOT}/${RUN_NAME}/${CKPT_FILE}" "${ARCH}" "cls_triplet_miningrandom"
 done
 
-# Random-init baseline (transformer only) -- index 32 (nocls/tokens) is
-# skipped by the --array range above, but stays in the grid-building logic
-# so indices 33/34 keep the exact same positions as its_knn_clean_eval.sh.
+# Random-init baseline (transformer only) -- matches its_knn_clean_eval.sh's
+# 3-task grid exactly: nocls/tokens, cls/cls, cls/tokens_with_cls.
 add_single "RANDOM" "transformer" "nocls" "tokens"
 add_single "RANDOM" "transformer" "cls"   "cls"
 add_single "RANDOM" "transformer" "cls"   "tokens_with_cls"
 
 TOTAL=${#GRID_CKPT[@]}
-echo "Grid has ${TOTAL} entries (expected 35; array restricted to 34 of them)"
+echo "Grid has ${TOTAL} entries (expected 35)"
 if [ "${SLURM_ARRAY_TASK_ID}" -ge "${TOTAL}" ]; then
     echo "Task ${SLURM_ARRAY_TASK_ID} >= grid size ${TOTAL} — nothing to do."
     exit 0
