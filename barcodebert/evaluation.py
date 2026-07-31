@@ -14,29 +14,32 @@ from . import utils
 
 def knn_results_path(results_file, weights):
     r"""
-    Route distance-weighted ("soft") kNN results to a separate file from
-    uniform-vote results, so the two never collide/overwrite each other in
-    the same results file under an identical run-name tag.
+    Route distance- or softmax-weighted ("soft") kNN results to a separate
+    file from uniform-vote results, so the different weighting modes never
+    collide/overwrite each other in the same results file under an
+    identical run-name tag.
 
     weights="uniform" (the default): returns results_file unchanged.
-    weights="distance": inserts "distance_" into the filename, right after
-    a leading "KNN_" if present (e.g. "KNN_RESULTS.txt" ->
-    "KNN_distance_RESULTS.txt"), otherwise prefixes "distance_".
+    weights="distance" or "softmax": inserts "distance_"/"softmax_" into
+    the filename, right after a leading "KNN_" if present (e.g.
+    "KNN_RESULTS.txt" -> "KNN_distance_RESULTS.txt" or
+    "KNN_softmax_RESULTS.txt"), otherwise prefixes it directly.
     """
-    if weights != "distance":
+    if weights not in ("distance", "softmax"):
         return results_file
     dirname, basename = os.path.split(results_file)
+    prefix = weights + "_"
     if basename.startswith("KNN_"):
-        basename = "KNN_distance_" + basename[len("KNN_") :]
+        basename = "KNN_" + prefix + basename[len("KNN_") :]
     else:
-        basename = "distance_" + basename
+        basename = prefix + basename
     return os.path.join(dirname, basename)
 
 
-def knn_vote(neighbor_labels, neighbor_dists=None, weights="uniform"):
+def knn_vote(neighbor_labels, neighbor_dists=None, weights="uniform", temperature=0.07):
     r"""
-    Majority-vote (or distance-weighted vote) over each query's k nearest
-    neighbors' (already class-index-encoded) labels.
+    Majority-vote (or weighted vote) over each query's k nearest neighbors'
+    (already class-index-encoded) labels.
 
     Parameters
     ----------
@@ -45,14 +48,28 @@ def knn_vote(neighbor_labels, neighbor_dists=None, weights="uniform"):
         (e.g. ``clf._y[neigh_ind]`` from a fitted sklearn KNeighborsClassifier).
     neighbor_dists : np.ndarray of shape (n_queries, k), optional
         Distance to each neighbor, in the same order as neighbor_labels.
-        Required if weights="distance".
-    weights : {"uniform", "distance"}, default="uniform"
+        Required if weights is "distance" or "softmax".
+    weights : {"uniform", "distance", "softmax"}, default="uniform"
         "uniform": every neighbor gets one vote (plain majority vote).
         "distance": each neighbor's vote is weighted by 1/distance, so
         closer neighbors count more (matches sklearn's own
         KNeighborsClassifier(weights="distance") convention, including its
         handling of exact matches: if any neighbor is at distance 0, only
         those zero-distance neighbors vote).
+        "softmax": each neighbor's vote is weighted by
+        softmax(similarity / temperature) across the k neighbors of that
+        query, matching DINOv2's kNN evaluation (KnnModule.forward in
+        dinov2/eval/knn.py). Requires ``neighbor_dists`` to be cosine
+        distance (similarity = 1 - distance) -- the caller is responsible
+        for having fit the classifier with metric="cosine". Unlike
+        "distance", there is no special-casing for exact (distance=0)
+        matches: softmax is already numerically well-behaved there (an
+        exact match just gets the largest weight in the limit).
+    temperature : float, default=0.07
+        Temperature for weights="softmax" (ignored otherwise). Lower
+        values sharpen the weighting toward the single closest neighbor
+        (approaching winner-take-all); higher values flatten it toward
+        uniform voting. 0.07 matches DINOv2's default.
 
     Returns
     -------
@@ -61,20 +78,30 @@ def knn_vote(neighbor_labels, neighbor_dists=None, weights="uniform"):
     """
     if weights == "uniform":
         return np.array([np.bincount(row).argmax() for row in neighbor_labels])
-    if weights != "distance":
-        raise ValueError(f"Unknown weights mode: {weights!r} (expected 'uniform' or 'distance')")
+    if weights not in ("distance", "softmax"):
+        raise ValueError(f"Unknown weights mode: {weights!r} (expected 'uniform', 'distance', or 'softmax')")
     if neighbor_dists is None:
-        raise ValueError("neighbor_dists is required when weights='distance'")
+        raise ValueError(f"neighbor_dists is required when weights={weights!r}")
+
+    if weights == "softmax":
+        similarity = 1.0 - neighbor_dists
+        scaled = similarity / temperature
+        scaled = scaled - scaled.max(axis=1, keepdims=True)  # numerical stability only
+        exp = np.exp(scaled)
+        weight_matrix = exp / exp.sum(axis=1, keepdims=True)
 
     preds = np.empty(len(neighbor_labels), dtype=neighbor_labels.dtype)
     for i, (labels_row, dists_row) in enumerate(zip(neighbor_labels, neighbor_dists)):
-        zero_mask = dists_row == 0
-        if zero_mask.any():
-            # Exact matches: only they get a vote (infinite weight in the limit).
-            labels_row = labels_row[zero_mask]
-            w = np.ones(zero_mask.sum())
-        else:
-            w = 1.0 / dists_row
+        if weights == "distance":
+            zero_mask = dists_row == 0
+            if zero_mask.any():
+                # Exact matches: only they get a vote (infinite weight in the limit).
+                labels_row = labels_row[zero_mask]
+                w = np.ones(zero_mask.sum())
+            else:
+                w = 1.0 / dists_row
+        else:  # softmax
+            w = weight_matrix[i]
         class_weights = {}
         for lbl, wt in zip(labels_row, w):
             class_weights[lbl] = class_weights.get(lbl, 0.0) + wt

@@ -152,7 +152,7 @@ def fit_knn(X_all, labels_col, max_k, metric):
     return clf
 
 
-def evaluate_task(clf, X_all, labels_col, task_mask, n_neighbors_list, weights="uniform"):
+def evaluate_task(clf, X_all, labels_col, task_mask, n_neighbors_list, weights="uniform", temperature=0.07):
     """Evaluate one (test set, task) combo: rows selected by task_mask,
     labelled by labels_col, against a KNN classifier already fit on the
     appropriate gallery."""
@@ -181,7 +181,7 @@ def evaluate_task(clf, X_all, labels_col, task_mask, n_neighbors_list, weights="
 
     results = {}
     for k in n_neighbors_list:
-        majority_idx = knn_vote(neighbor_labels[:, :k], neigh_dist[:, :k], weights=weights)
+        majority_idx = knn_vote(neighbor_labels[:, :k], neigh_dist[:, :k], weights=weights, temperature=temperature)
         y_pred = clf.classes_[majority_idx]
         results[k] = {
             "count": len(y_query),
@@ -193,6 +193,13 @@ def evaluate_task(clf, X_all, labels_col, task_mask, n_neighbors_list, weights="
 
 
 def run(config):
+    if config.knn_weights == "softmax" and config.metric != "cosine":
+        raise ValueError(
+            "--knn-weights=softmax requires --metric=cosine (it converts distance to "
+            f"similarity via similarity = 1 - distance, which only holds for cosine distance; "
+            f"got --metric={config.metric!r})"
+        )
+
     t_start = time.time()
     if config.log_wandb:
         import wandb
@@ -305,7 +312,7 @@ def run(config):
             label_col = relevant["species"] if task == "species_level" else relevant["genus"]
             task_mask = relevant["task"] == task
             res_by_k = evaluate_task(clf, X_query, label_col, task_mask, config.n_neighbors,
-                                      weights=config.knn_weights)
+                                      weights=config.knn_weights, temperature=config.temperature)
 
             # Save + log each (task, k) result as soon as it's computed — don't
             # wait for the rest of this test set, let alone the other test sets.
@@ -359,9 +366,14 @@ def get_parser():
                         type=int, nargs="+")
     group.add_argument("--metric", default="cosine")
     group.add_argument("--knn-weights", "--knn_weights", dest="knn_weights",
-                        default="uniform", choices=["uniform", "distance"],
+                        default="uniform", choices=["uniform", "distance", "softmax"],
                         help="Vote weighting for kNN label assignment. 'uniform': every neighbor"
-                        " gets one vote. 'distance': neighbors weighted by 1/distance ('soft' kNN).")
+                        " gets one vote. 'distance': neighbors weighted by 1/distance ('soft' kNN)."
+                        " 'softmax': neighbors weighted by softmax(similarity / --temperature),"
+                        " matching DINOv2's kNN eval; requires --metric=cosine.")
+    group.add_argument("--temperature", dest="temperature", type=float, default=0.07,
+                        help="Temperature for --knn-weights=softmax (ignored otherwise). Lower is"
+                        " more winner-take-all, higher is closer to uniform voting.")
     group.add_argument("--representation-type", "--representation_type", dest="representation_type",
                         default="tokens", choices=["tokens", "cls", "tokens_with_cls"])
 

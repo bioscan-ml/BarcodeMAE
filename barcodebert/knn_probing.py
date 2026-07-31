@@ -29,6 +29,13 @@ def run(config):
     config : argparse.Namespace or OmegaConf
         The configuration for this experiment.
     """
+    if config.knn_weights == "softmax" and config.metric != "cosine":
+        raise ValueError(
+            "--knn-weights=softmax requires --metric=cosine (it converts distance to "
+            f"similarity via similarity = 1 - distance, which only holds for cosine distance; "
+            f"got --metric={config.metric!r})"
+        )
+
     t_start = time.time()
     timing_stats = {}
 
@@ -225,7 +232,7 @@ def run(config):
             ind_k = neigh_ind[partition_name][:, :k]
             dist_k = neigh_dist[partition_name][:, :k]
             neighbor_labels = clf._y[ind_k]  # encoded class indices, shape (N, k)
-            majority_idx = knn_vote(neighbor_labels, dist_k, weights=config.knn_weights)
+            majority_idx = knn_vote(neighbor_labels, dist_k, weights=config.knn_weights, temperature=config.temperature)
             y_pred = clf.classes_[majority_idx]  # map back to original labels
             res_part = {}
             res_part["count"] = len(y_part)
@@ -359,10 +366,19 @@ def get_parser():
         "--knn_weights",
         default="uniform",
         type=str,
-        choices=["uniform", "distance"],
+        choices=["uniform", "distance", "softmax"],
         help="Vote weighting for kNN label assignment. 'uniform': every neighbor gets one vote"
         " (plain majority vote). 'distance': neighbors are weighted by 1/distance (closer"
-        " neighbors count more; 'soft' kNN). Default: %(default)s",
+        " neighbors count more; 'soft' kNN). 'softmax': neighbors are weighted by"
+        " softmax(similarity / --temperature), matching DINOv2's kNN eval; requires"
+        " --metric=cosine. Default: %(default)s",
+    )
+    group.add_argument(
+        "--temperature",
+        default=0.07,
+        type=float,
+        help="Temperature for --knn-weights=softmax (ignored otherwise). Lower is more"
+        " winner-take-all, higher is closer to uniform voting. Default: %(default)s",
     )
 
     # Data args ---------------------------------------------------------------

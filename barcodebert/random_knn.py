@@ -42,6 +42,7 @@ from torchtext.vocab import vocab as build_vocab_from_dict
 from transformers import BertConfig, BertForTokenClassification, BertModel
 
 from barcodebert.datasets import KmerTokenizer, representations_from_df
+from barcodebert.evaluation import knn_results_path, knn_vote
 
 
 def build_random_encoder(
@@ -80,6 +81,13 @@ def build_random_encoder(
 
 
 def run(config):
+    if config.knn_weights == "softmax" and config.metric != "cosine":
+        raise ValueError(
+            "--knn-weights=softmax requires --metric=cosine (it converts distance to "
+            f"similarity via similarity = 1 - distance, which only holds for cosine distance; "
+            f"got --metric={config.metric!r})"
+        )
+
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     print(f"Using device: {device}")
     print(f"\nConfiguration:\n{config}\n")
@@ -180,8 +188,9 @@ def run(config):
         all_results[k] = {}
         for name, X_part, y_part in partitions:
             ind_k = neigh_ind[name][:, :k]
+            dist_k = neigh_dist[name][:, :k]
             neighbor_labels = clf._y[ind_k]
-            majority_idx = np.array([np.bincount(row).argmax() for row in neighbor_labels])
+            majority_idx = knn_vote(neighbor_labels, dist_k, weights=config.knn_weights, temperature=config.temperature)
             y_pred = clf.classes_[majority_idx]
 
             res = {
@@ -197,7 +206,8 @@ def run(config):
                 print(f"  {metric_name + ' ':.<24s} {v:6.2f} %")
 
     model_name = f"random_{config.arch}"
-    with open(config.results_file, "a") as f:
+    results_file = knn_results_path(config.results_file, config.knn_weights)
+    with open(results_file, "a") as f:
         for k, results in all_results.items():
             acc = results["Unseen"]["accuracy"]
             f.write(f"\n{config.run_name}_{model_name}_k{k}\t{acc:.4f}")
@@ -240,6 +250,19 @@ def get_parser():
     # KNN
     p.add_argument("--n-neighbors", "--n_neighbors", dest="n_neighbors", type=int, nargs="+", default=[1])
     p.add_argument("--metric", default="cosine")
+    p.add_argument(
+        "--knn-weights", "--knn_weights", dest="knn_weights",
+        default="uniform", choices=["uniform", "distance", "softmax"],
+        help="Vote weighting for kNN label assignment. 'uniform': every neighbor gets one vote"
+        " (plain majority vote). 'distance': neighbors weighted by 1/distance ('soft' kNN)."
+        " 'softmax': neighbors weighted by softmax(similarity / --temperature), matching"
+        " DINOv2's kNN eval; requires --metric=cosine. Default: %(default)s",
+    )
+    p.add_argument(
+        "--temperature", dest="temperature", type=float, default=0.07,
+        help="Temperature for --knn-weights=softmax (ignored otherwise). Lower is more"
+        " winner-take-all, higher is closer to uniform voting. Default: %(default)s",
+    )
     p.add_argument(
         "--representation-type",
         "--representation_type",
