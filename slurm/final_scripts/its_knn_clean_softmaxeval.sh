@@ -128,7 +128,7 @@ if [ "${CKPT}" = "RANDOM" ]; then
         --data-dir "${DATA_DIR}" --tasks-dir "${TASKS_DIR}" \
         --arch "${ARCH}" --k-mer ${K_MER} --stride ${K_MER} --n-layers ${N_LAYERS} --n-heads ${N_HEADS} \
         --encoder-embed-dim 768 "${USE_CLS_ARGS[@]}" \
-        --representation-type "${REPR}" --n-neighbors 1 3 5 7 --metric cosine \
+        --representation-type "${REPR}" --n-neighbors 1 3 5 7 10 15 20 25 50 --metric cosine \
         --knn-weights softmax --temperature ${TEMPERATURE} \
         --run-name "${RUN_NAME}" --results-file results_final/KNN_ITS_CLEAN_RESULTS.txt \
         --log-wandb --wandb-project barcodemae_cls
@@ -140,7 +140,7 @@ else
     python barcodebert/knn_its_clean.py \
         --pretrained-checkpoint "${CKPT}" \
         --data-dir "${DATA_DIR}" --tasks-dir "${TASKS_DIR}" \
-        --representation-type "${REPR}" --n-neighbors 1 3 5 7 --metric cosine \
+        --representation-type "${REPR}" --n-neighbors 1 3 5 7 10 15 20 25 50 --metric cosine \
         --knn-weights softmax --temperature ${TEMPERATURE} \
         --run-name "${RUN_NAME}" --results-file results_final/KNN_ITS_CLEAN_RESULTS.txt \
         --log-wandb --wandb-project barcodemae_cls

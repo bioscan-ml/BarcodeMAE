@@ -130,9 +130,9 @@ if [ "${CKPT}" = "RANDOM" ]; then
     echo "Task: RANDOM baseline | ${TAG} | Arch: ${ARCH} | Repr: ${REPR} | Run: ${RUN_NAME}"
     python barcodebert/random_knn.py \
         --dataset "${DATASET}" --data-dir "${DATA_DIR}" \
-        --arch "${ARCH}" --k-mer ${K_MER} --n-layers ${N_LAYERS} --n-heads ${N_HEADS} \
+        --arch "${ARCH}" --k-mer ${K_MER} --stride ${K_MER} --n-layers ${N_LAYERS} --n-heads ${N_HEADS} \
         --encoder-embed-dim 768 "${USE_CLS_ARGS[@]}" \
-        --representation-type "${REPR}" --taxon genus --n-neighbors 1 3 5 7 --metric cosine \
+        --representation-type "${REPR}" --taxon genus --n-neighbors 1 3 5 7 10 15 20 25 50 --metric cosine \
         --knn-weights softmax --temperature ${TEMPERATURE} \
         --run-name "${RUN_NAME}" --results-file results_final/RANDOM_KNN_RESULTS.txt
     EC=$?
@@ -142,7 +142,7 @@ else
     echo "Task: ${TAG} | Arch: ${ARCH} | Repr: ${REPR} | Ckpt: ${CKPT} | Run: ${RUN_NAME}"
     python barcodebert/knn_probing.py \
         --pretrained-checkpoint "${CKPT}" --dataset "${DATASET}" --data-dir "${DATA_DIR}" \
-        --representation_type "${REPR}" --taxon genus --n-neighbors 1 3 5 7 --metric cosine \
+        --representation_type "${REPR}" --taxon genus --n-neighbors 1 3 5 7 10 15 20 25 50 --metric cosine \
         --knn-weights softmax --temperature ${TEMPERATURE} \
         --run-name "${RUN_NAME}" \
         --results-file results_final/KNN_RESULTS_final.txt \
