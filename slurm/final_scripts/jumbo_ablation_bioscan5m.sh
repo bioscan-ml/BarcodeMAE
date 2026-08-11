@@ -19,6 +19,12 @@
 #     4  |          3           |   2x
 #     5  |          6           |   2x
 #
+# Tasks 3-5 (E=2x) need more memory than 0-2 (E=1x): doubling the MLP
+# expansion factor doubles the wide Jumbo FFN's hidden width, increasing both
+# parameter and activation memory, most at J=6. --mem bumped to 256G
+# accordingly (tasks 0-2 originally succeeded at 128G, but re-running the
+# whole array here rather than splitting configs across two --mem values).
+#
 # J=1 is NOT equivalent to the standard CLS run: even at J=1 the jumbo token
 # is routed through its own dedicated wide FFN (Jumbo MLP) after each
 # attention layer, unlike the plain CLS token which shares the per-token FFN.
@@ -43,7 +49,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:h100:1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=128G
+#SBATCH --mem=256G
 #SBATCH --time=48:00:00
 #SBATCH --array=0-5%3
 #SBATCH --output=final_logs/%A/%A_%a.out

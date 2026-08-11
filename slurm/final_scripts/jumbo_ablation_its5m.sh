@@ -49,7 +49,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:h100:1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=128G
+#SBATCH --mem=256G
 #SBATCH --time=24:00:00
 #SBATCH --array=0-5%3
 #SBATCH --output=final_logs/%A/%A_%a.out
