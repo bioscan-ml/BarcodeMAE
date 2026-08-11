@@ -51,14 +51,22 @@ export PYTHONPATH=""
 source "/scratch/$USER/BarcodeMAE_venv/bin/activate"
 
 # ── External model dependencies ────────────────────────────────────────────
-# einops/triton: required by DNABERT-2's (and commonly HyenaDNA's) modeling
-# code -- pure-Python/pip installs, safe to always install.
-pip install -q --no-deps einops triton  # --no-deps: never let pip touch torch/torchtext
-# mamba-ssm/causal-conv1d: Caduceus is Mamba-based. Many HF ports fall back to
-# a pure-PyTorch slow path if these aren't present, so a failed build here
-# (they need nvcc to compile CUDA kernels) is not necessarily fatal -- best
-# effort only, do not let a build failure kill the whole array task.
-pip install -q --no-deps mamba-ssm causal-conv1d || echo "WARNING: mamba-ssm/causal-conv1d install failed; Caduceus will fall back to its slow path if it hits this at runtime."  # --no-deps: never let pip touch torch/torchtext
+# DO NOT pip install here: every array task shares the same venv and runs
+# concurrently, so a pip install inside this script races with every other
+# task's pip install against the same site-packages directory -- this WILL
+# corrupt the venv (half-deleted packages, missing submodules like
+# functorch/, broken torch/torchtext imports for every job using this venv,
+# not just this one). Install once, interactively, BEFORE submitting this
+# array job:
+#   source /scratch/$USER/BarcodeMAE_venv/bin/activate
+#   pip install --no-deps einops triton
+#   pip install --no-deps mamba-ssm causal-conv1d  # best-effort; Caduceus
+#       falls back to a slow path if this isn't present -- not fatal if it fails.
+# If torch/torchtext ever get corrupted by a concurrent install (symptoms:
+# "ImportError: cannot import name 'inf' from 'torch'", "~orch" pip warnings,
+# missing functorch/), repair with:
+#   pip install --force-reinstall torch==2.1.1
+#   pip install --force-reinstall torchtext==0.16.2
 
 export WANDB_MODE=offline
 export WANDB_DIR="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE/wandb_final/array_${SLURM_ARRAY_JOB_ID}"
