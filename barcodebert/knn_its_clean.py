@@ -16,8 +16,9 @@ two things knn_its.py gets wrong for a true generalization measurement:
 
 This script instead:
   - Takes the *_tasks.csv files exported by `analyze_its_overlap.py
-    --export-dir` and, for each test set, evaluates BOTH well-posed tasks in
-    one pass (sharing embeddings — see below):
+    --export-dir` and, for each test set, evaluates the well-posed task(s)
+    selected by --tasks (species_level and/or genus_level; both by default)
+    in one pass (sharing embeddings — see below):
       species_level : query species IS in the training vocabulary (same
                        species, genuinely different individual — "identify a
                        new specimen of a known species").
@@ -33,7 +34,10 @@ This script instead:
     evaluating, only the KNN fit does) — species-level and genus-level KNN
     classifiers are both fit on the same embeddings, just filtered/labelled
     differently. Doubling the (very expensive) gallery embedding pass to
-    evaluate two tasks would be pure waste.
+    evaluate two tasks would be pure waste. --tasks genus_level goes further:
+    gallery/query specimens with no genus label (species-only) are dropped
+    before embedding, not just before the KNN query, so a genus-only run
+    embeds strictly fewer sequences, not just half the classifiers.
   - Supports both a real pretrained checkpoint AND a random-initialized
     encoder (--arch, no --pretrained-checkpoint), for the random baseline.
 
@@ -53,6 +57,16 @@ Usage:
         --tasks-dir ./BarcodeMAE/data/ITS-5M/tasks \
         --representation-type tokens \
         --run-name knnclean_random --results-file results_final/KNN_ITS_CLEAN_RESULTS.txt
+
+    # Genus-level only (shorter job -- skips species_level entirely, gallery
+    # and query embedding included, not just the KNN query)
+    python knn_its_clean.py \
+        --pretrained-checkpoint path/to/checkpoint_encoder.pt \
+        --data-dir ./BarcodeMAE/data/ITS-5M \
+        --tasks-dir ./BarcodeMAE/data/ITS-5M/tasks \
+        --tasks genus_level \
+        --representation-type tokens \
+        --run-name knnclean_myrun --results-file results_final/KNN_ITS_CLEAN_RESULTS.txt
 """
 
 import argparse
@@ -82,7 +96,7 @@ TEST_SETS = [
     ("Test2 (Filamentous)", "test2"),
     ("Test3 (MycoAI)", "test3"),
 ]
-TASKS = ["species_level", "genus_level"]
+ALL_TASKS = ["species_level", "genus_level"]
 UNKNOWN_STR = "?"
 
 
@@ -213,7 +227,25 @@ def run(config):
     results_file = knn_results_path(config.results_file, config.knn_weights)
 
     # ── Model ─────────────────────────────────────────────────────────────────
-    if config.pretrained_checkpoint_path:
+    if config.external_model_id:
+        # Off-the-shelf external HuggingFace baseline, evaluated zero-shot (no
+        # fine-tuning). See external_models.py: the wrapper matches
+        # extract_representations()'s tokenizer(seq)->(ids,mask) /
+        # model(ids,mask)->output calling convention exactly, so nothing below
+        # needs to change.
+        from barcodebert.external_models import load_external_model
+
+        model, tokenizer = load_external_model(
+            config.external_model_id,
+            device=device,
+            max_length=config.external_max_length,
+            model_cls=config.external_model_cls,
+        )
+        max_len = config.external_max_length
+        use_cls = False
+        config.representation_type = "tokens"  # universal mean-pool; see external_models.py docstring
+        print(f"\nExternal model: {config.external_model_id} | max_len={max_len}")
+    elif config.pretrained_checkpoint_path:
         model, pre_checkpoint = load_pretrained_model(config.pretrained_checkpoint_path, device=device)
         model.classifier = nn.Identity()
         model = model.to(device)
@@ -223,63 +255,81 @@ def run(config):
         stride = getattr(pre_config, "stride", k_mer)
         max_len = getattr(pre_config, "max_len", 660)
         use_cls = getattr(pre_config, "use_cls_token", False)
+
+        print(f"\nk_mer={k_mer}, stride={stride}, max_len={max_len}, use_cls_token={use_cls}")
+
+        # ── Tokenizer ────────────────────────────────────────────────────────
+        base_pairs = "ACGT"
+        specials = ["[MASK]", "[UNK]", "[CLS]"] if use_cls else ["[MASK]", "[UNK]"]
+        kmers = ["".join(k) for k in product(base_pairs, repeat=k_mer)]
+        kmer_dict = dict.fromkeys(kmers, 1)
+        vocab = build_vocab_from_dict(kmer_dict, specials=specials)
+        vocab.set_default_index(vocab["[UNK]"])
+        tokenizer = KmerTokenizer(k_mer, vocab, stride=stride, padding=True, max_len=max_len)
     else:
-        model = None  # built below, once the tokenizer's vocab size is known
         k_mer, stride, max_len = config.k_mer, config.stride, config.max_len
         use_cls = config.use_cls_token
 
-    print(f"\nk_mer={k_mer}, stride={stride}, max_len={max_len}, use_cls_token={use_cls}")
+        print(f"\nk_mer={k_mer}, stride={stride}, max_len={max_len}, use_cls_token={use_cls}")
 
-    # ── Tokenizer ────────────────────────────────────────────────────────────
-    base_pairs = "ACGT"
-    specials = ["[MASK]", "[UNK]", "[CLS]"] if use_cls else ["[MASK]", "[UNK]"]
-    kmers = ["".join(k) for k in product(base_pairs, repeat=k_mer)]
-    kmer_dict = dict.fromkeys(kmers, 1)
-    vocab = build_vocab_from_dict(kmer_dict, specials=specials)
-    vocab.set_default_index(vocab["[UNK]"])
-    tokenizer = KmerTokenizer(k_mer, vocab, stride=stride, padding=True, max_len=max_len)
+        # ── Tokenizer ────────────────────────────────────────────────────────
+        base_pairs = "ACGT"
+        specials = ["[MASK]", "[UNK]", "[CLS]"] if use_cls else ["[MASK]", "[UNK]"]
+        kmers = ["".join(k) for k in product(base_pairs, repeat=k_mer)]
+        kmer_dict = dict.fromkeys(kmers, 1)
+        vocab = build_vocab_from_dict(kmer_dict, specials=specials)
+        vocab.set_default_index(vocab["[UNK]"])
+        tokenizer = KmerTokenizer(k_mer, vocab, stride=stride, padding=True, max_len=max_len)
 
-    if model is None:
         model = build_random_encoder(
             vocab_size=len(vocab), n_layers=config.n_layers, n_heads=config.n_heads,
             hidden_size=config.encoder_embed_dim, max_position_embeddings=max_len + 2, arch=config.arch,
         ).to(device)
         model.eval()
 
-    # ── Gallery: embed once, fit two classifiers (species, genus) ─────────────
+    # ── Gallery: embed once, fit only the classifier(s) --tasks asks for ──────
     print(f"\nLoading gallery (trainset)...")
     gallery_df_raw = Data(os.path.join(config.data_dir, "trainset.fasta"), allow_duplicates=True).data
-    # Drop rows useless for BOTH classifiers up front — no point embedding a
-    # specimen with neither species nor genus resolved (fit_knn would filter
-    # it out downstream anyway, but only after paying for the embedding).
-    is_usable = (gallery_df_raw["species"] != UNKNOWN_STR) | (gallery_df_raw["genus"] != UNKNOWN_STR)
+    # Drop rows useless for every requested classifier up front — no point
+    # embedding a specimen whose only resolved label is one we're not asked to
+    # evaluate (fit_knn would filter it out downstream anyway, but only after
+    # paying for the embedding — the dominant cost of this whole script).
+    needed_label_cols = [c for task, c in (("species_level", "species"), ("genus_level", "genus")) if task in config.tasks]
+    is_usable = pd.concat([gallery_df_raw[c] != UNKNOWN_STR for c in needed_label_cols], axis=1).any(axis=1)
     gallery_df = gallery_df_raw[is_usable].reset_index(drop=True)
-    print(f"  {len(gallery_df_raw)} raw specimens -> {len(gallery_df)} with species and/or genus resolved "
-          f"({len(gallery_df_raw) - len(gallery_df)} dropped, useless for either classifier)")
+    print(f"  {len(gallery_df_raw)} raw specimens -> {len(gallery_df)} with a resolved label for "
+          f"{'/'.join(needed_label_cols)} ({len(gallery_df_raw) - len(gallery_df)} dropped, useless for --tasks {config.tasks})")
 
-    print("Extracting gallery embeddings (once, reused for both label levels)...")
+    print(f"Extracting gallery embeddings (once, reused for {'/'.join(config.tasks)})...")
     X_gallery = extract_representations(
         gallery_df["sequence"].tolist(), model, tokenizer, config.representation_type, use_cls, device
     )
 
-    print("Fitting species-level and genus-level KNN classifiers...", flush=True)
+    print(f"Fitting KNN classifier(s) for {config.tasks}...", flush=True)
     max_k = max(config.n_neighbors)
-    clf_species = fit_knn(X_gallery, gallery_df["species"], max_k, config.metric)
-    clf_genus = fit_knn(X_gallery, gallery_df["genus"], max_k, config.metric)
-    print(f"  species gallery: {len(clf_species._y)} specimens, {len(clf_species.classes_)} classes")
-    print(f"  genus gallery:   {len(clf_genus._y)} specimens, {len(clf_genus.classes_)} classes")
+    clf_species = fit_knn(X_gallery, gallery_df["species"], max_k, config.metric) if "species_level" in config.tasks else None
+    clf_genus = fit_knn(X_gallery, gallery_df["genus"], max_k, config.metric) if "genus_level" in config.tasks else None
+    if clf_species is not None:
+        print(f"  species gallery: {len(clf_species._y)} specimens, {len(clf_species.classes_)} classes")
+    if clf_genus is not None:
+        print(f"  genus gallery:   {len(clf_genus._y)} specimens, {len(clf_genus.classes_)} classes")
 
     # ── Query per test set: embed once, evaluate both tasks ───────────────────
     # Results are saved incrementally (right after each test set), not batched
     # to the end — a later test set failing (e.g. malformed ids in an external
     # benchmark file) must not lose results already computed for earlier ones.
-    model_name = os.path.basename(config.pretrained_checkpoint_path) if config.pretrained_checkpoint_path else f"random_{config.arch}"
+    if config.external_model_id:
+        model_name = os.path.join(*os.path.split(config.external_model_id)[-2:])
+    elif config.pretrained_checkpoint_path:
+        model_name = os.path.basename(config.pretrained_checkpoint_path)
+    else:
+        model_name = f"random_{config.arch}"
     all_results = {}  # all_results[task][k][test_name] = metrics dict, for wandb logging at the end
     for name, tag in TEST_SETS:
         tasks_df = pd.read_csv(os.path.join(config.tasks_dir, f"{tag}_tasks.csv"))
-        keep_ids = set(tasks_df.loc[tasks_df["task"].isin(TASKS), "id"])
+        keep_ids = set(tasks_df.loc[tasks_df["task"].isin(config.tasks), "id"])
         if not keep_ids:
-            print(f"\n{name}: 0 query specimens across both tasks — skipping (no fasta load needed)")
+            print(f"\n{name}: 0 query specimens across {config.tasks} — skipping (no fasta load needed)")
             continue
 
         test_df = Data(os.path.join(config.data_dir, f"{tag}.fasta"), allow_duplicates=False).data
@@ -294,8 +344,11 @@ def run(config):
             np.where(test_df["id"].isin(genus_ids), "genus_level", "other"),
         )
 
-        relevant = test_df[test_df["task"].isin(TASKS)].reset_index(drop=True)
-        print(f"\n{name}: {len(relevant)} query specimens across both tasks "
+        # Only embed specimens belonging to a requested task — with --tasks
+        # genus_level, species_level-only query specimens are dropped here,
+        # before the (expensive, one-sequence-at-a-time) embedding call below.
+        relevant = test_df[test_df["task"].isin(config.tasks)].reset_index(drop=True)
+        print(f"\n{name}: {len(relevant)} query specimens across {config.tasks} "
               f"({(relevant['task'] == 'species_level').sum()} species_level, "
               f"{(relevant['task'] == 'genus_level').sum()} genus_level)")
         if len(relevant) == 0:
@@ -306,7 +359,7 @@ def run(config):
         )
 
         tag_lower = name.split()[0].lower()
-        for task in TASKS:
+        for task in config.tasks:
             print(f"  --- {task} ---")
             clf = clf_species if task == "species_level" else clf_genus
             label_col = relevant["species"] if task == "species_level" else relevant["genus"]
@@ -351,6 +404,19 @@ def get_parser():
     group.add_argument("--pretrained-checkpoint", "--pretrained_checkpoint", dest="pretrained_checkpoint_path",
                         default=None, help="Path to pretrained encoder checkpoint. Omit for random-init baseline.")
 
+    group = p.add_argument_group("Model (external HuggingFace baseline)")
+    group.add_argument("--external-model-id", "--external_model_id", dest="external_model_id", default=None,
+                        metavar="HF_REPO_ID",
+                        help="HuggingFace repo id of an off-the-shelf external DNA foundation model to evaluate"
+                        " zero-shot (e.g. zhihan1996/DNABERT-2-117M). Overrides --pretrained-checkpoint when set.")
+    group.add_argument("--external-model-cls", "--external_model_cls", dest="external_model_cls", default="auto",
+                        choices=["auto", "masked-lm", "causal-lm"],
+                        help="Which HuggingFace auto-class to load --external-model-id with. Default: %(default)s")
+    group.add_argument("--external-max-length", "--external_max_length", dest="external_max_length",
+                        type=int, default=660,
+                        help="Fixed sequence length to pad/truncate to when --external-model-id is set."
+                        " Default: %(default)s")
+
     group = p.add_argument_group("Model (random-init baseline — used when --pretrained-checkpoint is omitted)")
     group.add_argument("--arch", default="transformer", choices=["maelm", "transformer"])
     group.add_argument("--k-mer", "--k_mer", dest="k_mer", type=int, default=6)
@@ -376,6 +442,11 @@ def get_parser():
                         " more winner-take-all, higher is closer to uniform voting.")
     group.add_argument("--representation-type", "--representation_type", dest="representation_type",
                         default="tokens", choices=["tokens", "cls", "tokens_with_cls"])
+
+    group.add_argument("--tasks", dest="tasks", default=list(ALL_TASKS), nargs="+", choices=ALL_TASKS,
+                        help="Which label level(s) to evaluate. Restricting to genus_level skips embedding"
+                        " species_level-only gallery/query specimens entirely (the dominant cost of this"
+                        " script), not just the species_level KNN query. Default: %(default)s")
 
     group = p.add_argument_group("Run / logging")
     group.add_argument("--run-name", "--run_name", dest="run_name", default="knn_its_clean")

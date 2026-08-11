@@ -35,6 +35,8 @@ def run(config):
             f"similarity via similarity = 1 - distance, which only holds for cosine distance; "
             f"got --metric={config.metric!r})"
         )
+    if not config.external_model_id and not config.pretrained_checkpoint_path:
+        raise ValueError("Either --pretrained-checkpoint or --external-model-id must be given.")
 
     t_start = time.time()
     timing_stats = {}
@@ -60,49 +62,71 @@ def run(config):
 
     device = torch.device("cuda") if torch.cuda.is_available() else "cpu"
 
-    # LOAD PRE-TRAINED CHECKPOINT =============================================
-    # Map model parameters to be load to the specified gpu.
-    model, pre_checkpoint = load_pretrained_model(config.pretrained_checkpoint_path, device=device)
-    # Override the classifier with an identity function as we only want the embeddings
-    model.classifier = nn.Identity()
-    model = model.to(device)
+    # LOAD MODEL ===============================================================
+    if config.external_model_id:
+        # Off-the-shelf external HuggingFace baseline, evaluated zero-shot (no
+        # fine-tuning): skip our own checkpoint format and k-mer/BPE tokenizer
+        # entirely. See external_models.py for why no other code below needs
+        # to change -- the wrapper matches our own tokenizer(seq)->(ids,mask) /
+        # model(ids,mask)->output calling convention exactly.
+        from barcodebert.external_models import load_external_model
 
-    keys_to_reuse = [
-        "k_mer",
-        "stride",
-        "max_len",
-        "tokenizer",
-        "bpe_path",
-        "tokenize_n_nucleotide",
-        "predict_n_nucleotide",
-        "pretrain_levenshtein",
-        "levenshtein_vectorized",
-        "n_layers",
-        "n_heads",
-        "dataset_name",
-        "use_cls_token"
-    ]
-    default_kwargs = vars(get_parser().parse_args(["--pretrained_checkpoint=dummy.pt", "--dataset=foo_bar"]))
-    for key in keys_to_reuse:
-        ckpt_val = getattr(pre_checkpoint["config"], key, None)
-        cur_val = getattr(config, key, None)
-        if cur_val == ckpt_val:
-            pass
-        elif cur_val is None or cur_val == default_kwargs.get(key):
-            print(f"  Overriding default config value {key}={cur_val} with {ckpt_val} from pretrained checkpoint.")
-        elif ckpt_val is not None and cur_val != ckpt_val:
-            raise ValueError(
-                f"config value for {key} differs from pretrained checkpoint:"
-                f" {cur_val} (ours) vs {ckpt_val} (pretrained checkpoint)"
-            )
-        setattr(config, key, ckpt_val)
+        model, tokenizer = load_external_model(
+            config.external_model_id,
+            device=device,
+            max_length=config.external_max_length,
+            model_cls=config.external_model_cls,
+        )
+        config.representation_type = "tokens"  # universal mean-pool; see external_models.py docstring
+        config.use_cls_token = False
+        config.pretrained_checkpoint_path = config.external_model_id  # used below to build the results tag
+        config.pretrained_run_name = config.external_model_id
+        config.pretrained_run_id = None
+    else:
+        # Map model parameters to be load to the specified gpu.
+        model, pre_checkpoint = load_pretrained_model(config.pretrained_checkpoint_path, device=device)
+        # Override the classifier with an identity function as we only want the embeddings
+        model.classifier = nn.Identity()
+        model = model.to(device)
 
-    config.pretrained_run_name = getattr(pre_checkpoint["config"], "run_name", None)
-    config.pretrained_run_id = getattr(pre_checkpoint["config"], "run_id", None)
+        keys_to_reuse = [
+            "k_mer",
+            "stride",
+            "max_len",
+            "tokenizer",
+            "bpe_path",
+            "tokenize_n_nucleotide",
+            "predict_n_nucleotide",
+            "pretrain_levenshtein",
+            "levenshtein_vectorized",
+            "n_layers",
+            "n_heads",
+            "dataset_name",
+            "use_cls_token"
+        ]
+        default_kwargs = vars(get_parser().parse_args(["--pretrained_checkpoint=dummy.pt", "--dataset=foo_bar"]))
+        for key in keys_to_reuse:
+            ckpt_val = getattr(pre_checkpoint["config"], key, None)
+            cur_val = getattr(config, key, None)
+            if cur_val == ckpt_val:
+                pass
+            elif cur_val is None or cur_val == default_kwargs.get(key):
+                print(f"  Overriding default config value {key}={cur_val} with {ckpt_val} from pretrained checkpoint.")
+            elif ckpt_val is not None and cur_val != ckpt_val:
+                raise ValueError(
+                    f"config value for {key} differs from pretrained checkpoint:"
+                    f" {cur_val} (ours) vs {ckpt_val} (pretrained checkpoint)"
+                )
+            setattr(config, key, ckpt_val)
+
+        config.pretrained_run_name = getattr(pre_checkpoint["config"], "run_name", None)
+        config.pretrained_run_id = getattr(pre_checkpoint["config"], "run_id", None)
 
     # DATASET =================================================================
 
-    if config.tokenizer == "kmer":
+    if config.external_model_id:
+        pass  # tokenizer already built by load_external_model() above
+    elif config.tokenizer == "kmer":
         base_pairs = "ACGT"
         # specials = ["[MASK]", "[CLS]", "[SEP]", "[PAD]", "[UNK]"]
         if hasattr(config, "use_cls_token") and config.use_cls_token:
@@ -336,8 +360,39 @@ def get_parser():
         default="",
         type=str,
         metavar="PATH",
-        required=True,
-        help="Path to pretrained model checkpoint (required).",
+        help="Path to pretrained model checkpoint. Required unless --external-model-id is given.",
+    )
+    group.add_argument(
+        "--external-model-id",
+        "--external_model_id",
+        dest="external_model_id",
+        default=None,
+        type=str,
+        metavar="HF_REPO_ID",
+        help="HuggingFace repo id of an off-the-shelf external DNA foundation model to evaluate"
+        " zero-shot (e.g. zhihan1996/DNABERT-2-117M), instead of one of our own pretrained"
+        " checkpoints. When set, --pretrained-checkpoint is ignored.",
+    )
+    group.add_argument(
+        "--external-model-cls",
+        "--external_model_cls",
+        dest="external_model_cls",
+        default="auto",
+        type=str,
+        choices=["auto", "masked-lm", "causal-lm"],
+        help="Which HuggingFace auto-class to load --external-model-id with: 'auto' (bare"
+        " encoder, e.g. DNABERT-2/DNABERT-S/Nucleotide Transformer/BarcodeBERT), 'masked-lm'"
+        " (e.g. GROVER/GENA-LM/Caduceus), or 'causal-lm' (e.g. HyenaDNA/Omni-DNA)."
+        " Default: %(default)s",
+    )
+    group.add_argument(
+        "--external-max-length",
+        "--external_max_length",
+        dest="external_max_length",
+        default=660,
+        type=int,
+        help="Fixed sequence length (in the external model's own tokens) to pad/truncate to when"
+        " --external-model-id is set. Default: %(default)s",
     )
     # kNN args ----------------------------------------------------------------
     group = parser.add_argument_group("kNN parameters")

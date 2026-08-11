@@ -1,0 +1,42 @@
+# Extra/overriding deps for evaluating off-the-shelf external HuggingFace DNA
+# foundation model checkpoints (--external-model-id) via
+# barcodebert/external_models.py, from slurm/final_scripts/external_baseline_knn.sh.
+#
+# requirements.txt / CC_requirements.txt pin transformers==4.29.2 (2023), which
+# predates every one of these checkpoints -- DNABERT-2, GROVER, HyenaDNA, etc.
+# all ship as trust_remote_code repos that assume much newer `transformers`
+# internals and will fail to load under 4.29.2.
+#
+# Do NOT just bump transformers in the main requirements.txt / shared venv to
+# fix this: barcodebert/jumbo_transformer.py's JumboBertLayer reaches directly
+# into a transformers.models.bert.modeling_bert.BertLayer instance's
+# .attention/.intermediate/.output submodules and calls `self.attention(...)`
+# using the 4.29-era BertAttention call signature. Recent transformers releases
+# restructured BERT's attention internals (SDPA/eager backend selection, then a
+# unified attention-interface refactor in 4.48+); bumping the shared venv risks
+# silently breaking Jumbo BERT pretraining/finetuning -- the paper's main
+# model. Install this into a SEPARATE venv instead, built once from a LOGIN
+# node (compute nodes have no internet access):
+#
+#   module load StdEnv/2023 cudacore/.12.6.3 python/3.11
+#   python -m venv --system-site-packages /scratch/$USER/BarcodeMAE_external_venv
+#   source /scratch/$USER/BarcodeMAE_external_venv/bin/activate
+#   pip install --no-index -r requirements-external-baselines.txt || \
+#       pip install -r requirements-external-baselines.txt   # fallback if not in the CC wheelhouse
+#
+# --system-site-packages means torch/numpy/etc. are reused from the main venv
+# (do not reinstall torch here); only transformers itself is overridden.
+# external_baseline_knn.sh activates this venv instead of the main one.
+#
+# Pin is a recent-enough stable release for trust_remote_code loading. If a
+# specific checkpoint needs newer/older, bump this file and rebuild the venv --
+# it's fully separate from the training venv, so there's nothing else to break.
+transformers==4.46.3
+sentencepiece
+einops>=0.7
+
+# Uncomment to enable Caduceus (kuleshov-group/caduceus-*) -- a Mamba
+# state-space model, needs these CUDA kernels on top of the above. Not
+# currently in external_baseline_knn.sh's grid; see that script's header.
+# mamba-ssm
+# causal-conv1d

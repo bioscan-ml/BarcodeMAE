@@ -4,6 +4,16 @@
 # run fresh on the current cluster at the SAME extended k-range as the
 # softmax/distance runs (1,3,5,7,10,15,20,25,50).
 #
+# GENUS-LEVEL ONLY (--tasks genus_level): knn_its_clean.py now accepts
+# --tasks to restrict which label level(s) it evaluates. species_level query
+# specimens are skipped entirely -- not embedded, not KNN-queried -- and the
+# gallery drops specimens with no genus label, so this isn't just "skip half
+# the printed results," it actually embeds fewer sequences. Time budget cut
+# 6h -> 4h accordingly; this is a conservative estimate (gallery shrinkage
+# depends on how many specimens have species-but-not-genus resolved, which
+# wasn't profiled), not a measured number -- watch the first few tasks'
+# actual runtime and adjust back up if 4h is too tight.
+#
 # This exists because the previously-used "uniform" reference numbers were
 # fragmented across a stale local file, an older non-cluster-machine run,
 # and a couple of lambda-ablation files -- see conversation history. Rerunning
@@ -39,7 +49,7 @@
 #SBATCH --gres=gpu:h100:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=128G
-#SBATCH --time=06:00:00
+#SBATCH --time=04:00:00
 #SBATCH --array=0-34%6
 #SBATCH --output=final_logs/%A/%A_%a.out
 #SBATCH --error=final_logs/%A/%A_%a.err
@@ -135,6 +145,7 @@ if [ "${CKPT}" = "RANDOM" ]; then
         --data-dir "${DATA_DIR}" --tasks-dir "${TASKS_DIR}" \
         --arch "${ARCH}" --k-mer ${K_MER} --stride ${K_MER} --n-layers ${N_LAYERS} --n-heads ${N_HEADS} \
         --encoder-embed-dim 768 "${USE_CLS_ARGS[@]}" \
+        --tasks genus_level \
         --representation-type "${REPR}" --n-neighbors 1 3 5 7 10 15 20 25 50 --metric cosine \
         --run-name "${RUN_NAME}" --results-file results_final/KNN_ITS_CLEAN_RESULTS.txt \
         --log-wandb --wandb-project barcodemae_cls
@@ -146,6 +157,7 @@ else
     python barcodebert/knn_its_clean.py \
         --pretrained-checkpoint "${CKPT}" \
         --data-dir "${DATA_DIR}" --tasks-dir "${TASKS_DIR}" \
+        --tasks genus_level \
         --representation-type "${REPR}" --n-neighbors 1 3 5 7 10 15 20 25 50 --metric cosine \
         --run-name "${RUN_NAME}" --results-file results_final/KNN_ITS_CLEAN_RESULTS.txt \
         --log-wandb --wandb-project barcodemae_cls
