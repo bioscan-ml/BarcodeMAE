@@ -50,6 +50,16 @@ export PYTHONNOUSERSITE=1
 export PYTHONPATH=""
 source "/scratch/$USER/BarcodeMAE_venv/bin/activate"
 
+# ── External model dependencies ────────────────────────────────────────────
+# einops/triton: required by DNABERT-2's (and commonly HyenaDNA's) modeling
+# code -- pure-Python/pip installs, safe to always install.
+pip install -q einops triton
+# mamba-ssm/causal-conv1d: Caduceus is Mamba-based. Many HF ports fall back to
+# a pure-PyTorch slow path if these aren't present, so a failed build here
+# (they need nvcc to compile CUDA kernels) is not necessarily fatal -- best
+# effort only, do not let a build failure kill the whole array task.
+pip install -q mamba-ssm causal-conv1d || echo "WARNING: mamba-ssm/causal-conv1d install failed; Caduceus will fall back to its slow path if it hits this at runtime."
+
 export WANDB_MODE=offline
 export WANDB_DIR="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE/wandb_final/array_${SLURM_ARRAY_JOB_ID}"
 mkdir -p "$WANDB_DIR"
