@@ -65,15 +65,7 @@ echo "Installing mamba_ssm + causal-conv1d ..."
 pip install causal-conv1d==1.5.0.post8+computecanada --quiet
 pip install mamba-ssm==2.2.4+computecanada --quiet
 
-# ── 6. transformers -- oldest version that supports ModernBERT (GENA-LM) and
-#      has correct AutoConfig/trust_remote_code fallback behaviour (HyenaDNA).
-#      Deliberately not jumping to latest, to minimize the chance of breaking
-#      the already-working DNABERT-2/DNABERT-S/NT/BarcodeBERT loading code
-#      via unrelated API changes.
-echo "Installing transformers 4.48.0 (ModernBERT support) ..."
-pip install transformers==4.48.0+computecanada --quiet
-
-# ── 7. pkg_resources stub (cluster setuptools omits it; wandb==0.15.12 needs it)
+# ── 6. pkg_resources stub (cluster setuptools omits it; wandb==0.15.12 needs it)
 echo "Creating pkg_resources stub ..."
 SITE=$(python -c "import site; print(site.getsitepackages()[0])")
 mkdir -p "$SITE/pkg_resources"
@@ -90,15 +82,27 @@ def get_distribution(name):
     return _Dist(name)
 EOF
 
-# ── 8. requirements_lambda.txt (skip torch-family AND transformers lines,
-#      already installed above with the versions this venv needs) ────────────
-echo "Installing requirements_lambda.txt (excluding torch-family/transformers) ..."
-grep -v -E "^(torch|transformers|#|$)" "$REPO_DIR/requirements_lambda.txt" | \
+# ── 7. requirements_lambda.txt (skip torch-family/transformers/tokenizers --
+#      the file pins tokenizers==0.13.3 for the OLD transformers==4.29.2 the
+#      main venv uses; installing that here with normal dependency resolution
+#      would silently drag transformers back down to stay compatible with it) ─
+echo "Installing requirements_lambda.txt (excluding torch-family/transformers/tokenizers) ..."
+grep -v -E "^(torch|transformers|tokenizers|#|$)" "$REPO_DIR/requirements_lambda.txt" | \
     pip install -r /dev/stdin --quiet
 
-# ── 8b. mycoai-its -- install explicitly from PyPI in case cluster wheelhouse skips it
+# ── 7b. mycoai-its -- install explicitly from PyPI in case cluster wheelhouse skips it
 echo "Installing mycoai-its ..."
 pip install mycoai-its==0.0.5 --index-url https://pypi.org/simple/ --quiet
+
+# ── 8. transformers -- installed LAST (after everything else that might pull
+#      in an incompatible tokenizers/transformers pin), with normal dependency
+#      resolution so it can pull in whatever tokenizers version it actually
+#      needs. Oldest version that supports ModernBERT (GENA-LM) and has
+#      correct AutoConfig/trust_remote_code fallback behaviour (HyenaDNA) --
+#      deliberately not jumping to latest, to minimize the chance of breaking
+#      the already-working DNABERT-2/DNABERT-S/NT/BarcodeBERT loading code.
+echo "Installing transformers 4.48.0 (ModernBERT support) ..."
+pip install --force-reinstall transformers==4.48.0+computecanada --quiet
 
 # ── 9. barcodebert editable install ──────────────────────────────────────────
 echo "Installing barcodebert (editable) ..."
