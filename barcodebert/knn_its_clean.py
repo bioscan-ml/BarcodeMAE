@@ -82,7 +82,6 @@ import torch
 from mycoai.data import Data
 from sklearn.neighbors import KNeighborsClassifier
 from torch import nn
-from torchtext.vocab import vocab as build_vocab_from_dict
 from tqdm import tqdm
 
 from barcodebert import utils
@@ -295,6 +294,8 @@ def run(config):
         base_pairs = "ACGT"
         specials = ["[MASK]", "[UNK]", "[CLS]"] if use_cls else ["[MASK]", "[UNK]"]
         kmers = ["".join(k) for k in product(base_pairs, repeat=k_mer)]
+        from torchtext.vocab import vocab as build_vocab_from_dict
+
         kmer_dict = dict.fromkeys(kmers, 1)
         vocab = build_vocab_from_dict(kmer_dict, specials=specials)
         vocab.set_default_index(vocab["[UNK]"])
@@ -309,6 +310,8 @@ def run(config):
         base_pairs = "ACGT"
         specials = ["[MASK]", "[UNK]", "[CLS]"] if use_cls else ["[MASK]", "[UNK]"]
         kmers = ["".join(k) for k in product(base_pairs, repeat=k_mer)]
+        from torchtext.vocab import vocab as build_vocab_from_dict
+
         kmer_dict = dict.fromkeys(kmers, 1)
         vocab = build_vocab_from_dict(kmer_dict, specials=specials)
         vocab.set_default_index(vocab["[UNK]"])

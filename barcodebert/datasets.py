@@ -11,7 +11,6 @@ import torch
 from mycoai.data import Data
 from mycoai.data.encoders import TaxonEncoder
 from torch.utils.data import Dataset
-from torchtext.vocab import vocab as build_vocab_from_dict
 from tqdm import tqdm
 from transformers import AutoTokenizer
 
@@ -160,6 +159,8 @@ class DNADataset(Dataset):
                         prediction_kmers.append(kmer)
 
                 kmers = prediction_kmers + other_kmers
+
+            from torchtext.vocab import vocab as build_vocab_from_dict
 
             kmer_dict = dict.fromkeys(kmers, 1)
             self.vocab = build_vocab_from_dict(kmer_dict, specials=self.special_tokens)

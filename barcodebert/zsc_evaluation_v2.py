@@ -12,7 +12,6 @@ import umap
 from sklearn.cluster import AgglomerativeClustering
 from sklearn.metrics import adjusted_mutual_info_score
 from torch import nn
-from torchtext.vocab import vocab as build_vocab
 
 sys.path.append(".")
 from barcodebert import utils
@@ -141,6 +140,8 @@ def run(config):
         kmers = ["".join(kmer) for kmer in product(base_pairs, repeat=config.k_mer)]
         if getattr(config, "tokenize_n_nucleotide", False):
             kmers = [k for k in kmers if "N" not in k] + [k for k in kmers if "N" in k]
+        from torchtext.vocab import vocab as build_vocab
+
         vocab = build_vocab(dict.fromkeys(kmers, 1), specials=specials)
         vocab.set_default_index(vocab["[UNK]"])
         tokenizer = KmerTokenizer(config.k_mer, vocab, stride=config.stride,

@@ -38,7 +38,6 @@ import torch
 import torch.optim
 from sklearn.neighbors import KNeighborsClassifier
 from torch import nn
-from torchtext.vocab import vocab as build_vocab_from_dict
 from transformers import BertConfig, BertForTokenClassification, BertModel
 
 from barcodebert.datasets import KmerTokenizer, representations_from_df
@@ -98,6 +97,8 @@ def run(config):
         specials = ["[MASK]", "[UNK]", "[CLS]"]
     else:
         specials = ["[MASK]", "[UNK]"]
+
+    from torchtext.vocab import vocab as build_vocab_from_dict
 
     kmers = ["".join(kmer) for kmer in product(base_pairs, repeat=config.k_mer)]
     kmer_dict = dict.fromkeys(kmers, 1)

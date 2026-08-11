@@ -12,7 +12,6 @@ import torch
 import torch.optim
 from sklearn.neighbors import KNeighborsClassifier
 from torch import nn
-from torchtext.vocab import vocab as build_vocab_from_dict
 
 from barcodebert import utils
 from barcodebert.datasets import BPETokenizer, KmerTokenizer, representations_from_df
@@ -152,6 +151,8 @@ def run(config):
                     prediction_kmers.append(kmer)
 
             kmers = prediction_kmers + other_kmers
+
+        from torchtext.vocab import vocab as build_vocab_from_dict
 
         kmer_dict = dict.fromkeys(kmers, 1)
         vocab = build_vocab_from_dict(kmer_dict, specials=specials)
