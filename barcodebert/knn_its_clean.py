@@ -146,6 +146,39 @@ def extract_representations(sequences, model, tokenizer, representation_type, us
                 sum_embeddings = (hidden_states * att_mask.unsqueeze(-1)).sum(1)
                 sum_mask = att_mask.sum(1, keepdim=True)
                 embedding = sum_embeddings / sum_mask
+            elif representation_type == "jumbo":
+                # Flattened jumbo representation (B, J*D) -- the CLS analogue
+                # for a Jumbo-CLS model. Mirrors datasets.py's "jumbo" branch.
+                if not (hasattr(output, "jumbo_representation") and output.jumbo_representation is not None):
+                    raise ValueError(
+                        "representation_type='jumbo' requires a Jumbo transformer model "
+                        "with a jumbo_representation output."
+                    )
+                embedding = output.jumbo_representation
+            elif representation_type == "jumbo_avg":
+                # Mean of jumbo tokens only (B, J, D) -> (B, D).
+                if not (hasattr(output, "jumbo_tokens") and output.jumbo_tokens is not None):
+                    raise ValueError(
+                        "representation_type='jumbo_avg' requires a Jumbo transformer model "
+                        "with a jumbo_tokens output."
+                    )
+                embedding = output.jumbo_tokens.mean(dim=1)
+            elif representation_type == "all_tokens":
+                # Mean over jumbo tokens + sequence tokens together, the
+                # Tokens+CLS analogue for a Jumbo-CLS model.
+                if not (hasattr(output, "jumbo_tokens") and output.jumbo_tokens is not None):
+                    raise ValueError(
+                        "representation_type='all_tokens' requires a Jumbo transformer model "
+                        "with a jumbo_tokens output."
+                    )
+                jumbo_tokens = output.jumbo_tokens
+                all_tokens = torch.cat([jumbo_tokens, hidden_states], dim=1)
+                batch_size, num_jumbo, _ = jumbo_tokens.shape
+                jumbo_mask = torch.ones(batch_size, num_jumbo, device=att_mask.device, dtype=att_mask.dtype)
+                full_mask = torch.cat([jumbo_mask, att_mask], dim=1)
+                sum_embeddings = (all_tokens * full_mask.unsqueeze(-1)).sum(1)
+                sum_mask = full_mask.sum(1, keepdim=True)
+                embedding = sum_embeddings / sum_mask
             else:
                 raise ValueError(f"Unsupported representation_type: {representation_type}")
 
@@ -441,7 +474,8 @@ def get_parser():
                         help="Temperature for --knn-weights=softmax (ignored otherwise). Lower is"
                         " more winner-take-all, higher is closer to uniform voting.")
     group.add_argument("--representation-type", "--representation_type", dest="representation_type",
-                        default="tokens", choices=["tokens", "cls", "tokens_with_cls"])
+                        default="tokens",
+                        choices=["tokens", "cls", "tokens_with_cls", "jumbo", "jumbo_avg", "all_tokens"])
 
     group.add_argument("--tasks", dest="tasks", default=list(ALL_TASKS), nargs="+", choices=ALL_TASKS,
                         help="Which label level(s) to evaluate. Restricting to genus_level skips embedding"
