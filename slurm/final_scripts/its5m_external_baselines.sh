@@ -94,7 +94,7 @@ MODEL_IDS=(
     "AIRI-Institute/moderngena-base"
 )
 MODEL_CLS=(
-    "auto" "auto" "auto" "auto" "causal-lm" "masked-lm" "auto"
+    "auto" "auto" "masked-lm" "auto" "causal-lm" "masked-lm" "auto"
 )
 MODEL_TAGS=(
     "dnabert2" "dnaberts" "nucleotide_transformer" "barcodebert"

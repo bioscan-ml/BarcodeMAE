@@ -96,7 +96,7 @@ MODEL_IDS=(
 MODEL_CLS=(
     "auto"       # DNABERT-2
     "auto"       # DNABERT-S
-    "auto"       # Nucleotide Transformer
+    "masked-lm"  # Nucleotide Transformer
     "auto"       # BarcodeBERT
     "causal-lm"  # HyenaDNA-tiny
     "masked-lm"  # Caduceus-PS-1k
