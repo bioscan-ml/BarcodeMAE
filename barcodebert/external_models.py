@@ -49,8 +49,13 @@ class ExternalTokenizerWrapper:
             max_length=self.max_length,
             return_tensors="pt",
         )
-        token_ids = enc["input_ids"][0].to(dtype=torch.int64)
-        att_mask = enc["attention_mask"][0].to(dtype=torch.int32)
+        ids = enc["input_ids"]
+        mask = enc["attention_mask"]
+        # Most HF tokenizers return a batch dim (1, max_length) even for a single
+        # string, but some custom remote-code tokenizers (e.g. BarcodeBERT) don't --
+        # only squeeze it off if it's actually there, otherwise use as-is.
+        token_ids = (ids[0] if ids.dim() > 1 else ids).to(dtype=torch.int64)
+        att_mask = (mask[0] if mask.dim() > 1 else mask).to(dtype=torch.int32)
         return token_ids, att_mask
 
 
