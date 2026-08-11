@@ -50,7 +50,9 @@ class ExternalTokenizerWrapper:
             return_tensors="pt",
         )
         ids = enc["input_ids"]
-        mask = enc["attention_mask"]
+        # Some custom remote-code tokenizers (e.g. Caduceus, SSM-style) don't
+        # return an attention_mask at all -- fall back to full attention.
+        mask = enc["attention_mask"] if "attention_mask" in enc else torch.ones_like(ids)
         # Most HF tokenizers return a batch dim (1, max_length) even for a single
         # string, but some custom remote-code tokenizers (e.g. BarcodeBERT) don't --
         # only squeeze it off if it's actually there, otherwise use as-is.
