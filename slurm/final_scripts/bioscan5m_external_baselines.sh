@@ -35,7 +35,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=04:00:00
-#SBATCH --array=0-8
+#SBATCH --array=0-6
 #SBATCH --output=final_logs/%A/%A_%a.out
 #SBATCH --error=final_logs/%A/%A_%a.err
 
@@ -79,7 +79,11 @@ DATA_DIR="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE/data/${DATASET
 TEMPERATURE=0.07
 MAX_LEN=660
 
-# ── Grid (9 tasks): HF repo id | HF auto-class | short tag ────────────────────
+# ── Grid (7 tasks): HF repo id | HF auto-class | short tag ────────────────────
+# GROVER and Omni-DNA dropped: encoder-only GENA-LM is the architecturally
+# closer/more important comparison point (matches BarcodeMAE+'s encoder-based
+# MAE setup), and Omni-DNA (causal, arXiv-only preprint) was judged lowest
+# priority of the three.
 MODEL_IDS=(
     "zhihan1996/DNABERT-2-117M"
     "zhihan1996/DNABERT-S"
@@ -88,8 +92,6 @@ MODEL_IDS=(
     "LongSafari/hyenadna-tiny-1k-seqlen"
     "kuleshov-group/caduceus-ps_seqlen-1k_d_model-256_n_layer-4_lr-8e-3"
     "AIRI-Institute/moderngena-base"
-    "PoetschLab/GROVER"
-    "zehui127/Omni-DNA-116M"
 )
 MODEL_CLS=(
     "auto"       # DNABERT-2
@@ -99,12 +101,10 @@ MODEL_CLS=(
     "causal-lm"  # HyenaDNA-tiny
     "masked-lm"  # Caduceus-PS-1k
     "auto"       # GENA-LM (ModernGENA)
-    "masked-lm"  # GROVER
-    "causal-lm"  # Omni-DNA
 )
 MODEL_TAGS=(
     "dnabert2" "dnaberts" "nucleotide_transformer" "barcodebert"
-    "hyenadna_tiny" "caduceus_ps1k" "gena_lm" "grover" "omni_dna"
+    "hyenadna_tiny" "caduceus_ps1k" "gena_lm"
 )
 
 MODEL_ID="${MODEL_IDS[$SLURM_ARRAY_TASK_ID]}"

@@ -36,7 +36,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=128G
 #SBATCH --time=06:00:00
-#SBATCH --array=0-8
+#SBATCH --array=0-6
 #SBATCH --output=final_logs/%A/%A_%a.out
 #SBATCH --error=final_logs/%A/%A_%a.err
 
@@ -82,7 +82,8 @@ TASKS_DIR="${DATA_DIR}/tasks"
 TEMPERATURE=0.07
 MAX_LEN=660
 
-# ── Grid (9 tasks): same models as bioscan5m_external_baselines.sh ────────────
+# ── Grid (7 tasks): same models as bioscan5m_external_baselines.sh ────────────
+# GROVER and Omni-DNA dropped, same rationale as the BIOSCAN-5M script.
 MODEL_IDS=(
     "zhihan1996/DNABERT-2-117M"
     "zhihan1996/DNABERT-S"
@@ -91,15 +92,13 @@ MODEL_IDS=(
     "LongSafari/hyenadna-tiny-1k-seqlen"
     "kuleshov-group/caduceus-ps_seqlen-1k_d_model-256_n_layer-4_lr-8e-3"
     "AIRI-Institute/moderngena-base"
-    "PoetschLab/GROVER"
-    "zehui127/Omni-DNA-116M"
 )
 MODEL_CLS=(
-    "auto" "auto" "auto" "auto" "causal-lm" "masked-lm" "auto" "masked-lm" "causal-lm"
+    "auto" "auto" "auto" "auto" "causal-lm" "masked-lm" "auto"
 )
 MODEL_TAGS=(
     "dnabert2" "dnaberts" "nucleotide_transformer" "barcodebert"
-    "hyenadna_tiny" "caduceus_ps1k" "gena_lm" "grover" "omni_dna"
+    "hyenadna_tiny" "caduceus_ps1k" "gena_lm"
 )
 
 MODEL_ID="${MODEL_IDS[$SLURM_ARRAY_TASK_ID]}"
