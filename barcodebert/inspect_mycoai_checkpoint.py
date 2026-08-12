@@ -16,8 +16,23 @@ Usage:
 """
 
 import argparse
+import inspect
 
 import torch
+
+
+def describe_method(obj, name):
+    method = getattr(obj, name, None)
+    if method is None:
+        print(f"  (no .{name})")
+        return
+    print(f"  .{name} signature: {inspect.signature(method)}")
+    try:
+        print(f"  .{name} source:")
+        for line in inspect.getsource(method).splitlines():
+            print(f"    {line}")
+    except (OSError, TypeError) as e:
+        print(f"  (could not get source: {e})")
 
 
 def describe(obj, prefix=""):
@@ -62,6 +77,13 @@ def cli():
     obj = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     print("=" * 100)
     describe(obj)
+    print("=" * 100)
+    print("--- .latent_space ---")
+    describe_method(obj, "latent_space")
+    print("--- .classify ---")
+    describe_method(obj, "classify")
+    print("--- .get_config ---")
+    describe_method(obj, "get_config")
     print("=" * 100)
 
 

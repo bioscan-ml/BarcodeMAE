@@ -69,14 +69,14 @@ source "/scratch/$USER/BarcodeMAE_venv/bin/activate"
 #   pip install --force-reinstall torchtext==0.16.2
 
 export WANDB_MODE=offline
-export WANDB_DIR="/projects/def-lila-ab/m4safari/BarcodeMAE/wandb_final/array_${SLURM_ARRAY_JOB_ID}"
+export WANDB_DIR="/project/6045013/m4safari/BarcodeMAE/wandb_final/array_${SLURM_ARRAY_JOB_ID}"
 mkdir -p "$WANDB_DIR"
 mkdir -p results_final
 mkdir -p "final_logs/${SLURM_ARRAY_JOB_ID}"
 
 WANDB_PROJECT="barcodemae_cls"
 DATASET="ITS-5M"
-DATA_DIR="/projects/def-lila-ab/m4safari/BarcodeMAE/data/${DATASET}"
+DATA_DIR="/project/6045013/m4safari/BarcodeMAE/data/${DATASET}"
 TASKS_DIR="${DATA_DIR}/tasks"
 [ ! -d "${TASKS_DIR}" ] && echo "ERROR: ${TASKS_DIR} not found — run its_export_tasks.sh first" && exit 1
 TEMPERATURE=0.07
