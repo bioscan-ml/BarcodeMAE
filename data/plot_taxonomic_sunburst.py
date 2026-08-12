@@ -4,10 +4,16 @@
 UNITE+INSD, for Appendix Section A ("Dataset taxonomic distribution").
 
 BIOSCAN-5M reads directly from the supervised-split CSVs (reference = Seen
-partition's training subset, query = Unseen partition). UNITE+INSD reads
-fasta files via mycoai's UNITE-header parser (reference = training set,
-query = a leakage-free task CSV produced by analyze_its_overlap.py /
-its_overlap_clean.py, or a raw test fasta if no task CSV is given).
+partition's training subset, query = Unseen partition, both already the
+real evaluation sets -- no further filtering needed).
+
+UNITE+INSD reads fasta files via mycoai's UNITE-header parser. The reference
+set is the full training set. The query set is NOT the raw released test
+fasta -- it is filtered through the same leakage pipeline as
+its_overlap_clean.py (exact-sequence duplicates removed, then restricted to
+novel-species-but-genus-in-train specimens), so the plotted query population
+matches the 526 (Yeast) / 3,136 (Filamentous) genus-level query set actually
+used for evaluation, not the noisier original release.
 
 Usage:
     # BIOSCAN-5M (reads local CSVs directly)
@@ -65,21 +71,55 @@ def run_bioscan5m(data_dir, out_dir):
 
 # --- UNITE+INSD ----------------------------------------------------------------
 
-def load_its5m_fasta(fasta_path):
+def load_its5m_full(fasta_path):
+    """Full mycoai-parsed dataframe (id, taxonomy levels, species, sequence),
+    needed for leakage filtering -- not yet reduced to just the plot columns."""
     from mycoai.data import Data
     allow_duplicates = "train" in os.path.basename(fasta_path)
-    data = Data(fasta_path, allow_duplicates=allow_duplicates).data
-    return data.rename(columns={"phylum": "phylum", "class": "class"})[
-        [c for c in ["phylum", "class", "order", "family", "genus"] if c in data.columns]
-    ]
+    return Data(fasta_path, allow_duplicates=allow_duplicates).data
+
+
+def taxonomy_columns(df):
+    return df[[c for c in LEVELS if c in df.columns]]
+
+
+def filter_genus_level_queries(train_df, test_df):
+    """Mirrors its_overlap_clean.py's leakage pipeline: remove exact-sequence
+    duplicates of the training set, then keep only specimens whose species is
+    NOT in training at all but whose genus IS -- the well-posed genus-level
+    query population (526 Yeast / 3,136 Filamentous), not the raw release."""
+    from mycoai import utils as mycoai_utils
+
+    train_seqs_all = set(train_df["sequence"])
+    train_known = train_df[train_df["species"] != mycoai_utils.UNKNOWN_STR]
+    train_species = set(zip(train_known["genus"], train_known["species"]))
+    train_genera = set(train_df[train_df["genus"] != mycoai_utils.UNKNOWN_STR]["genus"])
+
+    is_exact = test_df["sequence"].isin(train_seqs_all)
+    clean_df = test_df[~is_exact]
+
+    is_known_species = clean_df["species"] != mycoai_utils.UNKNOWN_STR
+    clean_known = clean_df[is_known_species]
+    species_keys = list(zip(clean_known["genus"], clean_known["species"]))
+    is_novel_species = pd.Series([k not in train_species for k in species_keys],
+                                  index=clean_known.index)
+    is_known_genus = clean_known["genus"] != mycoai_utils.UNKNOWN_STR
+    is_genus_in_train = clean_known["genus"].isin(train_genera)
+
+    return clean_known[is_novel_species & is_known_genus & is_genus_in_train]
 
 
 def run_its5m(data_dir, out_dir, query_fasta, query_name):
-    ref_df = load_its5m_fasta(os.path.join(data_dir, "trainset.fasta"))
-    make_sunburst(ref_df, LEVELS, "UNITE+INSD: KNN reference set (train)",
+    train_df = load_its5m_full(os.path.join(data_dir, "trainset.fasta"))
+    make_sunburst(taxonomy_columns(train_df), LEVELS, "UNITE+INSD: KNN reference set (train)",
                   os.path.join(out_dir, "taxdist_its5m_reference.pdf"))
-    query_df = load_its5m_fasta(os.path.join(data_dir, query_fasta))
-    make_sunburst(query_df, LEVELS, f"UNITE+INSD: query set ({query_name})",
+
+    raw_query_df = load_its5m_full(os.path.join(data_dir, query_fasta))
+    query_df = filter_genus_level_queries(train_df, raw_query_df)
+    print(f"  {query_name}: {len(raw_query_df)} raw specimens -> {len(query_df)} leakage-free "
+          f"genus-level query specimens")
+    make_sunburst(taxonomy_columns(query_df), LEVELS,
+                  f"UNITE+INSD: leakage-free genus-level query set ({query_name})",
                   os.path.join(out_dir, f"taxdist_its5m_query_{query_name}.pdf"))
 
 
