@@ -31,21 +31,50 @@ import os
 
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 
 LEVELS = ["phylum", "class", "order", "family", "genus"]
 
 
-def make_sunburst(df, levels, out_path):
+def build_color_map(df, color_level):
+    """Category -> hex color, one entry per unique value of `color_level` in
+    `df`. Build this once from the reference (training) set and reuse it for
+    the paired query-set plot, so a given taxon is always the same color
+    across both figures of the same dataset."""
+    categories = sorted(df[color_level].dropna().unique().tolist())
+    palette = px.colors.qualitative.Alphabet
+    if len(categories) > len(palette):
+        palette = palette * (len(categories) // len(palette) + 1)
+    return dict(zip(categories, palette[:len(categories)]))
+
+
+def make_sunburst(df, levels, out_path, color_level, color_map):
     present_levels = [lvl for lvl in levels if lvl in df.columns and df[lvl].notna().any()]
     counted = df.groupby(present_levels, dropna=False).size().reset_index(name="count")
     fig = px.sunburst(
         counted,
         path=present_levels,
         values="count",
+        color=color_level,
+        color_discrete_map=color_map,
     )
-    fig.update_layout(margin=dict(t=10, l=10, r=10, b=10))
-    fig.write_image(out_path, width=1000, height=1000, scale=2)
-    print(f"  Wrote {out_path}  ({len(df)} specimens, {len(present_levels)} ranks: {present_levels})")
+    # Sunburst traces have no native legend; add one invisible scatter marker
+    # per category so plotly draws a standard legend for the color mapping.
+    for cat, color in color_map.items():
+        fig.add_trace(go.Scatter(
+            x=[None], y=[None], mode="markers",
+            marker=dict(size=12, color=color),
+            name=cat, showlegend=True,
+        ))
+    fig.update_layout(
+        xaxis=dict(visible=False),
+        yaxis=dict(visible=False),
+        legend=dict(title=color_level.capitalize(), x=1.0, y=0.5, xanchor="left", yanchor="middle"),
+        margin=dict(t=10, l=10, r=180, b=10),
+    )
+    fig.write_image(out_path, width=1200, height=1000, scale=2)
+    print(f"  Wrote {out_path}  ({len(df)} specimens, {len(present_levels)} ranks: {present_levels}, "
+          f"legend: {color_level} x {len(color_map)})")
 
 
 # --- BIOSCAN-5M --------------------------------------------------------------
@@ -62,8 +91,11 @@ def load_bioscan5m(csv_path):
 def run_bioscan5m(data_dir, out_dir):
     ref_df = load_bioscan5m(os.path.join(data_dir, "supervised_train.csv"))
     query_df = load_bioscan5m(os.path.join(data_dir, "unseen.csv"))
-    make_sunburst(ref_df, LEVELS, os.path.join(out_dir, "taxdist_bioscan5m_reference.pdf"))
-    make_sunburst(query_df, LEVELS, os.path.join(out_dir, "taxdist_bioscan5m_query.pdf"))
+    color_map = build_color_map(ref_df, "class")
+    make_sunburst(ref_df, LEVELS, os.path.join(out_dir, "taxdist_bioscan5m_reference.pdf"),
+                  "class", color_map)
+    make_sunburst(query_df, LEVELS, os.path.join(out_dir, "taxdist_bioscan5m_query.pdf"),
+                  "class", color_map)
 
 
 # --- UNITE+INSD ----------------------------------------------------------------
@@ -108,15 +140,18 @@ def filter_genus_level_queries(train_df, test_df):
 
 def run_its5m(data_dir, out_dir, query_fasta, query_name):
     train_df = load_its5m_full(os.path.join(data_dir, "trainset.fasta"))
+    color_map = build_color_map(train_df, "phylum")
     make_sunburst(taxonomy_columns(train_df), LEVELS,
-                  os.path.join(out_dir, "taxdist_its5m_reference.pdf"))
+                  os.path.join(out_dir, "taxdist_its5m_reference.pdf"),
+                  "phylum", color_map)
 
     raw_query_df = load_its5m_full(os.path.join(data_dir, query_fasta))
     query_df = filter_genus_level_queries(train_df, raw_query_df)
     print(f"  {query_name}: {len(raw_query_df)} raw specimens -> {len(query_df)} leakage-free "
           f"genus-level query specimens")
     make_sunburst(taxonomy_columns(query_df), LEVELS,
-                  os.path.join(out_dir, f"taxdist_its5m_query_{query_name}.pdf"))
+                  os.path.join(out_dir, f"taxdist_its5m_query_{query_name}.pdf"),
+                  "phylum", color_map)
 
 
 def get_parser():
