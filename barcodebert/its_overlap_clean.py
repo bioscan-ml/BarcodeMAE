@@ -13,13 +13,19 @@ For each test set, in order:
      mycoai's own UNITE parser also silently drops the SH code (the third
      '|'-delimited field) entirely, so this script re-parses the raw FASTA
      headers directly to recover it instead of relying on mycoai's Data.
-  2. Novel-species count: of what's left after removing (1), how many
-     specimens belong to a species that does not appear in the training set
-     at all (the genuinely out-of-distribution population).
+  2. Novel-species, genus-in-train count: of what's left after removing (1),
+     how many specimens belong to a species that does not appear in the
+     training set at all, AND whose genus DOES appear in the training set --
+     i.e. species-level prediction is impossible (no gallery entry for that
+     species), but genus-level prediction is well-posed (a gallery entry for
+     the genus exists). This is the "genus-level queries" population reported
+     in the Experimental Setup (526 Yeast / 3,136 Filamentous), modulo the
+     substring-duplicate filtering this script no longer applies (exact
+     matches only -- see step 1).
   3. Unique-species reduction: training set's unique (genus, species) count
-     vs. the final novel-species set's unique species count, and the same
-     comparison for the ORIGINAL (unfiltered) test set's unique species count
-     vs. the final set's, so both possible "reductions" are visible.
+     vs. the final set's unique species count, and the same comparison for
+     the ORIGINAL (unfiltered) test set's unique species count vs. the final
+     set's, so both possible "reductions" are visible.
   4. Same two comparisons (train->final, original-test->final) for genus.
 
 Uses mycoai.data.Data's own UNITE-header parser (tax_parser='unite') to get
@@ -36,6 +42,7 @@ import argparse
 import os
 from collections import defaultdict
 
+import pandas as pd
 from Bio import SeqIO
 from mycoai import utils as mycoai_utils
 from mycoai.data import Data
@@ -147,22 +154,28 @@ def run(data_dir, test_sets):
         clean_df = test_df[~is_exact]
         print(f"   -> {len(clean_df)} specimens left after removing exact matches")
 
-        # 2. Novel-species count (species not in training at all) --------------
+        # 2. Novel-species, genus-in-train count --------------------------------
         is_known_species = clean_df["species"] != mycoai_utils.UNKNOWN_STR
         clean_known = clean_df[is_known_species]
         clean_species_keys = list(zip(clean_known["genus"], clean_known["species"]))
-        is_novel_species = [k not in train_species for k in clean_species_keys]
-        novel_df = clean_known[is_novel_species]
+        is_novel_species = pd.Series([k not in train_species for k in clean_species_keys],
+                                      index=clean_known.index)
+        is_known_genus = clean_known["genus"] != mycoai_utils.UNKNOWN_STR
+        is_genus_in_train = clean_known["genus"].isin(train_genera)
+        novel_df = clean_known[is_novel_species & is_known_genus & is_genus_in_train]
         n_novel = len(novel_df)
+        n_species_novel_total = int(is_novel_species.sum())
         print(f"\n2. Of the {len(clean_known)} leakage-free specimens with a resolved species, "
-              f"{n_novel} belong to a species NOT present in training at all (novel species)")
+              f"{n_species_novel_total} belong to a species NOT present in training at all (novel species), "
+              f"of which {n_novel} also have a genus that IS present in training "
+              f"(genus-level queries -- species unpredictable, genus predictable)")
 
         # 3. Unique-species reduction -------------------------------------------
         final_unique_species = species_set(novel_df)
         print(f"\n3. Unique species:")
         print(f"   Training set:                {len(train_species)}")
         print(f"   Original {name} test set:    {len(orig_unique_species)}")
-        print(f"   Final novel-species set:     {len(final_unique_species)}")
+        print(f"   Final set (genus-level queries): {len(final_unique_species)}")
         print(f"   Reduction, training -> final:        {len(train_species)} -> {len(final_unique_species)} "
               f"(-{len(train_species) - len(final_unique_species)})")
         print(f"   Reduction, original test -> final:   {len(orig_unique_species)} -> {len(final_unique_species)} "
@@ -173,7 +186,7 @@ def run(data_dir, test_sets):
         print(f"\n4. Unique genera:")
         print(f"   Training set:                {len(train_genera)}")
         print(f"   Original {name} test set:    {len(orig_unique_genera)}")
-        print(f"   Final novel-species set:     {len(final_unique_genera)}")
+        print(f"   Final set (genus-level queries): {len(final_unique_genera)}")
         print(f"   Reduction, training -> final:        {len(train_genera)} -> {len(final_unique_genera)} "
               f"(-{len(train_genera) - len(final_unique_genera)})")
         print(f"   Reduction, original test -> final:   {len(orig_unique_genera)} -> {len(final_unique_genera)} "
