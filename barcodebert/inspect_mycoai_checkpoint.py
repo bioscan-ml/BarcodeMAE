@@ -84,6 +84,15 @@ def cli():
     describe_method(obj, "classify")
     print("--- .get_config ---")
     describe_method(obj, "get_config")
+    print("--- ._encode_input_data ---")
+    describe_method(obj, "_encode_input_data")
+    print("--- ._forward_latent ---")
+    describe_method(obj, "_forward_latent")
+    print("--- dna_encoder type/methods ---")
+    print(f"  type: {type(obj.dna_encoder)}")
+    for name in dir(obj.dna_encoder):
+        if not name.startswith("_") and callable(getattr(obj.dna_encoder, name, None)):
+            print(f"  .{name}(...)")
     print("=" * 100)
 
 
