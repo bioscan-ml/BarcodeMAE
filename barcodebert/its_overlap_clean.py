@@ -3,11 +3,16 @@
 
 For each test set, in order:
   1. Exact sequence matches against the training set (literal duplicate reads).
-     For every exact match, also check whether the FASTA record ID is the
-     SAME between the test specimen and its train-side duplicate(s), or
-     different: same ID points to a literal copy-pasted record, different ID
-     means two distinct accessions that just happen to share an identical
-     sequence (a softer, more ambiguous form of overlap).
+     For every exact match, also check whether the record's UNITE Species
+     Hypothesis (SH) cluster code is the SAME between the test specimen and
+     its train-side duplicate(s), or different.
+     NOTE: the specimen accession ID itself (the first '|'-delimited header
+     field, e.g. "KY106088") cannot be compared this way -- trainset.fasta's
+     headers have this field EMPTY for every record ("|k__Fungi;...", no ID
+     before the first '|'), while test headers do carry a real accession.
+     mycoai's own UNITE parser also silently drops the SH code (the third
+     '|'-delimited field) entirely, so this script re-parses the raw FASTA
+     headers directly to recover it instead of relying on mycoai's Data.
   2. Novel-species count: of what's left after removing (1), how many
      specimens belong to a species that does not appear in the training set
      at all (the genuinely out-of-distribution population).
@@ -29,7 +34,9 @@ Usage:
 
 import argparse
 import os
+from collections import defaultdict
 
+from Bio import SeqIO
 from mycoai import utils as mycoai_utils
 from mycoai.data import Data
 
@@ -56,25 +63,45 @@ def genus_set(df):
     return set(known["genus"])
 
 
-def check_duplicate_ids(train_df, test_df, is_exact, show_examples=5):
-    """For every exact-sequence-match test specimen, compare its FASTA record
-    ID against the ID(s) of the matching training specimen(s) with the same
-    sequence. Returns (n_same_id, n_diff_id, examples_of_diff_id)."""
-    train_seq_to_ids = train_df.groupby("sequence")["id"].apply(list).to_dict()
+def parse_raw_headers(fasta_path):
+    """Read (id, SH-cluster-code, sequence) straight from the FASTA file,
+    bypassing mycoai's parser (which keeps only the specimen id and the
+    taxonomy string, and silently drops the SH code -- the third
+    '|'-delimited header field, e.g. 'SH1265235.09FU')."""
+    records = []
+    for rec in SeqIO.parse(fasta_path, "fasta"):
+        header = rec.description
+        parts = header.split(" ") if " " in header else header.split("|")
+        rec_id = parts[0]
+        sh_code = parts[2] if len(parts) > 2 else None
+        records.append((rec_id, sh_code, str(rec.seq).upper()))
+    return records
 
-    n_same_id = 0
-    n_diff_id = 0
-    diff_id_examples = []
+
+def check_duplicate_sh_codes(train_path, test_path, test_df, is_exact, show_examples=5):
+    """For every exact-sequence-match test specimen, compare its UNITE
+    Species Hypothesis (SH) cluster code against the SH code(s) of the
+    matching training specimen(s) with the same sequence. Returns
+    (n_same_sh, n_diff_sh, examples_of_diff_sh)."""
+    train_seq_to_sh = defaultdict(list)
+    for _, sh_code, seq in parse_raw_headers(train_path):
+        train_seq_to_sh[seq].append(sh_code)
+
+    test_id_to_sh = {rec_id: sh_code for rec_id, sh_code, _ in parse_raw_headers(test_path)}
+
+    n_same_sh = 0
+    n_diff_sh = 0
+    diff_sh_examples = []
     for _, row in test_df[is_exact].iterrows():
-        test_id = row["id"]
-        train_ids = train_seq_to_ids.get(row["sequence"], [])
-        if test_id in train_ids:
-            n_same_id += 1
+        test_sh = test_id_to_sh.get(row["id"])
+        train_shs = train_seq_to_sh.get(row["sequence"], [])
+        if test_sh in train_shs:
+            n_same_sh += 1
         else:
-            n_diff_id += 1
-            if len(diff_id_examples) < show_examples:
-                diff_id_examples.append((test_id, train_ids[:3]))
-    return n_same_id, n_diff_id, diff_id_examples
+            n_diff_sh += 1
+            if len(diff_sh_examples) < show_examples:
+                diff_sh_examples.append((row["id"], test_sh, train_shs[:3]))
+    return n_same_sh, n_diff_sh, diff_sh_examples
 
 
 def run(data_dir, test_sets):
@@ -105,15 +132,17 @@ def run(data_dir, test_sets):
         print(f"\n1. Exact sequence matches vs.\\ training set: {n_exact} / {n_total}")
 
         if n_exact > 0:
-            n_same_id, n_diff_id, diff_id_examples = check_duplicate_ids(train_df, test_df, is_exact)
-            print(f"   Of these {n_exact} exact-sequence matches:")
-            print(f"     - {n_same_id} have the SAME FASTA record ID in train (literal duplicate record)")
-            print(f"     - {n_diff_id} have a DIFFERENT FASTA record ID in train "
-                  f"(distinct accession, identical sequence)")
-            if diff_id_examples:
-                print("   Example different-ID matches (test_id -> train_id(s)):")
-                for test_id, train_ids in diff_id_examples:
-                    print(f"     {test_id} -> {train_ids}")
+            n_same_sh, n_diff_sh, diff_sh_examples = check_duplicate_sh_codes(
+                train_path, fpath, test_df, is_exact)
+            print(f"   Of these {n_exact} exact-sequence matches (accession IDs aren't comparable -- "
+                  f"trainset.fasta has no ID field; comparing UNITE SH cluster codes instead):")
+            print(f"     - {n_same_sh} have the SAME SH code in train (same species-hypothesis cluster)")
+            print(f"     - {n_diff_sh} have a DIFFERENT SH code in train "
+                  f"(identical sequence, different SH cluster assignment)")
+            if diff_sh_examples:
+                print("   Example different-SH matches (test_id, test_sh -> train_sh(s)):")
+                for test_id, test_sh, train_shs in diff_sh_examples:
+                    print(f"     {test_id}, {test_sh} -> {train_shs}")
 
         clean_df = test_df[~is_exact]
         print(f"   -> {len(clean_df)} specimens left after removing exact matches")
