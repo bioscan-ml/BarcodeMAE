@@ -40,6 +40,13 @@ export PYTHONNOUSERSITE=1
 export PYTHONPATH=""
 source "/scratch/$USER/BarcodeMAE_venv_modern/bin/activate"
 
+# GENA-LM (ModernBERT) wraps its embedding layer in torch.compile internally,
+# and the installed triton version doesn't match what this torch build's
+# inductor backend expects (ImportError: cannot import name 'triton_key').
+# We don't need the compiled path for a single forward pass -- disable
+# dynamo entirely so it just runs eagerly.
+export TORCHDYNAMO_DISABLE=1
+
 export WANDB_MODE=offline
 export WANDB_DIR="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE/wandb_final/array_${SLURM_ARRAY_JOB_ID}"
 mkdir -p "$WANDB_DIR"
