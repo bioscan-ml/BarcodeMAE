@@ -18,6 +18,8 @@ module intentionally does not attempt those; use --external-model-cls to pick
 the closest-fitting HF auto-class for the checkpoints that do fit.
 """
 
+import inspect
+
 import torch
 import torch.nn as nn
 from transformers import AutoModel, AutoModelForCausalLM, AutoModelForMaskedLM, AutoTokenizer
@@ -71,9 +73,19 @@ class ExternalModelWrapper(nn.Module):
     def __init__(self, hf_model):
         super().__init__()
         self.hf_model = hf_model
+        # SSM/Mamba-style models (e.g. Caduceus) don't take an attention_mask
+        # argument at all -- only pass it through if the model's forward
+        # signature actually accepts it.
+        try:
+            params = inspect.signature(hf_model.forward).parameters
+        except (TypeError, ValueError):
+            params = {}
+        self._accepts_attention_mask = "attention_mask" in params
 
     def forward(self, input_ids, attention_mask):
-        return self.hf_model(input_ids=input_ids, attention_mask=attention_mask)
+        if self._accepts_attention_mask:
+            return self.hf_model(input_ids=input_ids, attention_mask=attention_mask)
+        return self.hf_model(input_ids=input_ids)
 
 
 def load_external_model(model_id, device, max_length=660, model_cls="auto"):
