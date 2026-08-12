@@ -389,6 +389,33 @@ class DNADataset(Dataset):
             return processed_barcode, label, att_mask
 
 
+def _extract_last_hidden_states(output):
+    """Pull the final-layer hidden states (batch, seq_len, D) out of a model
+    forward output, regardless of whether it's our own model's output, a
+    HuggingFace ModelOutput (used by AutoModel/AutoModelForMaskedLM/
+    AutoModelForCausalLM -- e.g. external baselines), or a plain tuple.
+
+    ModelOutput objects support integer indexing (output[-1]) but are NOT
+    `tuple` instances, so a plain `isinstance(output, tuple)` check -- as
+    used to guard `output[-1]` -- silently skips them and falls through to
+    using the whole output object as if it were a tensor, breaking any
+    arithmetic done on it downstream. Try indexing first and only fall back
+    to the raw object if that isn't supported at all.
+    """
+    if hasattr(output, "last_hidden_state") and output.last_hidden_state is not None:
+        hidden_states = output.last_hidden_state
+    elif hasattr(output, "hidden_states") and output.hidden_states is not None:
+        hidden_states = output.hidden_states
+    else:
+        try:
+            hidden_states = output[-1]
+        except (TypeError, IndexError, KeyError):
+            hidden_states = output
+    if isinstance(hidden_states, (tuple, list)):
+        hidden_states = hidden_states[-1]
+    return hidden_states
+
+
 def representations_from_df(
     df, target_level, model, tokenizer, dataset_name, mode=None, mask_rate=None, representation_type="tokens",
     use_cls_token=False,
@@ -501,16 +528,7 @@ def representations_from_df(
                     jumbo_tokens = output.jumbo_tokens  # (batch_size, J, D)
 
                     # Get sequence tokens
-                    if hasattr(output, "last_hidden_state") and output.last_hidden_state is not None:
-                        hidden_states = output.last_hidden_state
-                    elif hasattr(output, "hidden_states") and output.hidden_states is not None:
-                        hidden_states = output.hidden_states
-                        if isinstance(hidden_states, tuple):
-                            hidden_states = hidden_states[-1]
-                    else:
-                        hidden_states = output[-1] if isinstance(output, tuple) else output
-                        if isinstance(hidden_states, tuple):
-                            hidden_states = hidden_states[-1]
+                    hidden_states = _extract_last_hidden_states(output)
 
                     # Concatenate jumbo and sequence tokens
                     all_tokens = torch.cat([jumbo_tokens, hidden_states], dim=1)  # (batch_size, J+seq_len, D)
@@ -526,16 +544,7 @@ def representations_from_df(
                     embedding = sum_embeddings / sum_mask  # (batch_size, D)
                 else:
                     # Model doesn't have jumbo tokens - just use sequence tokens
-                    if hasattr(output, "last_hidden_state") and output.last_hidden_state is not None:
-                        hidden_states = output.last_hidden_state
-                    elif hasattr(output, "hidden_states") and output.hidden_states is not None:
-                        hidden_states = output.hidden_states
-                        if isinstance(hidden_states, tuple):
-                            hidden_states = hidden_states[-1]
-                    else:
-                        hidden_states = output[-1] if isinstance(output, tuple) else output
-                        if isinstance(hidden_states, tuple):
-                            hidden_states = hidden_states[-1]
+                    hidden_states = _extract_last_hidden_states(output)
 
                     sum_embeddings = (hidden_states * att_mask.unsqueeze(-1)).sum(1)
                     sum_mask = att_mask.sum(1, keepdim=True)
@@ -543,33 +552,14 @@ def representations_from_df(
 
             elif representation_type == "cls":
                 # CLS token representation from position 0
-                if hasattr(output, "last_hidden_state") and output.last_hidden_state is not None:
-                    hidden_states = output.last_hidden_state
-                elif hasattr(output, "hidden_states") and output.hidden_states is not None:
-                    hidden_states = output.hidden_states
-                    if isinstance(hidden_states, tuple):
-                        hidden_states = hidden_states[-1]
-                else:
-                    hidden_states = output[-1] if isinstance(output, tuple) else output
+                hidden_states = _extract_last_hidden_states(output)
 
                 # Extract CLS token at position 0
                 embedding = hidden_states[:, 0, :]  # (batch_size, D)
 
             elif representation_type == "tokens":
                 # Mean pooling of k-mer sequence tokens only, excluding the CLS token.
-                if hasattr(output, "last_hidden_state") and output.last_hidden_state is not None:
-                    hidden_states = output.last_hidden_state
-                elif hasattr(output, "hidden_states") and output.hidden_states is not None:
-                    hidden_states = output.hidden_states
-                    # output.hidden_states is a tuple of ALL layer outputs when
-                    # output_hidden_states=True in BertForTokenClassification.
-                    # Take only the last layer (final representations).
-                    if isinstance(hidden_states, tuple):
-                        hidden_states = hidden_states[-1]
-                else:
-                    hidden_states = output[-1] if isinstance(output, tuple) else output
-                    if isinstance(hidden_states, tuple):
-                        hidden_states = hidden_states[-1]
+                hidden_states = _extract_last_hidden_states(output)
 
                 # When CLS is at position 0, exclude it from the mean by zeroing its mask entry.
                 seq_mask = att_mask.clone()
@@ -582,16 +572,7 @@ def representations_from_df(
 
             elif representation_type == "tokens_with_cls":
                 # Mean pooling of all tokens including the CLS token at position 0.
-                if hasattr(output, "last_hidden_state") and output.last_hidden_state is not None:
-                    hidden_states = output.last_hidden_state
-                elif hasattr(output, "hidden_states") and output.hidden_states is not None:
-                    hidden_states = output.hidden_states
-                    if isinstance(hidden_states, tuple):
-                        hidden_states = hidden_states[-1]
-                else:
-                    hidden_states = output[-1] if isinstance(output, tuple) else output
-                    if isinstance(hidden_states, tuple):
-                        hidden_states = hidden_states[-1]
+                hidden_states = _extract_last_hidden_states(output)
 
                 sum_embeddings = (hidden_states * att_mask.unsqueeze(-1)).sum(1)
                 sum_mask = att_mask.sum(1, keepdim=True)

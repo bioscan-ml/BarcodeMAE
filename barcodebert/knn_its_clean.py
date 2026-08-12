@@ -85,7 +85,7 @@ from torch import nn
 from tqdm import tqdm
 
 from barcodebert import utils
-from barcodebert.datasets import KmerTokenizer
+from barcodebert.datasets import KmerTokenizer, _extract_last_hidden_states
 from barcodebert.evaluation import knn_results_path, knn_vote
 from barcodebert.io import load_pretrained_model
 from barcodebert.random_knn import build_random_encoder
@@ -121,16 +121,7 @@ def extract_representations(sequences, model, tokenizer, representation_type, us
 
             output = model(x, att_mask)
 
-            if hasattr(output, "last_hidden_state") and output.last_hidden_state is not None:
-                hidden_states = output.last_hidden_state
-            elif hasattr(output, "hidden_states") and output.hidden_states is not None:
-                hidden_states = output.hidden_states
-                if isinstance(hidden_states, tuple):
-                    hidden_states = hidden_states[-1]
-            else:
-                hidden_states = output[-1] if isinstance(output, tuple) else output
-                if isinstance(hidden_states, tuple):
-                    hidden_states = hidden_states[-1]
+            hidden_states = _extract_last_hidden_states(output)
 
             if representation_type == "cls":
                 embedding = hidden_states[:, 0, :]
