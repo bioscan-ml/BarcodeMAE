@@ -3,6 +3,11 @@
 
 For each test set, in order:
   1. Exact sequence matches against the training set (literal duplicate reads).
+     For every exact match, also check whether the FASTA record ID is the
+     SAME between the test specimen and its train-side duplicate(s), or
+     different: same ID points to a literal copy-pasted record, different ID
+     means two distinct accessions that just happen to share an identical
+     sequence (a softer, more ambiguous form of overlap).
   2. Novel-species count: of what's left after removing (1), how many
      specimens belong to a species that does not appear in the training set
      at all (the genuinely out-of-distribution population).
@@ -51,6 +56,27 @@ def genus_set(df):
     return set(known["genus"])
 
 
+def check_duplicate_ids(train_df, test_df, is_exact, show_examples=5):
+    """For every exact-sequence-match test specimen, compare its FASTA record
+    ID against the ID(s) of the matching training specimen(s) with the same
+    sequence. Returns (n_same_id, n_diff_id, examples_of_diff_id)."""
+    train_seq_to_ids = train_df.groupby("sequence")["id"].apply(list).to_dict()
+
+    n_same_id = 0
+    n_diff_id = 0
+    diff_id_examples = []
+    for _, row in test_df[is_exact].iterrows():
+        test_id = row["id"]
+        train_ids = train_seq_to_ids.get(row["sequence"], [])
+        if test_id in train_ids:
+            n_same_id += 1
+        else:
+            n_diff_id += 1
+            if len(diff_id_examples) < show_examples:
+                diff_id_examples.append((test_id, train_ids[:3]))
+    return n_same_id, n_diff_id, diff_id_examples
+
+
 def run(data_dir, test_sets):
     train_path = os.path.join(data_dir, "trainset.fasta")
     print(f"Loading train set: {train_path}")
@@ -77,6 +103,17 @@ def run(data_dir, test_sets):
         is_exact = test_df["sequence"].isin(train_seqs_all)
         n_exact = int(is_exact.sum())
         print(f"\n1. Exact sequence matches vs.\\ training set: {n_exact} / {n_total}")
+
+        if n_exact > 0:
+            n_same_id, n_diff_id, diff_id_examples = check_duplicate_ids(train_df, test_df, is_exact)
+            print(f"   Of these {n_exact} exact-sequence matches:")
+            print(f"     - {n_same_id} have the SAME FASTA record ID in train (literal duplicate record)")
+            print(f"     - {n_diff_id} have a DIFFERENT FASTA record ID in train "
+                  f"(distinct accession, identical sequence)")
+            if diff_id_examples:
+                print("   Example different-ID matches (test_id -> train_id(s)):")
+                for test_id, train_ids in diff_id_examples:
+                    print(f"     {test_id} -> {train_ids}")
 
         clean_df = test_df[~is_exact]
         print(f"   -> {len(clean_df)} specimens left after removing exact matches")
