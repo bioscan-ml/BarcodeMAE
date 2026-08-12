@@ -131,7 +131,12 @@ def load_pretrained_model(checkpoint_path, device=None):
         The contents of the checkpoint file.
     """
     print(f"\nLoading model from {checkpoint_path}")
-    ckpt = torch.load(checkpoint_path, map_location=device)
+    # Load to CPU first, then move the model to `device` explicitly below --
+    # deserializing straight onto a CUDA device (map_location=device) can
+    # fail with a misleading "CUDA error: out of memory" even on an empty
+    # GPU, if the checkpoint has any embedded device-ordinal quirks from how
+    # it was originally saved.
+    ckpt = torch.load(checkpoint_path, map_location="cpu")
     bert_config = BertConfig(**ckpt["bert_config"])
     #print(bert_config)
 
@@ -185,6 +190,8 @@ def load_pretrained_model(checkpoint_path, device=None):
     if ckpt["config"].arch == "maelm" and n_registers > 0 and register_tokens is not None:
         print(f"Wrapping encoder with RegisterBertModel ({n_registers} register tokens)")
         model = RegisterBertModel(model, register_tokens)
+    if device is not None:
+        model = model.to(device)
     model.eval()
     print(f"Loaded model from {checkpoint_path}")
 
@@ -234,7 +241,10 @@ def load_pretrained_encoder(checkpoint_path, device=None):
       - vanilla transformer pretraining: BertModel
     """
     print(f"\nLoading encoder from {checkpoint_path}")
-    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    # Load to CPU first, then move the model to `device` explicitly below --
+    # see load_pretrained_model() for why (map_location=<cuda device> can
+    # misreport as "CUDA error: out of memory" on an empty GPU).
+    ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
 
     cfg = ckpt["config"]
     bert_config = BertConfig(**ckpt["bert_config"])
@@ -293,6 +303,8 @@ def load_pretrained_encoder(checkpoint_path, device=None):
         print(f"Wrapping encoder with RegisterBertModel ({n_registers} register tokens)")
         model = RegisterBertModel(model, register_tokens)
 
+    if device is not None:
+        model = model.to(device)
     model.eval()
 
     # ── 4. Diagnostics (same info as inspect_checkpoint) ──────────────────
