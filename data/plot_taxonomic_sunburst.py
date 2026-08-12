@@ -35,16 +35,15 @@ import plotly.express as px
 LEVELS = ["phylum", "class", "order", "family", "genus"]
 
 
-def make_sunburst(df, levels, title, out_path):
+def make_sunburst(df, levels, out_path):
     present_levels = [lvl for lvl in levels if lvl in df.columns and df[lvl].notna().any()]
     counted = df.groupby(present_levels, dropna=False).size().reset_index(name="count")
     fig = px.sunburst(
         counted,
         path=present_levels,
         values="count",
-        title=title,
     )
-    fig.update_layout(margin=dict(t=60, l=0, r=0, b=0))
+    fig.update_layout(margin=dict(t=10, l=10, r=10, b=10))
     fig.write_image(out_path, width=1000, height=1000, scale=2)
     print(f"  Wrote {out_path}  ({len(df)} specimens, {len(present_levels)} ranks: {present_levels})")
 
@@ -63,10 +62,8 @@ def load_bioscan5m(csv_path):
 def run_bioscan5m(data_dir, out_dir):
     ref_df = load_bioscan5m(os.path.join(data_dir, "supervised_train.csv"))
     query_df = load_bioscan5m(os.path.join(data_dir, "unseen.csv"))
-    make_sunburst(ref_df, LEVELS, "BIOSCAN-5M: KNN reference set (Seen/train)",
-                  os.path.join(out_dir, "taxdist_bioscan5m_reference.pdf"))
-    make_sunburst(query_df, LEVELS, "BIOSCAN-5M: query set (Unseen)",
-                  os.path.join(out_dir, "taxdist_bioscan5m_query.pdf"))
+    make_sunburst(ref_df, LEVELS, os.path.join(out_dir, "taxdist_bioscan5m_reference.pdf"))
+    make_sunburst(query_df, LEVELS, os.path.join(out_dir, "taxdist_bioscan5m_query.pdf"))
 
 
 # --- UNITE+INSD ----------------------------------------------------------------
@@ -111,7 +108,7 @@ def filter_genus_level_queries(train_df, test_df):
 
 def run_its5m(data_dir, out_dir, query_fasta, query_name):
     train_df = load_its5m_full(os.path.join(data_dir, "trainset.fasta"))
-    make_sunburst(taxonomy_columns(train_df), LEVELS, "UNITE+INSD: KNN reference set (train)",
+    make_sunburst(taxonomy_columns(train_df), LEVELS,
                   os.path.join(out_dir, "taxdist_its5m_reference.pdf"))
 
     raw_query_df = load_its5m_full(os.path.join(data_dir, query_fasta))
@@ -119,7 +116,6 @@ def run_its5m(data_dir, out_dir, query_fasta, query_name):
     print(f"  {query_name}: {len(raw_query_df)} raw specimens -> {len(query_df)} leakage-free "
           f"genus-level query specimens")
     make_sunburst(taxonomy_columns(query_df), LEVELS,
-                  f"UNITE+INSD: leakage-free genus-level query set ({query_name})",
                   os.path.join(out_dir, f"taxdist_its5m_query_{query_name}.pdf"))
 
 
