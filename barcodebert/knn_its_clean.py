@@ -133,6 +133,17 @@ def extract_representations(sequences, model, tokenizer, representation_type, us
             output = model(x, att_mask)
 
             hidden_states = _extract_last_hidden_states(output)
+            # Defensive fix for models whose forward pass returns hidden states
+            # as (seq_len, batch, D) instead of the standard (batch, seq_len, D)
+            # -- observed with DNABERT-2's MosaicBERT eager-attention fallback.
+            # With embed_batch_size==1 this went undetected: (L, 1, D) and
+            # (B, L, 1) broadcast "successfully" into a silently wrong (L, L, D)
+            # result instead of raising. Batching exposes it as a hard shape
+            # mismatch, which is caught and corrected here instead.
+            if (hidden_states.shape[0] == att_mask.shape[1]
+                    and hidden_states.shape[1] == att_mask.shape[0]
+                    and att_mask.shape[0] != att_mask.shape[1]):
+                hidden_states = hidden_states.transpose(0, 1)
 
             if representation_type == "cls":
                 embedding = hidden_states[:, 0, :]
