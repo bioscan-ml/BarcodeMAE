@@ -99,25 +99,36 @@ ALL_TASKS = ["species_level", "genus_level"]
 UNKNOWN_STR = "?"
 
 
-def extract_representations(sequences, model, tokenizer, representation_type, use_cls_token, device):
-    """One-sequence-at-a-time embedding extraction — mirrors knn_its.py's
-    extract_representations, but takes a plain sequence list (no labels) and
-    returns embeddings in the same order, so callers can reuse them for
-    multiple label levels without re-embedding."""
+def extract_representations(sequences, model, tokenizer, representation_type, use_cls_token, device,
+                             embed_batch_size=32):
+    """Batched embedding extraction — mirrors knn_its.py's extract_representations'
+    pooling logic exactly, but forwards `embed_batch_size` sequences per model
+    call instead of one. One-at-a-time forward passes badly under-utilize the
+    GPU and don't scale to ITS-5M's ~4.2M-specimen gallery: observed in
+    practice, DNABERT-S only reached 77% of the gallery in a 6-hour SLURM time
+    limit at ~147 it/s single-sequence throughput. The tokenizer (KmerTokenizer
+    or ExternalTokenizerWrapper) always pads to a fixed length, so sequences in
+    a batch can be safely stacked."""
     embeddings = []
 
     with torch.no_grad():
-        for seq in tqdm(sequences, desc=f"  embedding ({representation_type})", mininterval=10.0):
-            x, att_mask = tokenizer(seq)
+        for start in tqdm(range(0, len(sequences), embed_batch_size),
+                           desc=f"  embedding ({representation_type})", mininterval=10.0):
+            batch_seqs = sequences[start:start + embed_batch_size]
 
-            if use_cls_token:
-                cls_token = torch.tensor([2], dtype=x.dtype)
-                cls_mask = torch.tensor([1], dtype=att_mask.dtype)
-                x = torch.cat([cls_token, x])
-                att_mask = torch.cat([cls_mask, att_mask])
+            ids_list, mask_list = [], []
+            for seq in batch_seqs:
+                x, att_mask = tokenizer(seq)
+                if use_cls_token:
+                    cls_token = torch.tensor([2], dtype=x.dtype)
+                    cls_mask = torch.tensor([1], dtype=att_mask.dtype)
+                    x = torch.cat([cls_token, x])
+                    att_mask = torch.cat([cls_mask, att_mask])
+                ids_list.append(x)
+                mask_list.append(att_mask)
 
-            x = x.unsqueeze(0).to(device)
-            att_mask = att_mask.unsqueeze(0).to(device)
+            x = torch.stack(ids_list).to(device)
+            att_mask = torch.stack(mask_list).to(device)
 
             output = model(x, att_mask)
 
@@ -163,8 +174,8 @@ def extract_representations(sequences, model, tokenizer, representation_type, us
                     )
                 jumbo_tokens = output.jumbo_tokens
                 all_tokens = torch.cat([jumbo_tokens, hidden_states], dim=1)
-                batch_size, num_jumbo, _ = jumbo_tokens.shape
-                jumbo_mask = torch.ones(batch_size, num_jumbo, device=att_mask.device, dtype=att_mask.dtype)
+                batch_n, num_jumbo, _ = jumbo_tokens.shape
+                jumbo_mask = torch.ones(batch_n, num_jumbo, device=att_mask.device, dtype=att_mask.dtype)
                 full_mask = torch.cat([jumbo_mask, att_mask], dim=1)
                 sum_embeddings = (all_tokens * full_mask.unsqueeze(-1)).sum(1)
                 sum_mask = full_mask.sum(1, keepdim=True)
@@ -174,7 +185,7 @@ def extract_representations(sequences, model, tokenizer, representation_type, us
 
             embeddings.append(embedding.cpu().numpy())
 
-    X = np.squeeze(np.array(embeddings), 1)
+    X = np.concatenate(embeddings, axis=0)
     print(f"  {len(sequences)} samples | representation shape: {X.shape}")
     return X
 
@@ -329,7 +340,8 @@ def run(config):
 
     print(f"Extracting gallery embeddings (once, reused for {'/'.join(config.tasks)})...")
     X_gallery = extract_representations(
-        gallery_df["sequence"].tolist(), model, tokenizer, config.representation_type, use_cls, device
+        gallery_df["sequence"].tolist(), model, tokenizer, config.representation_type, use_cls, device,
+        embed_batch_size=config.embed_batch_size,
     )
 
     print(f"Fitting KNN classifier(s) for {config.tasks}...", flush=True)
@@ -382,7 +394,8 @@ def run(config):
             continue
 
         X_query = extract_representations(
-            relevant["sequence"].tolist(), model, tokenizer, config.representation_type, use_cls, device
+            relevant["sequence"].tolist(), model, tokenizer, config.representation_type, use_cls, device,
+            embed_batch_size=config.embed_batch_size,
         )
 
         tag_lower = name.split()[0].lower()
@@ -470,6 +483,10 @@ def get_parser():
     group.add_argument("--representation-type", "--representation_type", dest="representation_type",
                         default="tokens",
                         choices=["tokens", "cls", "tokens_with_cls", "jumbo", "jumbo_avg", "all_tokens"])
+    group.add_argument("--embed-batch-size", "--embed_batch_size", dest="embed_batch_size", type=int, default=32,
+                        help="Sequences per forward pass during embedding extraction. Critical for ITS-5M's"
+                        " ~4.2M-specimen gallery -- batch_size=1 badly under-utilizes the GPU and can blow"
+                        " past SLURM time limits. Default: %(default)s")
 
     group.add_argument("--tasks", dest="tasks", default=list(ALL_TASKS), nargs="+", choices=ALL_TASKS,
                         help="Which label level(s) to evaluate. Restricting to genus_level skips embedding"

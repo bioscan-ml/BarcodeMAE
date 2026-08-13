@@ -35,7 +35,7 @@
 #SBATCH --gres=gpu:h100:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=128G
-#SBATCH --time=06:00:00
+#SBATCH --time=12:00:00
 #SBATCH --array=0-6
 #SBATCH --output=final_logs/%A/%A_%a.out
 #SBATCH --error=final_logs/%A/%A_%a.err
@@ -119,6 +119,7 @@ for WEIGHTS in "uniform" "softmax"; do
         --representation-type     tokens \
         --n-neighbors              1 3 5 7 10 15 20 25 50 \
         --metric                   cosine \
+        --embed-batch-size         32 \
         "${WEIGHT_ARGS[@]}" \
         --run-name                 "knn_external_${TAG}_${WEIGHTS}" \
         --results-file             results_final/KNN_ITS_external_RESULTS.txt \
