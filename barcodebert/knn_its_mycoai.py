@@ -31,6 +31,7 @@ import numpy as np
 import pandas as pd
 import sklearn.metrics
 import torch
+from mycoai import utils as mycoai_utils
 from mycoai.data import Data
 from sklearn.neighbors import KNeighborsClassifier
 
@@ -111,7 +112,9 @@ def run(config):
 
     print(f"Loading MycoAI checkpoint: {config.checkpoint}")
     model = torch.load(config.checkpoint, map_location="cpu", weights_only=False)
+    model = model.to(mycoai_utils.DEVICE)
     model.eval()
+    print(f"  Model moved to {mycoai_utils.DEVICE}")
 
     results_file = knn_results_path(config.results_file, config.knn_weights)
     model_name = os.path.splitext(os.path.basename(config.checkpoint))[0]
