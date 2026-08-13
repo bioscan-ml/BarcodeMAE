@@ -133,17 +133,20 @@ def extract_representations(sequences, model, tokenizer, representation_type, us
             output = model(x, att_mask)
 
             hidden_states = _extract_last_hidden_states(output)
-            # Defensive fix for models whose forward pass returns hidden states
-            # as (seq_len, batch, D) instead of the standard (batch, seq_len, D)
-            # -- observed with DNABERT-2's MosaicBERT eager-attention fallback.
-            # With embed_batch_size==1 this went undetected: (L, 1, D) and
-            # (B, L, 1) broadcast "successfully" into a silently wrong (L, L, D)
-            # result instead of raising. Batching exposes it as a hard shape
-            # mismatch, which is caught and corrected here instead.
-            if (hidden_states.shape[0] == att_mask.shape[1]
-                    and hidden_states.shape[1] == att_mask.shape[0]
-                    and att_mask.shape[0] != att_mask.shape[1]):
-                hidden_states = hidden_states.transpose(0, 1)
+            # Some models return a plain (sequence_output, pooled_output)
+            # tuple (e.g. DNABERT-2's MosaicBERT BertModel fallback) rather
+            # than a HuggingFace ModelOutput -- _extract_last_hidden_states'
+            # output[-1] fallback then grabs pooled_output (batch, D),
+            # already pooled, instead of the per-token sequence_output
+            # (batch, seq_len, D) needed for tokens/cls pooling below. With
+            # embed_batch_size==1 the resulting broadcast against
+            # (1, seq_len, 1) "succeeded" (dims of size 1 absorb anything),
+            # silently producing a wrong embedding instead of erroring;
+            # batching exposes it as a hard shape mismatch. Detect the 2D
+            # (already-pooled) case and fall back to output[0], the
+            # sequence-level output in that tuple convention.
+            if hidden_states.dim() == 2 and isinstance(output, tuple) and len(output) >= 1:
+                hidden_states = output[0]
 
             if representation_type == "cls":
                 embedding = hidden_states[:, 0, :]

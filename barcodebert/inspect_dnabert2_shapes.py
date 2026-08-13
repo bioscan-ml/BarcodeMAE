@@ -35,6 +35,11 @@ with torch.no_grad():
     output = model(x, att_mask)
 
 print(f"\noutput type: {type(output)}")
+if isinstance(output, tuple):
+    print(f"output is a tuple of length {len(output)}")
+    for i, item in enumerate(output):
+        shape = tuple(item.shape) if torch.is_tensor(item) else type(item)
+        print(f"  output[{i}].shape: {shape}")
 if hasattr(output, "last_hidden_state"):
     lhs = output.last_hidden_state
     print(f"output.last_hidden_state: {'None' if lhs is None else tuple(lhs.shape)}")
