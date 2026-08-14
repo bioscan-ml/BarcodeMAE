@@ -73,6 +73,14 @@ def count_mycoai(bert_ckpt, cnn_ckpt):
 
 
 def count_ours(bioscan_ckpt, its_ckpt):
+    # NOTE: for arch=="maelm", load_pretrained_model() (barcodebert/io.py) builds
+    # `model = BertModel(bert_config)` and loads ONLY the "encoder."-prefixed
+    # weights from the checkpoint -- it never reconstructs the decoder at all.
+    # So the returned `model` object already *is* the full encoder (embeddings +
+    # transformer layers + pooler); it has no `.decoder` attribute. Do not call
+    # `model.encoder` -- BertModel has its own internal submodule also named
+    # `.encoder` (just the transformer-layer stack), which would silently
+    # undercount by excluding the embedding table and pooler.
     from barcodebert.io import load_pretrained_model
 
     print("\n=== BarcodeMAE+ (ours) ===")
@@ -82,10 +90,9 @@ def count_ours(bioscan_ckpt, its_ckpt):
             print(f"{name:28s}: checkpoint not found at {ckpt_path}, skipping")
             continue
         model, ckpt = load_pretrained_model(ckpt_path, device="cpu")
-        encoder_params = sum(p.numel() for p in model.encoder.parameters())
-        total_params = sum(p.numel() for p in model.parameters())
-        print(f"{name:28s}: {encoder_params:,} encoder-only parameters (used at inference)")
-        print(f"{'':28s}  [{total_params:,} total incl. decoder, discarded after pretraining]")
+        encoder_params = sum(p.numel() for p in model.parameters())
+        print(f"{name:28s}: {encoder_params:,} encoder parameters (the only part used at inference; "
+              f"the decoder is discarded after pretraining and is not loaded here)")
         results[name] = encoder_params
         del model
     return results
