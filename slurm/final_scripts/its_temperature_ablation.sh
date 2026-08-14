@@ -4,7 +4,8 @@
 # configuration (encoder-decoder, +CLS+Binary, CLS representation). Sweeps
 # --temperature over a range of values (the main text uses T=0.07,
 # DINOv2's default) to see how sensitive softmax-voting stability/accuracy
-# is to this choice.
+# is to this choice. T=0.07 itself is NOT included -- that result already
+# exists from the main sweep, no need to recompute it.
 #
 # REQUIRES:
 #   - its_export_tasks.sh already run (produces data/ITS-5M/tasks/test{1,2}_tasks.csv)
@@ -12,7 +13,7 @@
 #     for the encoder-decoder, +CLS+Binary config) -- see this script's own
 #     CKPT path for the exact expected location on this cluster.
 #
-# 8 array tasks (0-7), one per temperature value. Each task runs leakage-free
+# 7 array tasks (0-6), one per temperature value. Each task runs leakage-free
 # genus-level KNN (softmax voting only -- uniform voting doesn't use
 # temperature at all, so it's identical across every task and already
 # reported in the main results) at k=1,3,5,7,10,15,20,25,50, cosine metric,
@@ -31,7 +32,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=128G
 #SBATCH --time=03:00:00
-#SBATCH --array=0-7
+#SBATCH --array=0-6
 #SBATCH --output=final_logs/%A/%A_%a.out
 #SBATCH --error=final_logs/%A/%A_%a.err
 
@@ -63,7 +64,7 @@ CKPT="/project/6045013/m4safari/BarcodeMAE/main_checkpoints_final/${DATASET}/fin
 [ ! -f "${CKPT}" ] && echo "ERROR: checkpoint not found at ${CKPT} — move it from the ITS-5M cluster first" && exit 1
 
 # ── Grid (8 tasks): temperature values ──────────────────────────────────────
-TEMPERATURES=(0.01 0.02 0.05 0.07 0.1 0.2 0.5 1.0)
+TEMPERATURES=(0.01 0.02 0.05 0.1 0.2 0.5 1.0)
 TEMPERATURE="${TEMPERATURES[$SLURM_ARRAY_TASK_ID]}"
 
 echo "Temperature: ${TEMPERATURE}"
