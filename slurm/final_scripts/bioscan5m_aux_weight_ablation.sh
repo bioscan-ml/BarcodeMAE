@@ -20,8 +20,9 @@
 # fully self-contained.
 #
 # 12 array tasks (0-11): 4 weight values x 3 objectives (CE, Binary,
-# Triplet). Each is a FULL pretraining run (up to the 48h time limit,
-# matching bioscan5m_final.sh) -- this ablation is expensive. Tasks 0-3 (CE)
+# Triplet). Each is a FULL pretraining run (up to the 26.5h time limit,
+# ~18.3h estimated pretrain+KNN plus an ~8h buffer for ZSC/variance) --
+# this ablation is expensive. Tasks 0-3 (CE)
 # were already run in an earlier submission; pretraining auto-skips for them
 # since their checkpoints already exist, so resubmitting the full 0-11 range
 # is safe (idempotent) if you want one array to manage. To only submit the
@@ -41,7 +42,7 @@
 #SBATCH --gres=gpu:h100:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=128G
-#SBATCH --time=48:00:00
+#SBATCH --time=26:30:00
 #SBATCH --array=0-11
 #SBATCH --output=final_logs/%A/%A_%a.out
 #SBATCH --error=final_logs/%A/%A_%a.err
