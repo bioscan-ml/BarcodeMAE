@@ -66,7 +66,7 @@ MAX_LEN=660
 
 # ── Grid (3 tasks): same models as bioscan5m_external_baselines_modern.sh ────
 MODEL_IDS=(
-    "LongSafari/hyenadna-tiny-1k-seqlen"
+    "LongSafari/hyenadna-tiny-1k-seqlen-hf"
     "kuleshov-group/caduceus-ps_seqlen-1k_d_model-256_n_layer-4_lr-8e-3"
     "AIRI-Institute/moderngena-base"
 )

@@ -32,7 +32,7 @@ HF_MODELS = [
     ("DNABERT-S", "zhihan1996/DNABERT-S"),
     ("Nucleotide Transformer", "InstaDeepAI/nucleotide-transformer-v2-50m-multi-species"),
     ("BarcodeBERT", "bioscan-ml/BarcodeBERT"),
-    ("HyenaDNA-tiny", "LongSafari/hyenadna-tiny-1k-seqlen"),
+    ("HyenaDNA-tiny", "LongSafari/hyenadna-tiny-1k-seqlen-hf"),
     ("Caduceus-PS-1k", "kuleshov-group/caduceus-ps_seqlen-1k_d_model-256_n_layer-4_lr-8e-3"),
     ("GENA-LM", "AIRI-Institute/moderngena-base"),
 ]
