@@ -28,9 +28,9 @@
 # script>.
 #
 # ── Chunked/self-chaining walltime (CHANGED) ────────────────────────────────
-# Each task now requests only CHUNK_HOURS (default 6h) instead of one giant
-# ~19-20h request, since a single ~26.5h request had sat 2 days with no
-# resource allocation. At startup, EACH job -- before doing any expensive
+# Each task now requests only 3h instead of one giant ~19-20h request, since
+# even a 6h request sat with no resource allocation. At startup, EACH job --
+# before doing any expensive
 # work -- pre-emptively submits its own continuation (same array index, same
 # script) via `sbatch --dependency=afterany:$SLURM_JOB_ID`, so the chain
 # keeps going even if this chunk is killed by SLURM mid-epoch on walltime.
@@ -43,7 +43,7 @@
 # successfully, which structurally only happens once ALL epochs are trained)
 # stops the chain: once present, later chunks skip straight to KNN/ZSC eval
 # without resubmitting further or re-invoking pretraining.py. MAX_CHAIN_DEPTH
-# (default 6, i.e. up to 6 x CHUNK_HOURS = 36h total) is a hard safety cap on
+# (default 12, i.e. up to 12 x 3h = 36h total) is a hard safety cap on
 # how many chunks a single task can consume, in case something is stuck.
 #
 # The "skip uniform-voting KNN re-run for already-complete checkpoints"
@@ -67,13 +67,13 @@
 #SBATCH --gres=gpu:h100:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=128G
-#SBATCH --time=06:00:00
+#SBATCH --time=03:00:00
 #SBATCH --array=0-11
 #SBATCH --output=final_logs/%A/%A_%a.out
 #SBATCH --error=final_logs/%A/%A_%a.err
 
 CHAIN_DEPTH="${CHAIN_DEPTH:-0}"
-MAX_CHAIN_DEPTH=6
+MAX_CHAIN_DEPTH=12
 
 echo "Job $SLURM_JOB_ID | Task $SLURM_ARRAY_TASK_ID | Chain depth $CHAIN_DEPTH | $(date)"
 
