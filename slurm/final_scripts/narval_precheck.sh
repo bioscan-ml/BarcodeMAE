@@ -92,10 +92,10 @@ if command -v sacctmgr >/dev/null 2>&1; then
     if [ -n "$ASSOC" ]; then
         pass "Account '$ACCOUNT' is associated with user '$USER'"
     else
-        fail "No association found for user '$USER' on account '$ACCOUNT' -- check the account name for this cluster"
+        warn "sacctmgr returned no association for '$USER'/'$ACCOUNT' -- some clusters restrict this query; the sbatch --test-only dry-run below is the authoritative check"
     fi
 else
-    warn "sacctmgr not available -- cannot verify account association"
+    warn "sacctmgr not available -- cannot verify account association here; the sbatch --test-only dry-run below is authoritative"
 fi
 
 # ── 4. Required data files ───────────────────────────────────────────────────
@@ -155,7 +155,8 @@ if command -v sbatch >/dev/null 2>&1; then
                   slurm/final_scripts/its_aux_weight_ablation_home.sh; do
         if [ -f "$script" ]; then
             OUT=$(sbatch --test-only --array=4 "$script" 2>&1)
-            if echo "$OUT" | grep -qi "would start\|allocation"; then
+            EC=$?
+            if [ "$EC" -eq 0 ]; then
                 pass "$script: scheduler accepts it ($OUT)"
             else
                 fail "$script: sbatch --test-only rejected it -- $OUT"
@@ -165,7 +166,8 @@ if command -v sbatch >/dev/null 2>&1; then
     script="slurm/final_scripts/its_export_tasks_home.sh"
     if [ -f "$script" ]; then
         OUT=$(sbatch --test-only "$script" 2>&1)
-        if echo "$OUT" | grep -qi "would start\|allocation"; then
+        EC=$?
+        if [ "$EC" -eq 0 ]; then
             pass "$script: scheduler accepts it ($OUT)"
         else
             fail "$script: sbatch --test-only rejected it -- $OUT"
