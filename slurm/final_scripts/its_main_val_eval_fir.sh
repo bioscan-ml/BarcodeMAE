@@ -15,10 +15,7 @@
 # THIS cluster (via analyze_its_valtrain_overlap.py) -- check it exists
 # before submitting; if not, export it first (see that script's usage).
 #
-# *** GPU TYPE: set to a100 as a guess -- unconfirmed for this cluster.
-# Run `sbatch --test-only slurm/final_scripts/its_main_val_eval_fir.sh`
-# first; if it errors on the GPU type, it'll say exactly which types are
-# valid (same as narval's h100->a100 issue).
+# GPU TYPE: h100 (confirmed for this cluster).
 #
 # Submit: sbatch slurm/final_scripts/its_main_val_eval_fir.sh
 # ============================================================================
@@ -26,7 +23,7 @@
 #SBATCH --account=def-lila-ab
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --gres=gpu:a100:1
+#SBATCH --gres=gpu:h100:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=03:00:00
