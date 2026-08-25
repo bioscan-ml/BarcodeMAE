@@ -110,7 +110,13 @@ def run(config):
         raise RuntimeError("0 clean species_level query specimens in trainset_valid_tasks.csv -- "
                             "re-run analyze_its_valtrain_overlap.py --export-dir first.")
 
-    query_df_raw = Data(os.path.join(config.data_dir, "trainset_valid.fasta"), allow_duplicates=False).data
+    # allow_duplicates=True to match analyze_its_valtrain_overlap.py's load_split(),
+    # which sets allow_duplicates = "train" in os.path.basename(fasta_path) --
+    # "trainset_valid.fasta" contains "train", so that's how trainset_valid_tasks.csv's
+    # ids were generated. Loading with allow_duplicates=False here would produce a
+    # different row set/id assignment, silently breaking the id match against
+    # keep_ids (observed: 0 query specimens survive the .isin() filter).
+    query_df_raw = Data(os.path.join(config.data_dir, "trainset_valid.fasta"), allow_duplicates=True).data
     query_df = query_df_raw[query_df_raw["id"].isin(keep_ids)].reset_index(drop=True)
     query_df = query_df[query_df["genus"] != UNKNOWN_STR].reset_index(drop=True)
     print(f"\ntrainset_valid: {len(query_df)} clean query specimens with a resolved genus "
