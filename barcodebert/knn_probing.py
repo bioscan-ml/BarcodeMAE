@@ -163,7 +163,7 @@ def run(config):
         tokenizer = BPETokenizer(padding=True, max_tokenized_len=config.max_len, bpe_path=config.bpe_path)
 
     df_train = pd.read_csv(os.path.join(config.data_dir, "supervised_train.csv"))
-    df_test = pd.read_csv(os.path.join(config.data_dir, "unseen.csv"))
+    df_test = pd.read_csv(os.path.join(config.data_dir, config.query_file))
 
     if config.taxon.lower() == "bin":
         config.target_level = "bin_uri"
@@ -435,6 +435,17 @@ def get_parser():
         type=float,
         help="Temperature for --knn-weights=softmax (ignored otherwise). Lower is more"
         " winner-take-all, higher is closer to uniform voting. Default: %(default)s",
+    )
+    group.add_argument(
+        "--query-file",
+        "--query_file",
+        dest="query_file",
+        default="unseen.csv",
+        type=str,
+        help="CSV (within --data-dir) to use as the query set, evaluated against the"
+        " --data-dir/supervised_train.csv gallery. Default (%(default)s) is the real"
+        " open-world test set. Pass supervised_val.csv instead for leakage-free"
+        " hyperparameter tuning without touching the test set.",
     )
 
     # Data args ---------------------------------------------------------------
