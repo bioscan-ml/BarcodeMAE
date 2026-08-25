@@ -1,14 +1,14 @@
 #!/bin/bash
 # ============================================================================
 # Leakage-free VALIDATION-set genus-level KNN eval for BIOSCAN-5M CE
-# aux-weight ablation checkpoints (0.01/0.05/0.50/1.00) plus the w=0.10
+# aux-weight ablation checkpoints (0.01/0.05/0.5/1.0) plus the w=0.10
 # main-sweep checkpoint, on the cluster whose repo root is
 # /home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE (same cluster as
 # its_binary_val_eval.sh). Only ce is included -- binary/triplet ablation
 # checkpoints on this cluster were still at epoch 5-6/35 as of the last
 # MLM-accuracy check, not ready for eval yet.
 #
-# One array task per weight (5 total: 0.01/0.05/0.50/1.00 + 0.10 main).
+# One array task per weight (5 total: 0.01/0.05/0.5/1.0 + 0.10 main).
 # BIOSCAN-5M's gallery (~120K specimens) is much smaller than ITS-5M's
 # (~5.2M), so this should run well within the hour, but the walltime is set
 # generously anyway.
@@ -50,7 +50,7 @@ MAIN_CKPT="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE/main_checkpoi
 DATA_DIR="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE/data/BIOSCAN-5M"
 RESULTS_FILE="results_final/KNN_val_bioscan5m_aux_weight_ablation_RESULTS.txt"
 
-WEIGHTS=(0.01 0.05 0.50 1.00 0.10)
+WEIGHTS=(0.01 0.05 0.5 1.0 0.10)
 WEIGHT="${WEIGHTS[$SLURM_ARRAY_TASK_ID]}"
 echo "ce w=${WEIGHT}"
 

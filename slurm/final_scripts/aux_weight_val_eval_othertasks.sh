@@ -6,7 +6,7 @@
 # aux_weight_val_eval.sh instead). No w=0.10 main-sweep row here, only the
 # 4 ablation weights per task, matching what was actually requested.
 #
-# 16 array tasks (0-15): 4 weights (0.01/0.05/0.50/1.00) x 4 (task, dataset)
+# 16 array tasks (0-15): 4 weights (0.01/0.05/0.5/1.0) x 4 (task, dataset)
 # combos: BIOSCAN-5M binary, BIOSCAN-5M triplet, ITS-5M ce, ITS-5M triplet.
 #
 # REQUIRES data/ITS-5M/tasks/trainset_valid_tasks.csv already exported:
@@ -46,7 +46,7 @@ ABL_BASE_ITS="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE_final/Barc
 # ── Grid (16 tasks): 4 weights x 4 (dataset, task) combos ───────────────────
 DATASETS=("bioscan" "bioscan" "bioscan" "bioscan"   "bioscan" "bioscan" "bioscan" "bioscan"   "its" "its" "its" "its"   "its" "its" "its" "its")
 TASKS=(    "binary"  "binary"  "binary"  "binary"    "triplet" "triplet" "triplet" "triplet"   "ce"  "ce"  "ce"  "ce"    "triplet" "triplet" "triplet" "triplet")
-WEIGHTS=(   0.01      0.05      0.50      1.00        0.01      0.05      0.50      1.00        0.01  0.05  0.50  1.00    0.01      0.05      0.50      1.00)
+WEIGHTS=(   0.01      0.05      0.5       1.0         0.01      0.05      0.5       1.0         0.01  0.05  0.5   1.0     0.01      0.05      0.5       1.0)
 DATASET="${DATASETS[$SLURM_ARRAY_TASK_ID]}"
 AUX_TASK="${TASKS[$SLURM_ARRAY_TASK_ID]}"
 WEIGHT="${WEIGHTS[$SLURM_ARRAY_TASK_ID]}"

@@ -5,7 +5,7 @@
 # the weight WITHOUT touching unseen.csv/test1/test2, which are the same
 # files the paper's headline results are computed on.
 #
-# 10 array tasks (0-9): 5 weights (0.01, 0.05, 0.10-main, 0.50, 1.00) x 2
+# 10 array tasks (0-9): 5 weights (0.01, 0.05, 0.10-main, 0.5, 1.0) x 2
 # datasets. Uses knn_probing.py --query-file supervised_val.csv for
 # BIOSCAN-5M, and the new knn_its_clean_val.py (genus-level scoring on
 # trainset_valid.fasta's clean species_level specimens) for ITS-5M.
@@ -55,7 +55,7 @@ ABL_BASE_ITS="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE_final/Barc
 
 # ── Grid (10 tasks): 5 weights x 2 datasets ──────────────────────────────────
 DATASETS=("bioscan" "bioscan" "bioscan" "bioscan" "bioscan"   "its" "its" "its" "its" "its")
-WEIGHTS=(  0.01      0.05      0.10      0.50      1.00        0.01  0.05  0.10  0.50  1.00)
+WEIGHTS=(  0.01      0.05      0.10      0.5       1.0         0.01  0.05  0.10  0.5   1.0)
 DATASET="${DATASETS[$SLURM_ARRAY_TASK_ID]}"
 WEIGHT="${WEIGHTS[$SLURM_ARRAY_TASK_ID]}"
 

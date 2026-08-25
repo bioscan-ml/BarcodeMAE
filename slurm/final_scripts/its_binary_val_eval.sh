@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================================
 # Leakage-free VALIDATION-set genus-level KNN eval for ITS-5M binary
-# aux-weight ablation checkpoints (0.01/0.05/0.50/1.00), on the cluster whose
+# aux-weight ablation checkpoints (0.01/0.05/0.5/1.0), on the cluster whose
 # repo root is /home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE (not
 # the narval BarcodeMAE_final/BarcodeMAE checkout).
 #
@@ -57,7 +57,7 @@ mkdir -p "final_logs/${SLURM_ARRAY_JOB_ID}"
 CKPT_BASE="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE/main_checkpoints_final/ablations/aux_weight/ITS-5M"
 DATA_DIR="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE/data/ITS-5M"
 
-WEIGHTS=(0.01 0.05 0.50 1.00)
+WEIGHTS=(0.01 0.05 0.5 1.0)
 WEIGHT="${WEIGHTS[$SLURM_ARRAY_TASK_ID]}"
 echo "binary w=${WEIGHT}"
 
