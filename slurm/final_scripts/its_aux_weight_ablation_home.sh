@@ -65,7 +65,7 @@
 #SBATCH --error=final_logs/%A/%A_%a.err
 
 CHAIN_DEPTH="${CHAIN_DEPTH:-0}"
-MAX_CHAIN_DEPTH=12
+MAX_CHAIN_DEPTH=16
 
 echo "Job $SLURM_JOB_ID | Task $SLURM_ARRAY_TASK_ID | Chain depth $CHAIN_DEPTH | $(date)"
 
