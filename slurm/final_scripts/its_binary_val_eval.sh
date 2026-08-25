@@ -1,9 +1,17 @@
 #!/bin/bash
 # ============================================================================
 # Leakage-free VALIDATION-set genus-level KNN eval for ITS-5M binary
-# aux-weight ablation checkpoints (0.01/0.05/0.50/1.00), on the cluster whose
-# repo root is /home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE
-# (not the narval BarcodeMAE_final/BarcodeMAE checkout).
+# aux-weight ablation checkpoints (0.01/0.05/0.50/1.00) PLUS the w=0.10
+# main-sweep checkpoint, on the cluster whose repo root is
+# /home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE (not the narval
+# BarcodeMAE_final/BarcodeMAE checkout).
+#
+# The w=0.10 task (index 4) locates its checkpoint via `find` rather than a
+# hardcoded path -- two prior guesses at its location
+# (.../BarcodeMAE_final/BarcodeMAE/main_checkpoints_final and
+# .../BarcodeMAE/main_checkpoints_final, both under ITS-5M/
+# final_its_k6_6L6H_6DL6DH_maelm_cls_binary/) both came back "not found",
+# and the actually-working path was never pinned down.
 #
 # One array task per weight, so a walltime-kill on one doesn't lose the
 # others. Each task re-embeds the ~5.2M-specimen trainset.fasta gallery from
@@ -30,7 +38,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=03:00:00
-#SBATCH --array=0-3
+#SBATCH --array=0-4
 #SBATCH --output=final_logs/%A/%A_%a.out
 #SBATCH --error=final_logs/%A/%A_%a.err
 
@@ -51,19 +59,30 @@ mkdir -p "final_logs/${SLURM_ARRAY_JOB_ID}"
 CKPT_BASE="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE/main_checkpoints_final/ablations/aux_weight/ITS-5M"
 DATA_DIR="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE/data/ITS-5M"
 
-WEIGHTS=(0.01 0.05 0.50 1.00)
+WEIGHTS=(0.01 0.05 0.50 1.00 0.10)
 WEIGHT="${WEIGHTS[$SLURM_ARRAY_TASK_ID]}"
 echo "binary w=${WEIGHT}"
 
-CKPT="${CKPT_BASE}/ablw_its_k6_6L6H_6DL6DH_maelm_cls_binary_w${WEIGHT}/checkpoint_encoder.pt"
-[ ! -f "${CKPT}" ] && echo "ERROR: checkpoint not found: ${CKPT}" && exit 1
+if [ "${WEIGHT}" = "0.10" ]; then
+    CKPT=$(find /home/m4safari/projects/def-lila-ab/m4safari -iname "final_its_k6_6L6H*cls_binary*" -type d 2>/dev/null \
+           -exec test -e "{}/checkpoint_encoder.pt" \; -print | head -1)
+    if [ -n "${CKPT}" ]; then
+        CKPT="${CKPT}/checkpoint_encoder.pt"
+    fi
+    RUN_NAME="val_final_its_binary_w0.10"
+else
+    CKPT="${CKPT_BASE}/ablw_its_k6_6L6H_6DL6DH_maelm_cls_binary_w${WEIGHT}/checkpoint_encoder.pt"
+    RUN_NAME="val_ablw_its_binary_w${WEIGHT}"
+fi
+echo "checkpoint: ${CKPT}"
+[ -z "${CKPT}" ] || [ ! -f "${CKPT}" ] && echo "ERROR: checkpoint not found (weight=${WEIGHT}, resolved path='${CKPT}')" && exit 1
 
 python barcodebert/knn_its_clean_val.py \
     --pretrained-checkpoint "${CKPT}" \
     --data-dir "${DATA_DIR}" --tasks-dir "${DATA_DIR}/tasks" \
     --representation-type cls \
     --n-neighbors 1 3 5 7 10 15 20 25 50 --metric cosine --knn-weights uniform \
-    --run-name "val_ablw_its_binary_w${WEIGHT}" \
+    --run-name "${RUN_NAME}" \
     --results-file results_final/KNN_val_ITS_aux_weight_ablation_RESULTS.txt
 EC=$?
 
