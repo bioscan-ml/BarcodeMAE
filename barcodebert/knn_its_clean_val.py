@@ -31,6 +31,7 @@ Usage:
 import argparse
 import os
 import resource
+import sys
 import time
 from itertools import product
 
@@ -104,7 +105,13 @@ def run(config):
     # ── Query: trainset_valid.fasta, restricted to the clean species_level ─────
     # task from trainset_valid_tasks.csv (no genus_level-task specimens exist
     # for this file -- see module docstring), scored on GENUS label regardless.
-    tasks_df = pd.read_csv(os.path.join(config.tasks_dir, "trainset_valid_tasks.csv"))
+    # dtype=str on the id column: pandas otherwise infers int64 for
+    # numeric-looking ids on CSV read, while Data()'s freshly-parsed id column
+    # may be string/object -- "12345" != 12345 in Python, so .isin() silently
+    # matches nothing despite the values "looking" the same. Confirmed: this
+    # alone (independent of the allow_duplicates fix below) reproduced
+    # "0 clean query specimens" even after that fix was applied.
+    tasks_df = pd.read_csv(os.path.join(config.tasks_dir, "trainset_valid_tasks.csv"), dtype={"id": str})
     keep_ids = set(tasks_df.loc[tasks_df["task"] == "species_level", "id"])
     if not keep_ids:
         raise RuntimeError("0 clean species_level query specimens in trainset_valid_tasks.csv -- "
@@ -117,7 +124,14 @@ def run(config):
     # different row set/id assignment, silently breaking the id match against
     # keep_ids (observed: 0 query specimens survive the .isin() filter).
     query_df_raw = Data(os.path.join(config.data_dir, "trainset_valid.fasta"), allow_duplicates=True).data
+    query_df_raw["id"] = query_df_raw["id"].astype(str)
     query_df = query_df_raw[query_df_raw["id"].isin(keep_ids)].reset_index(drop=True)
+    if len(query_df) == 0:
+        print(f"DEBUG: 0 matches. Sample keep_ids: {sorted(keep_ids)[:5]}", file=sys.stderr)
+        print(f"DEBUG: sample query_df_raw ids: {query_df_raw['id'].head(5).tolist()}", file=sys.stderr)
+        raise RuntimeError("0 query specimens matched keep_ids by id -- id format mismatch between "
+                            "trainset_valid_tasks.csv and the freshly-loaded trainset_valid.fasta "
+                            "(see DEBUG lines above for a direct comparison).")
     query_df = query_df[query_df["genus"] != UNKNOWN_STR].reset_index(drop=True)
     print(f"\ntrainset_valid: {len(query_df)} clean query specimens with a resolved genus "
           f"(out of {len(keep_ids)} clean species_level ids)")
