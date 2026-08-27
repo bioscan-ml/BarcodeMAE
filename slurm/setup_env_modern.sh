@@ -104,6 +104,17 @@ pip install mycoai-its==0.0.5 --index-url https://pypi.org/simple/ --quiet
 echo "Installing transformers 4.48.0 (ModernBERT support) ..."
 pip install --force-reinstall transformers==4.48.0+computecanada --quiet
 
+# ── 8b. Re-pin numpy<2 -- one of the installs above (transformers 4.48.0's
+#      own dependency resolution) silently upgrades numpy to 2.x with no
+#      warning at install time, but scipy/scikit-learn/numba/mamba_ssm's
+#      compiled C extensions here were built against NumPy 1.x's ABI, which
+#      NumPy 2.0 broke ("_ARRAY_API not found" / "numpy.core.multiarray
+#      failed to import" the moment mamba_ssm pulls in sklearn transitively
+#      via transformers.generation). Confirmed via a real cluster traceback.
+echo "Re-pinning numpy<2 (scipy/sklearn/mamba_ssm need NumPy 1.x ABI) ..."
+pip install "numpy<2" --quiet
+python -c "import numpy; assert numpy.__version__.startswith('1.'), numpy.__version__; print(f'numpy: {numpy.__version__} OK')"
+
 # ── 9. barcodebert editable install ──────────────────────────────────────────
 echo "Installing barcodebert (editable) ..."
 pip install -e "$REPO_DIR" --no-deps --quiet
@@ -114,6 +125,10 @@ echo "=========================================="
 echo "Smoke test"
 echo "=========================================="
 WANDB_MODE=disabled python -c "
+import numpy
+assert numpy.__version__.startswith('1.'), f'numpy is {numpy.__version__}, expected 1.x'
+print(f'numpy        : {numpy.__version__}')
+
 import torch
 print(f'torch        : {torch.__version__}')
 print(f'CUDA avail   : {torch.cuda.is_available()}')
