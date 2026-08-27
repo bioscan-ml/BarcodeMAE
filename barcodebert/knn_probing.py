@@ -245,35 +245,57 @@ def run(config):
     for partition_name, X_part, _ in partitions:
         neigh_dist[partition_name], neigh_ind[partition_name] = clf.kneighbors(X_part, n_neighbors=max_k)
 
-    # Evaluate for each k
-    all_results = {}  # k -> {partition -> metrics}
+    # Evaluate for each k (and, if --temperature-sweep is set with softmax voting,
+    # every temperature too -- all reusing the same neigh_dist/neigh_ind computed
+    # above, so no re-embedding or re-fitting per temperature).
+    sweep_temperatures = (
+        config.temperature_sweep if (config.knn_weights == "softmax" and config.temperature_sweep)
+        else [config.temperature]
+    )
+    best_combo = None  # (accuracy, temperature, k)
+    all_results = {}  # k -> {partition -> metrics}  (last-swept temperature, for backward-compat results file)
+    sweep_results = []  # list of (temperature, k, accuracy) for every combo, only populated if sweeping
     for k in n_neighbors_list:
         print(f"\n{'='*50}")
         print(f"k = {k}")
         print(f"{'='*50}")
-        results = {}
-        for partition_name, X_part, y_part in partitions:
-            # Use the k closest neighbors from precomputed distances
-            ind_k = neigh_ind[partition_name][:, :k]
-            dist_k = neigh_dist[partition_name][:, :k]
-            neighbor_labels = clf._y[ind_k]  # encoded class indices, shape (N, k)
-            majority_idx = knn_vote(neighbor_labels, dist_k, weights=config.knn_weights, temperature=config.temperature)
-            y_pred = clf.classes_[majority_idx]  # map back to original labels
-            res_part = {}
-            res_part["count"] = len(y_part)
-            res_part["accuracy"] = 100.0 * sklearn.metrics.accuracy_score(y_part, y_pred)
-            res_part["accuracy-balanced"] = 100.0 * sklearn.metrics.balanced_accuracy_score(y_part, y_pred)
-            res_part["f1-micro"] = 100.0 * sklearn.metrics.f1_score(y_part, y_pred, average="micro")
-            res_part["f1-macro"] = 100.0 * sklearn.metrics.f1_score(y_part, y_pred, average="macro")
-            res_part["f1-support"] = 100.0 * sklearn.metrics.f1_score(y_part, y_pred, average="weighted")
-            results[partition_name] = res_part
-            print(f"\n{partition_name} evaluation results (k={k}):")
-            for metric_name, v in res_part.items():
-                if metric_name == "count":
-                    print(f"  {metric_name + ' ':.<21s}{v:7d}")
-                else:
-                    print(f"  {metric_name + ' ':.<24s} {v:6.2f} %")
-        all_results[k] = results
+        for temperature in sweep_temperatures:
+            results = {}
+            for partition_name, X_part, y_part in partitions:
+                # Use the k closest neighbors from precomputed distances
+                ind_k = neigh_ind[partition_name][:, :k]
+                dist_k = neigh_dist[partition_name][:, :k]
+                neighbor_labels = clf._y[ind_k]  # encoded class indices, shape (N, k)
+                majority_idx = knn_vote(neighbor_labels, dist_k, weights=config.knn_weights, temperature=temperature)
+                y_pred = clf.classes_[majority_idx]  # map back to original labels
+                res_part = {}
+                res_part["count"] = len(y_part)
+                res_part["accuracy"] = 100.0 * sklearn.metrics.accuracy_score(y_part, y_pred)
+                res_part["accuracy-balanced"] = 100.0 * sklearn.metrics.balanced_accuracy_score(y_part, y_pred)
+                res_part["f1-micro"] = 100.0 * sklearn.metrics.f1_score(y_part, y_pred, average="micro")
+                res_part["f1-macro"] = 100.0 * sklearn.metrics.f1_score(y_part, y_pred, average="macro")
+                res_part["f1-support"] = 100.0 * sklearn.metrics.f1_score(y_part, y_pred, average="weighted")
+                results[partition_name] = res_part
+                if len(sweep_temperatures) == 1:
+                    print(f"\n{partition_name} evaluation results (k={k}):")
+                    for metric_name, v in res_part.items():
+                        if metric_name == "count":
+                            print(f"  {metric_name + ' ':.<21s}{v:7d}")
+                        else:
+                            print(f"  {metric_name + ' ':.<24s} {v:6.2f} %")
+            all_results[k] = results
+            unseen_acc = results["Unseen"]["accuracy"]
+            if len(sweep_temperatures) > 1:
+                sweep_results.append((temperature, k, unseen_acc))
+                print(f"  T={temperature:<6} k={k:<3} Unseen accuracy={unseen_acc:.4f}%")
+            if best_combo is None or unseen_acc > best_combo[0]:
+                best_combo = (unseen_acc, temperature, k)
+
+    if len(sweep_temperatures) > 1:
+        best_acc, best_t, best_k = best_combo
+        print(f"\n{'='*50}")
+        print(f"BEST: T={best_t}, k={best_k}, Unseen accuracy={best_acc:.4f}%")
+        print(f"{'='*50}")
 
     timing_stats["test"] = time.time() - t_start_test
 
@@ -287,9 +309,15 @@ def run(config):
     model_name = os.path.join(*os.path.split(config.pretrained_checkpoint_path)[-2:])
     results_file = knn_results_path(getattr(config, "results_file", "KNN_RESULTS.txt"), config.knn_weights)
     with open(results_file, "a") as f:
-        for k, results in all_results.items():
-            acc = results["Unseen"]["accuracy"]
-            f.write(f"\n{config.run_name}_{model_name}_k{k}\t {acc:.4f}")
+        if len(sweep_temperatures) > 1:
+            for temperature, k, acc in sweep_results:
+                f.write(f"\n{config.run_name}_{model_name}_T{temperature}_k{k}\t {acc:.4f}")
+            best_acc, best_t, best_k = best_combo
+            f.write(f"\n{config.run_name}_{model_name}_BEST_T{best_t}_k{best_k}\t {best_acc:.4f}")
+        else:
+            for k, results in all_results.items():
+                acc = results["Unseen"]["accuracy"]
+                f.write(f"\n{config.run_name}_{model_name}_k{k}\t {acc:.4f}")
 
     timing_stats["overall"] = time.time() - t_start
 
@@ -435,6 +463,18 @@ def get_parser():
         type=float,
         help="Temperature for --knn-weights=softmax (ignored otherwise). Lower is more"
         " winner-take-all, higher is closer to uniform voting. Default: %(default)s",
+    )
+    group.add_argument(
+        "--temperature-sweep",
+        "--temperature_sweep",
+        dest="temperature_sweep",
+        default=None,
+        type=float,
+        nargs="+",
+        help="If set (--knn-weights=softmax only), sweep all these temperatures against"
+        " every --n-neighbors k using the SAME embeddings/kNN fit (no re-embedding per"
+        " temperature) and report the single best (temperature, k) combo by accuracy on"
+        " the query partition, in addition to the full grid. Overrides --temperature.",
     )
     group.add_argument(
         "--query-file",

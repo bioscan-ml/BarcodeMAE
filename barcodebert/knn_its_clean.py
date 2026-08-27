@@ -214,10 +214,18 @@ def fit_knn(X_all, labels_col, max_k, metric):
     return clf
 
 
-def evaluate_task(clf, X_all, labels_col, task_mask, n_neighbors_list, weights="uniform", temperature=0.07):
+def evaluate_task(clf, X_all, labels_col, task_mask, n_neighbors_list, weights="uniform", temperature=0.07,
+                   temperature_sweep=None):
     """Evaluate one (test set, task) combo: rows selected by task_mask,
     labelled by labels_col, against a KNN classifier already fit on the
-    appropriate gallery."""
+    appropriate gallery.
+
+    If weights=="softmax" and temperature_sweep is a list, sweeps every
+    temperature in it against every k using the SAME neigh_dist/neigh_ind
+    (no re-fitting), and results[k] becomes {temperature: metrics} instead
+    of metrics directly -- also returns the single best (temperature, k)
+    combo by accuracy as a third element.
+    """
     mask = task_mask.to_numpy() & (labels_col != UNKNOWN_STR).to_numpy()
     X_query = X_all[mask]
     y_query = labels_col[mask].to_numpy()
@@ -241,16 +249,27 @@ def evaluate_task(clf, X_all, labels_col, task_mask, n_neighbors_list, weights="
     neigh_dist, neigh_ind = clf.kneighbors(X_query, n_neighbors=max_k)
     neighbor_labels = clf._y[neigh_ind]
 
+    sweep = temperature_sweep if (weights == "softmax" and temperature_sweep) else [temperature]
+
     results = {}
+    best_combo = None  # (accuracy, temperature, k)
     for k in n_neighbors_list:
-        majority_idx = knn_vote(neighbor_labels[:, :k], neigh_dist[:, :k], weights=weights, temperature=temperature)
-        y_pred = clf.classes_[majority_idx]
-        results[k] = {
-            "count": len(y_query),
-            "accuracy": 100.0 * sklearn.metrics.accuracy_score(y_query, y_pred),
-            "accuracy-balanced": 100.0 * sklearn.metrics.balanced_accuracy_score(y_query, y_pred),
-            "f1-macro": 100.0 * sklearn.metrics.f1_score(y_query, y_pred, average="macro"),
-        }
+        per_temp = {}
+        for t in sweep:
+            majority_idx = knn_vote(neighbor_labels[:, :k], neigh_dist[:, :k], weights=weights, temperature=t)
+            y_pred = clf.classes_[majority_idx]
+            metrics = {
+                "count": len(y_query),
+                "accuracy": 100.0 * sklearn.metrics.accuracy_score(y_query, y_pred),
+                "accuracy-balanced": 100.0 * sklearn.metrics.balanced_accuracy_score(y_query, y_pred),
+                "f1-macro": 100.0 * sklearn.metrics.f1_score(y_query, y_pred, average="macro"),
+            }
+            if best_combo is None or metrics["accuracy"] > best_combo[0]:
+                best_combo = (metrics["accuracy"], t, k)
+            per_temp[t] = metrics
+        results[k] = per_temp if len(sweep) > 1 else per_temp[sweep[0]]
+    if len(sweep) > 1:
+        return results, best_combo
     return results
 
 
@@ -418,18 +437,30 @@ def run(config):
             clf = clf_species if task == "species_level" else clf_genus
             label_col = relevant["species"] if task == "species_level" else relevant["genus"]
             task_mask = relevant["task"] == task
-            res_by_k = evaluate_task(clf, X_query, label_col, task_mask, config.n_neighbors,
-                                      weights=config.knn_weights, temperature=config.temperature)
+            eval_out = evaluate_task(clf, X_query, label_col, task_mask, config.n_neighbors,
+                                      weights=config.knn_weights, temperature=config.temperature,
+                                      temperature_sweep=getattr(config, "temperature_sweep", None))
+            sweeping = config.knn_weights == "softmax" and getattr(config, "temperature_sweep", None)
+            res_by_k, best_combo = eval_out if sweeping else (eval_out, None)
 
-            # Save + log each (task, k) result as soon as it's computed — don't
-            # wait for the rest of this test set, let alone the other test sets.
+            # Save + log each (task, k[, temperature]) result as soon as it's computed
+            # — don't wait for the rest of this test set, let alone the other test sets.
             with open(results_file, "a") as f:
                 for k, res in res_by_k.items():
-                    all_results.setdefault(task, {}).setdefault(k, {})[name] = res
-                    print(f"  [{task}] k={k}: accuracy={res['accuracy']:.2f}% "
-                          f"balanced={res['accuracy-balanced']:.2f}% f1-macro={res['f1-macro']:.2f}% "
-                          f"(n={res['count']})")
-                    f.write(f"\n{config.run_name}_{task}_{model_name}_{tag_lower}_k{k}\t{res['accuracy']:.4f}")
+                    if sweeping:
+                        for t, m in res.items():
+                            all_results.setdefault(task, {}).setdefault(k, {}).setdefault(name, {})[t] = m
+                            f.write(f"\n{config.run_name}_{task}_{model_name}_{tag_lower}_T{t}_k{k}\t{m['accuracy']:.4f}")
+                    else:
+                        all_results.setdefault(task, {}).setdefault(k, {})[name] = res
+                        print(f"  [{task}] k={k}: accuracy={res['accuracy']:.2f}% "
+                              f"balanced={res['accuracy-balanced']:.2f}% f1-macro={res['f1-macro']:.2f}% "
+                              f"(n={res['count']})")
+                        f.write(f"\n{config.run_name}_{task}_{model_name}_{tag_lower}_k{k}\t{res['accuracy']:.4f}")
+                if sweeping:
+                    best_acc, best_t, best_k = best_combo
+                    print(f"  [{task}] BEST: T={best_t}, k={best_k}, accuracy={best_acc:.4f}%")
+                    f.write(f"\n{config.run_name}_{task}_{model_name}_{tag_lower}_BEST_T{best_t}_k{best_k}\t{best_acc:.4f}")
         print(f"  -> saved {name} results to {results_file}")
 
     dt_total = time.time() - t_start
@@ -442,8 +473,14 @@ def run(config):
         for task, by_k in all_results.items():
             for k, results in by_k.items():
                 for name, res in results.items():
-                    for metric, v in res.items():
-                        log_dict[f"{task}/knn_k{k}/{name}/{metric}"] = v
+                    # res is {temperature: metrics_dict} when sweeping, else a flat metrics_dict
+                    if res and isinstance(next(iter(res.values())), dict):
+                        for t, m in res.items():
+                            for metric, v in m.items():
+                                log_dict[f"{task}/knn_k{k}/{name}/T{t}/{metric}"] = v
+                    else:
+                        for metric, v in res.items():
+                            log_dict[f"{task}/knn_k{k}/{name}/{metric}"] = v
         wandb.log(log_dict)
 
 
@@ -494,6 +531,12 @@ def get_parser():
     group.add_argument("--temperature", dest="temperature", type=float, default=0.07,
                         help="Temperature for --knn-weights=softmax (ignored otherwise). Lower is"
                         " more winner-take-all, higher is closer to uniform voting.")
+    group.add_argument("--temperature-sweep", "--temperature_sweep", dest="temperature_sweep",
+                        default=None, type=float, nargs="+",
+                        help="If set (--knn-weights=softmax only), sweep all these temperatures"
+                        " against every k using the SAME embeddings/kNN fit and report the best"
+                        " (temperature, k) combo per (test set, task), in addition to the full"
+                        " grid. Overrides --temperature.")
     group.add_argument("--representation-type", "--representation_type", dest="representation_type",
                         default="tokens",
                         choices=["tokens", "cls", "tokens_with_cls", "jumbo", "jumbo_avg", "all_tokens"])
