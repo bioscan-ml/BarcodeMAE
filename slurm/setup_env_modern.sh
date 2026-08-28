@@ -124,6 +124,12 @@ echo ""
 echo "=========================================="
 echo "Smoke test"
 echo "=========================================="
+# TMPDIR: mycoai's __init__.py calls wandb.login('allow') at import time
+# regardless of WANDB_MODE, starting a local service subprocess that writes
+# a port file under $TMPDIR -- this cluster's node-local /tmp intermittently
+# fails that write. Scratch doesn't have that flakiness.
+export TMPDIR="/scratch/$USER/tmp_wandb"
+mkdir -p "$TMPDIR"
 WANDB_MODE=disabled python -c "
 import numpy
 assert numpy.__version__.startswith('1.'), f'numpy is {numpy.__version__}, expected 1.x'

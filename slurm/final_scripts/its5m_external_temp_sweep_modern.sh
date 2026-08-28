@@ -33,6 +33,13 @@ export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export WANDB_MODE=disabled
 export TORCHDYNAMO_DISABLE=1
+# mycoai's __init__.py calls wandb.login('allow') at import time regardless
+# of WANDB_MODE, which starts a local service subprocess that writes a port
+# file under $TMPDIR -- this cluster's node-local /tmp intermittently fails
+# that write (confirmed repeatedly this session). Point TMPDIR at scratch
+# instead, which doesn't have that flakiness.
+export TMPDIR="/scratch/$USER/tmp_wandb"
+mkdir -p "$TMPDIR"
 
 mkdir -p results_final
 mkdir -p "final_logs/${SLURM_ARRAY_JOB_ID}"

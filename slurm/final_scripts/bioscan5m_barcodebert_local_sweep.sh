@@ -29,6 +29,13 @@ export PYTHONNOUSERSITE=1
 export PYTHONPATH=""
 source "/scratch/$USER/BarcodeMAE_venv/bin/activate"
 export WANDB_MODE=disabled
+# mycoai's __init__.py calls wandb.login('allow') at import time regardless
+# of WANDB_MODE, which starts a local service subprocess that writes a port
+# file under $TMPDIR -- this cluster's node-local /tmp intermittently fails
+# that write (confirmed repeatedly this session). Point TMPDIR at scratch
+# instead, which doesn't have that flakiness.
+export TMPDIR="/scratch/$USER/tmp_wandb"
+mkdir -p "$TMPDIR"
 
 mkdir -p results_final
 mkdir -p "final_logs/${SLURM_JOB_ID}"
