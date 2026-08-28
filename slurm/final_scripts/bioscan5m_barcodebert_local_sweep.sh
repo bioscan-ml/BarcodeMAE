@@ -15,7 +15,7 @@
 #SBATCH --gres=gpu:a100:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
-#SBATCH --time=02:00:00
+#SBATCH --time=03:00:00
 #SBATCH --output=final_logs/%j/%j.out
 #SBATCH --error=final_logs/%j/%j.err
 
@@ -44,6 +44,20 @@ DATASET="BIOSCAN-5M"
 DATA_DIR="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE_final/BarcodeMAE/data/${DATASET}"
 CKPT="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE_final/BarcodeMAE/main_checkpoints_final/external/best_pretraining.pt"
 TEMPS="0.01 0.02 0.05 0.07 0.1 0.2 0.5 1.0"
+
+echo "=== UNIFORM KNN EVALUATION ==="
+python barcodebert/knn_probing.py \
+    --pretrained-checkpoint  "${CKPT}" \
+    --dataset                 "${DATASET}" \
+    --data-dir                "${DATA_DIR}" \
+    --taxon                   genus \
+    --representation_type     tokens \
+    --n-neighbors              1 3 5 7 10 15 20 25 50 \
+    --metric                   cosine \
+    --knn-weights              uniform \
+    --run-name                  "knn_external_barcodebert_bioscan5m_uniform" \
+    --results-file               results_final/KNN_external_temp_sweep_RESULTS.txt
+EC0=$?; [ ${EC0} -ne 0 ] && echo "ERROR: uniform KNN eval failed"
 
 echo "=== SOFTMAX TEMPERATURE SWEEP ==="
 python barcodebert/knn_probing.py \
@@ -74,6 +88,7 @@ python barcodebert/zsc_evaluation_v2.py \
 EC2=$?; [ ${EC2} -ne 0 ] && echo "ERROR: ZSC eval failed"
 
 OVERALL_EXIT=0
+[ ${EC0} -ne 0 ] && OVERALL_EXIT=${EC0}
 [ ${EC1} -ne 0 ] && OVERALL_EXIT=${EC1}
 [ ${EC2} -ne 0 ] && OVERALL_EXIT=${EC2}
 echo "All done at: $(date) | exit: ${OVERALL_EXIT}"
