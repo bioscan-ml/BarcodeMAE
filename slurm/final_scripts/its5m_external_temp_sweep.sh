@@ -8,6 +8,12 @@
 # See its5m_external_temp_sweep_modern.sh for the 3 models needing the
 # modern venv (HyenaDNA-tiny, Caduceus-PS-1k, GENA-LM).
 #
+# 10h walltime: confirmed via a real cluster run that DNABERT-S alone needs
+# ~6.4h just to embed the ~4.2M-specimen gallery (observed throughput
+# ~5.73 it/s, killed at the 2h limit only 31% through) -- BIOSCAN-5M's
+# ~120K-specimen gallery is small enough that its sibling script's 2h is
+# still fine, this dataset's gallery is ~35x larger.
+#
 # Submit: sbatch slurm/final_scripts/its5m_external_temp_sweep.sh
 # ============================================================================
 #SBATCH --job-name=its5m_external_temp_sweep
@@ -17,7 +23,7 @@
 #SBATCH --gres=gpu:a100:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
-#SBATCH --time=02:00:00
+#SBATCH --time=10:00:00
 #SBATCH --array=0-3
 #SBATCH --output=final_logs/%A/%A_%a.out
 #SBATCH --error=final_logs/%A/%A_%a.err
