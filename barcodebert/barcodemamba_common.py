@@ -31,6 +31,7 @@ import glob
 import importlib.util
 import os
 import sys
+import types
 
 import torch
 
@@ -65,14 +66,14 @@ def load_barcodemamba(repo_path, checkpoint_dir, checkpoint_name=None):
             del sys.modules[mod_name]
     utils_dir = os.path.join(repo_path, "utils")
     init_path = os.path.join(utils_dir, "__init__.py")
-    spec = importlib.util.spec_from_file_location(
-        "utils",
-        init_path if os.path.isfile(init_path) else None,
-        submodule_search_locations=[utils_dir],
-    )
-    utils_pkg = importlib.util.module_from_spec(spec)
+    # spec_from_file_location(location=None) returns None outright (needs a
+    # real file to build a spec from) -- build the namespace-package module
+    # object directly instead for the no-__init__.py case.
+    utils_pkg = types.ModuleType("utils")
+    utils_pkg.__path__ = [utils_dir]
     sys.modules["utils"] = utils_pkg
-    if spec.loader is not None:
+    if os.path.isfile(init_path):
+        spec = importlib.util.spec_from_file_location("utils", init_path, submodule_search_locations=[utils_dir])
         spec.loader.exec_module(utils_pkg)
 
     from omegaconf import OmegaConf as o
