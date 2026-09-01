@@ -61,11 +61,11 @@ def run(config):
     df_unseen = df_unseen.dropna(subset=[target_level])
 
     print(f"\nExtracting embeddings for supervised_test ({len(df_test)} specimens)...")
-    X_test = embed_sequences(model, tokenizer, tokenizer_name, df_test["dna_barcode"], config.max_length)
+    X_test = embed_sequences(model, tokenizer, tokenizer_name, df_test["nucleotides"], config.max_length)
     y_test = df_test[target_level].to_numpy()
 
     print(f"Extracting embeddings for unseen ({len(df_unseen)} specimens)...")
-    X_unseen = embed_sequences(model, tokenizer, tokenizer_name, df_unseen["dna_barcode"], config.max_length)
+    X_unseen = embed_sequences(model, tokenizer, tokenizer_name, df_unseen["nucleotides"], config.max_length)
     y_unseen = df_unseen[target_level].to_numpy()
 
     X = np.vstack([X_test, X_unseen])

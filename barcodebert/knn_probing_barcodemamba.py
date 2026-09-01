@@ -70,10 +70,10 @@ def run(config):
     target_level = f"{config.taxon}_index"
 
     print(f"\nExtracting gallery embeddings ({len(df_train)} specimens)...")
-    X = embed_sequences(model, tokenizer, tokenizer_name, df_train["dna_barcode"], config.max_length)
+    X = embed_sequences(model, tokenizer, tokenizer_name, df_train["nucleotides"], config.max_length)
     y = df_train[target_level].to_numpy()
     print(f"Extracting query embeddings ({len(df_test)} specimens)...")
-    X_unseen = embed_sequences(model, tokenizer, tokenizer_name, df_test["dna_barcode"], config.max_length)
+    X_unseen = embed_sequences(model, tokenizer, tokenizer_name, df_test["nucleotides"], config.max_length)
     y_unseen = df_test[target_level].to_numpy()
 
     c = sum(1 for label in y_unseen if label not in y)
