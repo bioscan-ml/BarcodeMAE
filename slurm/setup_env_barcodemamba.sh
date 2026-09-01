@@ -47,12 +47,13 @@ module load python/3.11
 echo "Python : $(which python3)"
 
 # ── 2. Clone BarcodeMamba-dev (branch GTCtech-BarcodeMambaPlus-release) ───
+# NOTE: this repo is access-restricted, and narval has no GitHub credentials
+# to clone/pull it directly. If $BM_REPO already exists (e.g. rsynced over
+# from a local clone made where you DO have GitHub access), we use it as-is
+# and skip fetch/pull -- do not delete/re-clone it here.
 BM_REPO="/scratch/$USER/BarcodeMamba-dev"
 if [ -d "$BM_REPO" ]; then
-    echo "BarcodeMamba-dev already exists at $BM_REPO — pulling latest..."
-    git -C "$BM_REPO" fetch origin GTCtech-BarcodeMambaPlus-release
-    git -C "$BM_REPO" checkout GTCtech-BarcodeMambaPlus-release
-    git -C "$BM_REPO" pull origin GTCtech-BarcodeMambaPlus-release
+    echo "BarcodeMamba-dev already exists at $BM_REPO — using as-is (skipping fetch/pull, no GitHub credentials on this host)."
 else
     git clone --branch GTCtech-BarcodeMambaPlus-release --single-branch \
         https://github.com/bioscan-ml/BarcodeMamba-dev.git "$BM_REPO"
