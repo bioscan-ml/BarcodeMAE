@@ -79,13 +79,16 @@ pip install --upgrade pip wheel --quiet
 echo "Installing PyTorch 2.3 ..."
 pip install "torch==2.3.1+computecanada" --quiet || pip install "torch==2.3.1" --quiet
 
-# ── 6. mamba_ssm / causal-conv1d -- exact wheel builds BarcodeMamba's own
-#      pyproject.toml pins (cu12, torch2.3, cp311, cxx11abiFALSE) ──────────
-echo "Installing mamba_ssm + causal-conv1d (BarcodeMamba's pinned wheel builds) ..."
+# ── 6. mamba_ssm / causal-conv1d -- cu12, torch2.3, cp311, cxx11abiTRUE.
+#      NOTE: cxx11abiTRUE (not FALSE) -- PyPI's torch==2.3.1 is built with the
+#      new (cxx11) C++ ABI, so the cxx11abiFALSE wheels fail to import with an
+#      "undefined symbol" error from selective_scan_cuda.so (mismatched
+#      std::string/c10::Warning symbol mangling between the two ABIs). ──────
+echo "Installing mamba_ssm + causal-conv1d (cxx11abiTRUE, matching PyPI torch's ABI) ..."
 pip install --quiet \
-    "https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.5.0.post8/causal_conv1d-1.5.0.post8+cu12torch2.3cxx11abiFALSE-cp311-cp311-linux_x86_64.whl"
+    "https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.5.0.post8/causal_conv1d-1.5.0.post8+cu12torch2.3cxx11abiTRUE-cp311-cp311-linux_x86_64.whl"
 pip install --quiet \
-    "https://github.com/state-spaces/mamba/releases/download/v2.2.4/mamba_ssm-2.2.4+cu12torch2.3cxx11abiFALSE-cp311-cp311-linux_x86_64.whl"
+    "https://github.com/state-spaces/mamba/releases/download/v2.2.4/mamba_ssm-2.2.4+cu12torch2.3cxx11abiTRUE-cp311-cp311-linux_x86_64.whl"
 
 # ── 7. pkg_resources stub (cluster setuptools omits it; wandb==0.18 needs it) ─
 echo "Creating pkg_resources stub ..."
