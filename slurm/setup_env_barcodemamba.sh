@@ -117,7 +117,7 @@ pip install --quiet \
     "matplotlib>=3.10.8" "pandas>=2.3.3" "plotly>=6.5.2" "rich>=14.3.1" \
     "scikit-learn>=1.8.0" "sentencepiece>=0.2.1" "tensorboard>=2.20.0" \
     "timm>=1.0.24" "torchmetrics>=1.8.2" "torchtext>=0.18.0" "tqdm>=4.67.1" \
-    "transformers>=4.42.3,<5.0" "triton>=2.3.0" "wandb==0.18"
+    "transformers>=4.42.3,<5.0" "triton>=2.3.0" "wandb==0.18" "umap-learn>=0.5"
 
 # ── 9. mycoai-its -- needed only to unpickle bpe_tokenizer.pkl (see
 #      barcodemamba_common.py docstring) ────────────────────────────────────

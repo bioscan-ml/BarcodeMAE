@@ -48,6 +48,15 @@ def load_barcodemamba(repo_path, checkpoint_dir, checkpoint_name=None):
     only for the utils.barcode_mamba.BarcodeMamba class (needs mamba_ssm)."""
     if repo_path not in sys.path:
         sys.path.insert(0, repo_path)
+    # Running this as a script (python barcodebert/knn_probing_barcodemamba.py)
+    # puts barcodebert/ itself on sys.path, which has its own flat utils.py --
+    # if anything already imported that unqualified as top-level "utils", it's
+    # cached in sys.modules as a non-package, and the dotted import below would
+    # fail with "'utils' is not a package" even though repo_path is now first
+    # on sys.path (the cache wins over sys.path). Evict any stale entry first.
+    for mod_name in list(sys.modules):
+        if mod_name == "utils" or mod_name.startswith("utils."):
+            del sys.modules[mod_name]
     from omegaconf import OmegaConf as o
     from utils.barcode_mamba import BarcodeMamba
 
