@@ -115,11 +115,17 @@ def run(config):
                 }
             all_results[k] = results
             unseen_acc = results["Unseen"]["accuracy"]
+            train_acc = results["Train"]["accuracy"]
+            # Train accuracy is a free sanity check, not a reported metric: at
+            # k=1 the gallery a training point is queried against includes
+            # that exact point (distance ~0), so it should land near 100%.
+            # If it's also low, embeddings/extraction are broken, not just
+            # generalizing poorly.
             if len(sweep_temperatures) > 1:
                 sweep_results.append((temperature, k, unseen_acc))
-                print(f"  T={temperature:<6} k={k:<3} Unseen accuracy={unseen_acc:.4f}%")
+                print(f"  T={temperature:<6} k={k:<3} Train accuracy={train_acc:.4f}%  Unseen accuracy={unseen_acc:.4f}%")
             else:
-                print(f"  k={k:<3} Unseen accuracy={unseen_acc:.4f}%")
+                print(f"  k={k:<3} Train accuracy={train_acc:.4f}%  Unseen accuracy={unseen_acc:.4f}%")
             if best_combo is None or unseen_acc > best_combo[0]:
                 best_combo = (unseen_acc, temperature, k)
 
