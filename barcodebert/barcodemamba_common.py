@@ -28,6 +28,7 @@ before unpickling, sidestepping the vendored gap entirely.
 """
 
 import glob
+import importlib.util
 import os
 import sys
 
@@ -49,14 +50,31 @@ def load_barcodemamba(repo_path, checkpoint_dir, checkpoint_name=None):
     if repo_path not in sys.path:
         sys.path.insert(0, repo_path)
     # Running this as a script (python barcodebert/knn_probing_barcodemamba.py)
-    # puts barcodebert/ itself on sys.path, which has its own flat utils.py --
-    # if anything already imported that unqualified as top-level "utils", it's
-    # cached in sys.modules as a non-package, and the dotted import below would
-    # fail with "'utils' is not a package" even though repo_path is now first
-    # on sys.path (the cache wins over sys.path). Evict any stale entry first.
+    # puts barcodebert/ itself on sys.path (right after repo_path), which has
+    # its own flat utils.py. BarcodeMamba-dev's utils/ has no __init__.py (a
+    # namespace package), and namespace-package resolution only wins if NO
+    # regular module of that name is found anywhere else on sys.path first --
+    # since barcodebert/utils.py IS a regular module and sits right after
+    # repo_path, Python's finder hits it and stops, discarding the namespace
+    # candidate entirely. This happens on a fresh import too (not just a stale
+    # cache), so clearing sys.modules alone doesn't fix it. Instead, force
+    # "utils" to resolve to repo_path/utils by constructing and registering
+    # the module ourselves, bypassing sys.path search order altogether.
     for mod_name in list(sys.modules):
         if mod_name == "utils" or mod_name.startswith("utils."):
             del sys.modules[mod_name]
+    utils_dir = os.path.join(repo_path, "utils")
+    init_path = os.path.join(utils_dir, "__init__.py")
+    spec = importlib.util.spec_from_file_location(
+        "utils",
+        init_path if os.path.isfile(init_path) else None,
+        submodule_search_locations=[utils_dir],
+    )
+    utils_pkg = importlib.util.module_from_spec(spec)
+    sys.modules["utils"] = utils_pkg
+    if spec.loader is not None:
+        spec.loader.exec_module(utils_pkg)
+
     from omegaconf import OmegaConf as o
     from utils.barcode_mamba import BarcodeMamba
 
