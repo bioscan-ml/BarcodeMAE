@@ -54,7 +54,7 @@ mkdir -p "final_logs/${SLURM_ARRAY_JOB_ID}"
 
 WANDB_PROJECT="barcodemae_cls"
 DATASET="ITS-5M"
-DATA_DIR="/project/6045013/m4safari/BarcodeMAE/data/${DATASET}"
+DATA_DIR="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE_final/BarcodeMAE/data/${DATASET}"
 TASKS_DIR="${DATA_DIR}/tasks_with_leakage"
 [ ! -d "${TASKS_DIR}" ] && echo "ERROR: ${TASKS_DIR} not found — run its_export_tasks_with_leakage.sh first" && exit 1
 TEMPERATURE=0.07

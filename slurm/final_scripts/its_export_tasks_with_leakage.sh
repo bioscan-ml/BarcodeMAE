@@ -36,7 +36,7 @@ source "/scratch/$USER/BarcodeMAE_venv/bin/activate"
 
 mkdir -p "final_logs/${SLURM_JOB_ID}"
 
-DATA_DIR="/project/6045013/m4safari/BarcodeMAE/data/ITS-5M"
+DATA_DIR="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE_final/BarcodeMAE/data/ITS-5M"
 TASKS_DIR="${DATA_DIR}/tasks_with_leakage"
 
 python barcodebert/analyze_its_overlap.py \
