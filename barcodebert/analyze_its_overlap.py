@@ -191,6 +191,19 @@ def compute_overlap(train_df, train_known_df, train_species, train_genera, train
     is_clean_species_novel_genus_seen = is_clean_species_novel & is_known_genus & is_genus_in_train
     task_genus_level_n = int(is_clean_species_novel_genus_seen.sum())
 
+    # include_leaked=True also broadens genus_level to EVERY clean, known-genus
+    # specimen (species-shared included), not just the species-novel subset --
+    # otherwise "with leakage" would still only ever report genus accuracy on
+    # the harder species-novel-generalization slice, never actually reflecting
+    # the leaked/duplicate specimens the species_level task now includes. A
+    # specimen can now belong to BOTH species_level and genus_level at once;
+    # see export_task_csv()/genus_eligible below, which emits genus_level as
+    # extra (possibly duplicate-id) rows rather than overwriting task_series.
+    genus_eligible = (
+        (is_clean & is_known_genus & is_genus_in_train) if include_leaked
+        else is_clean_species_novel_genus_seen
+    )
+
     # Specimens where even genus is novel — unusable at species OR genus level.
     is_clean_unusable = is_clean_species_novel & ~(is_known_genus & is_genus_in_train)
     task_unusable_n = int(is_clean_unusable.sum())
@@ -232,9 +245,10 @@ def compute_overlap(train_df, train_known_df, train_species, train_genera, train
         "task_species_level_n": task_species_level_n,
         "task_species_level_unique_species": task_species_level_unique_species,
         "task_species_level_avg_per_species": task_species_level_avg_per_species,
-        "task_genus_level_n": task_genus_level_n,
+        "task_genus_level_n": int(genus_eligible.sum()),
         "task_unusable_n": task_unusable_n,
         "task_series": task_series,
+        "genus_eligible": genus_eligible,
     }
 
 
@@ -292,13 +306,34 @@ def print_examples(examples, name):
 def export_task_csv(test_df, stats, out_path):
     """Write id, genus, species, task for every specimen in this test set.
     Downstream eval scripts filter on task in {"species_level", "genus_level"}
-    to get the exact leakage-free query sets for Task A / Task B."""
+    to get the exact query sets for Task A / Task B.
+
+    species_level/genus_level are mutually exclusive in task_series (Task B is
+    restricted to species-novel specimens there). When genus_eligible is
+    broader than that (include_leaked=True, see compute_overlap()), a
+    specimen can belong to BOTH tasks at once -- emit those as an *additional*
+    row with task="genus_level" (duplicate id) rather than overwriting its
+    primary task_series label, since downstream code reads species_level and
+    genus_level ids as two independent sets via boolean filtering, not
+    assuming one row per id."""
     out_df = pd.DataFrame({
         "id": test_df["id"],
         "genus": test_df["genus"],
         "species": test_df["species"],
         "task": stats["task_series"],
     })
+    genus_eligible = stats.get("genus_eligible")
+    if genus_eligible is not None:
+        already_genus = stats["task_series"] == "genus_level"
+        extra_mask = genus_eligible & ~already_genus
+        if extra_mask.any():
+            extra_df = pd.DataFrame({
+                "id": test_df.loc[extra_mask, "id"],
+                "genus": test_df.loc[extra_mask, "genus"],
+                "species": test_df.loc[extra_mask, "species"],
+                "task": "genus_level",
+            })
+            out_df = pd.concat([out_df, extra_df], ignore_index=True)
     out_df.to_csv(out_path, index=False)
     print(f"  Wrote {len(out_df)} rows -> {out_path}")
     print(f"    task counts: {out_df['task'].value_counts().to_dict()}")

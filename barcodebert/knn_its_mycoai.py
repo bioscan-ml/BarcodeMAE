@@ -171,17 +171,24 @@ def run(config):
 
         test_fasta = os.path.join(config.data_dir, f"{tag}.fasta")
         test_df = Data(test_fasta, allow_duplicates=False).data
+        # species_level/genus_level are independent boolean memberships, NOT a
+        # single exclusive "task" column: with --include-leaked task CSVs, a
+        # specimen can belong to both (see knn_its_clean.py's identical fix
+        # for the full rationale).
         species_ids = set(tasks_df.loc[tasks_df["task"] == "species_level", "id"])
         genus_ids = set(tasks_df.loc[tasks_df["task"] == "genus_level", "id"])
         test_df = test_df.copy()
-        test_df["task"] = np.where(
-            test_df["id"].isin(species_ids), "species_level",
-            np.where(test_df["id"].isin(genus_ids), "genus_level", "other"),
-        )
-        relevant = test_df[test_df["task"].isin(config.tasks)].reset_index(drop=True)
+        test_df["is_species_level"] = test_df["id"].isin(species_ids)
+        test_df["is_genus_level"] = test_df["id"].isin(genus_ids)
+        relevant_mask = pd.Series(False, index=test_df.index)
+        if "species_level" in config.tasks:
+            relevant_mask |= test_df["is_species_level"]
+        if "genus_level" in config.tasks:
+            relevant_mask |= test_df["is_genus_level"]
+        relevant = test_df[relevant_mask].reset_index(drop=True)
         print(f"\n{name}: {len(relevant)} query specimens across {config.tasks} "
-              f"({(relevant['task'] == 'species_level').sum()} species_level, "
-              f"{(relevant['task'] == 'genus_level').sum()} genus_level)")
+              f"({relevant['is_species_level'].sum()} species_level, "
+              f"{relevant['is_genus_level'].sum()} genus_level)")
         if len(relevant) == 0:
             continue
 
@@ -192,7 +199,7 @@ def run(config):
             print(f"  --- {task} ---")
             clf = clf_species if task == "species_level" else clf_genus
             label_col = relevant["species"] if task == "species_level" else relevant["genus"]
-            task_mask = relevant["task"] == task
+            task_mask = relevant["is_species_level"] if task == "species_level" else relevant["is_genus_level"]
             eval_out = evaluate_task(clf, X_query, label_col, task_mask, config.n_neighbors,
                                       weights=config.knn_weights, temperature=config.temperature,
                                       temperature_sweep=getattr(config, "temperature_sweep", None))
