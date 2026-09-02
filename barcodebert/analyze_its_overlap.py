@@ -107,7 +107,7 @@ def find_substring_duplicates(train_known_df, candidates):
     return flagged
 
 
-def compute_overlap(train_df, train_known_df, train_species, train_genera, train_seqs, test_df):
+def compute_overlap(train_df, train_known_df, train_species, train_genera, train_seqs, test_df, include_leaked=False):
     _, test_keys = species_key(test_df)
     unique_test_species = set(test_keys)
     species_overlap = unique_test_species & train_species
@@ -150,7 +150,14 @@ def compute_overlap(train_df, train_known_df, train_species, train_genera, train
 
     # Fully clean: known species, not an exact duplicate, not a substring
     # duplicate. Species overlap recomputed on just this subset.
-    is_clean = is_known_species & ~is_barcode_dup & ~is_substring_dup
+    # include_leaked=True skips the duplicate exclusion entirely -- exact
+    # and substring duplicates flow into species_level/genus_level below
+    # exactly like any other same-species specimen, producing the
+    # leakage-INCLUDED counterpart of the same task definitions (task_series
+    # assignment order below overwrites "exact_duplicate"/"substring_duplicate"
+    # with "species_level"/"genus_level" for these rows once is_clean covers
+    # them, no other code path needs to change).
+    is_clean = is_known_species if include_leaked else (is_known_species & ~is_barcode_dup & ~is_substring_dup)
     clean_df = test_df[is_clean]
     _, clean_keys = species_key(clean_df)
     clean_unique_species = set(clean_keys)
@@ -297,7 +304,7 @@ def export_task_csv(test_df, stats, out_path):
     print(f"    task counts: {out_df['task'].value_counts().to_dict()}")
 
 
-def run(data_dir, show_examples=0, export_dir=None):
+def run(data_dir, show_examples=0, export_dir=None, include_leaked=False):
     train_path = os.path.join(data_dir, "trainset.fasta")
     print(f"Loading train set: {train_path}")
     train_df = load_split(train_path)
@@ -314,7 +321,8 @@ def run(data_dir, show_examples=0, export_dir=None):
         fpath = os.path.join(data_dir, fname)
         print(f"Loading {name}: {fpath}")
         test_df = load_split(fpath)
-        stats = compute_overlap(train_df, train_known_df, train_species, train_genera, train_seqs, test_df)
+        stats = compute_overlap(train_df, train_known_df, train_species, train_genera, train_seqs, test_df,
+                                 include_leaked=include_leaked)
         rows.append((name, stats))
 
         if export_dir:
@@ -399,12 +407,17 @@ def get_parser():
                          "(task in {species_level, genus_level, unusable, exact_duplicate, "
                          "substring_duplicate, unknown_species}). Feed species_level/genus_level rows "
                          "into knn_its_clean.py for the leakage-free evaluation.")
+    p.add_argument("--include-leaked", "--include_leaked", dest="include_leaked", action="store_true",
+                    help="Do not exclude exact-duplicate/substring-duplicate specimens from the "
+                         "species_level/genus_level task pools -- produces the leakage-INCLUDED counterpart "
+                         "of the same task definitions, using the exact same downstream eval "
+                         "(knn_its_clean.py) via --tasks-dir pointed at a separate --export-dir.")
     return p
 
 
 def cli():
     args = get_parser().parse_args()
-    run(args.data_dir, args.show_examples, args.export_dir)
+    run(args.data_dir, args.show_examples, args.export_dir, args.include_leaked)
 
 
 if __name__ == "__main__":
