@@ -41,6 +41,11 @@ source "/scratch/$USER/BarcodeMAE_venv/bin/activate"
 # same rule applies here (don't pip install inside an array job).
 
 export WANDB_MODE=offline
+# Compute nodes have no internet -- force transformers/huggingface_hub to use
+# the local cache only (checkpoints already downloaded on the login node),
+# instead of trying (and hanging/failing on) a network check first.
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
 export WANDB_DIR="/project/6045013/m4safari/BarcodeMAE/wandb_final/array_${SLURM_ARRAY_JOB_ID}"
 mkdir -p "$WANDB_DIR"
 mkdir -p results_final
