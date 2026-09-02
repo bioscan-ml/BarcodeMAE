@@ -72,15 +72,18 @@ DATA_DIR="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE/data/${DATASET
 K_MER=6; STRIDE=6; N_LAYERS=6; N_HEADS=6; N_DEC_LAYERS=6; N_DEC_HEADS=6
 BATCH_SIZE=128; LR=0.00007; WD=0.00001
 MASKED_LOSS_WEIGHT=0.999; MASK_TOKEN_RATIO=1.0; RANDOM_TOKEN_RATIO=0.0
-EPOCHS=35; AUX_LOSS_WEIGHT=0.1; AUX_LOSS_WARMUP=5
+# Matches the main BIOSCAN-5M experiments' alpha=1.0 (Experimental.tex), so
+# this ablation is comparable to the genus-level main results instead of
+# using a mismatched fixed weight.
+EPOCHS=35; AUX_LOSS_WEIGHT=1.0; AUX_LOSS_WARMUP=5
 K_CLASSES=16; M_PER_CLASS=4; NUM_PAIRS=128
 TRIPLET_MARGIN=0.0; CLS_TAXA_LOSS_W=0.1
 
 # ── Naming ────────────────────────────────────────────────────────────────────
 if [ "$ARCH" = "maelm" ]; then
-    RUN_NAME="abl_taxa${TAXA}_k${K_MER}_${N_LAYERS}L${N_HEADS}H_${N_DEC_LAYERS}DL${N_DEC_HEADS}DH_${ARCH}_cls_${AUX_TASK}"
+    RUN_NAME="abl_taxa${TAXA}_k${K_MER}_${N_LAYERS}L${N_HEADS}H_${N_DEC_LAYERS}DL${N_DEC_HEADS}DH_${ARCH}_cls_${AUX_TASK}_aux${AUX_LOSS_WEIGHT}"
 else
-    RUN_NAME="abl_taxa${TAXA}_k${K_MER}_${N_LAYERS}L${N_HEADS}H_${ARCH}_cls_${AUX_TASK}"
+    RUN_NAME="abl_taxa${TAXA}_k${K_MER}_${N_LAYERS}L${N_HEADS}H_${ARCH}_cls_${AUX_TASK}_aux${AUX_LOSS_WEIGHT}"
 fi
 
 CKPT_BASE="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE/main_checkpoints_final/ablations/taxonomy_level/${DATASET}/${RUN_NAME}"
