@@ -35,16 +35,16 @@ export PYTHONPATH=""
 source "/scratch/$USER/BarcodeMAE_venv/bin/activate"
 
 # mycoai's __init__.py calls wandb.login('allow') unconditionally on import,
-# even though this script never logs anything to wandb itself. It calls
-# wandb.setup() before checking WANDB_MODE, so offline/disabled don't avoid
-# spawning wandb's background service subprocess either way. That subprocess
-# writes a port file into a fresh tempdir under TMPDIR/tmp -- on this node
-# that dir is disappearing before the write happens (ServiceStartTimeoutError
-# -> FileNotFoundError on /tmp/tmpXXXXXXXX/port-*.txt*), so point TMPDIR at
-# scratch instead, which is stable and won't get swept mid-run.
+# even though this script never logs anything to wandb itself. Neither
+# WANDB_MODE nor TMPDIR fixed the ServiceStartTimeoutError -- wandb's default
+# "service" mode forks a SEPARATE SUBPROCESS to manage state, and on this
+# cluster that subprocess can't reliably see the tempdir its parent just
+# created (classic HPC fork/mount-namespace flakiness), so the port-file
+# write fails no matter where TMPDIR points. WANDB_START_METHOD=thread runs
+# the service as a thread in the same process instead of forking a
+# subprocess, which sidesteps the cross-process port file entirely.
 export WANDB_MODE=disabled
-export TMPDIR="/scratch/$USER/tmp_wandb"
-mkdir -p "$TMPDIR"
+export WANDB_START_METHOD=thread
 
 mkdir -p "final_logs/${SLURM_JOB_ID}"
 
