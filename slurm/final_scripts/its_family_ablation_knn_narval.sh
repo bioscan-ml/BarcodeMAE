@@ -10,13 +10,17 @@
 # fir is under maintenance. Two differences from the fir version:
 #   1. gres switched h100 -> a100 (narval's def-lila-ab allocation this
 #      session has consistently been a100, not h100).
-#   2. --array trimmed to 0-14 (was 0-17): indices 15-17 are the
-#      transformer/ce/{tokens,cls,tokens_with_cls} tasks, and that checkpoint
+#   2. --array trimmed to just the 10 actually-missing tasks:
+#      1,2,4,5,7,8,10,11,13,14 (cls / tokens_with_cls for the 5 trained
+#      configs -- killed mid-run on fir, per PENDING_EXPERIMENTS.md).
+#      Indices 0,3,6,9,12 (the "tokens" repr for those same 5 configs) are
+#      NOT resubmitted -- that representation already completed earlier and
+#      re-running it would just waste a full gallery-embedding pass. Indices
+#      15-17 (transformer/ce, any repr) are also excluded: that checkpoint
 #      (abl_taxafamily_k6_6L6H_transformer_cls_ce) was never actually trained
 #      on fir -- its checkpoint dir was empty on transfer, not a copy error.
-#      Re-run its_family_ablation_knn.sh --array=15-17 once that checkpoint
-#      exists (needs ablation_taxonomy_level.sh --export=DATASET=ITS-5M
-#      first) rather than adding it back here.
+#      Re-run with --array=15-17 once that checkpoint exists (needs
+#      ablation_taxonomy_level.sh --export=DATASET=ITS-5M first).
 #
 # REQUIRES its_export_tasks.sh to have been run first (produces
 # data/ITS-5M/tasks/test{1,2}_tasks.csv) and the 6 trained checkpoints
@@ -25,8 +29,8 @@
 #
 # Results: results_final/KNN_ITS_family_k1.txt
 #
-# Submit everything:      sbatch slurm/final_scripts/its_family_ablation_knn_narval.sh
-# Submit specific tasks:  sbatch --array=1,2,4,5,7,8,10,11,13,14 slurm/final_scripts/its_family_ablation_knn_narval.sh
+# Submit (default --array already covers exactly the 10 missing tasks):
+#   sbatch slurm/final_scripts/its_family_ablation_knn_narval.sh
 # ============================================================================
 #SBATCH --job-name=its_family_knn
 #SBATCH --account=def-lila-ab
@@ -36,7 +40,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=128G
 #SBATCH --time=06:00:00
-#SBATCH --array=0-14
+#SBATCH --array=1,2,4,5,7,8,10,11,13,14
 #SBATCH --output=final_logs/%A/%A_%a.out
 #SBATCH --error=final_logs/%A/%A_%a.err
 
@@ -65,9 +69,9 @@ CKPT_ROOT="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE_final/Barcode
 K_MER=6; N_LAYERS=6; N_HEADS=6
 
 # ── Grid (18 tasks): matches ablation_taxonomy_level.sh's family-level
-# configs x the 3 representations, one representation per task -- only
-# indices 0-14 are submitted here (15-17 need the not-yet-trained
-# transformer/ce checkpoint) ────────────────────────────────────────────────
+# configs x the 3 representations, one representation per task -- only the
+# 10 missing indices (1,2,4,5,7,8,10,11,13,14) are actually submitted, see
+# header ──────────────────────────────────────────────────────────────────
 ARCHS=(); AUX_TASKS=(); REPRS_GRID=()
 for A in "maelm" "transformer"; do
     for T in "binary" "triplet" "ce"; do
