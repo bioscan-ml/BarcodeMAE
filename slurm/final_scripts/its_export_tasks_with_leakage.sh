@@ -34,6 +34,12 @@ export PYTHONNOUSERSITE=1
 export PYTHONPATH=""
 source "/scratch/$USER/BarcodeMAE_venv/bin/activate"
 
+# mycoai's __init__.py calls wandb.login('allow') unconditionally on import,
+# even though this script never logs anything to wandb itself -- without
+# offline mode that call tries to reach the network and hangs/times out on
+# nodes with no internet egress.
+export WANDB_MODE=offline
+
 mkdir -p "final_logs/${SLURM_JOB_ID}"
 
 DATA_DIR="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE_final/BarcodeMAE/data/ITS-5M"
