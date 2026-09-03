@@ -9,21 +9,16 @@
 # .mean(dim=1) -> crossentropy_taxonomy_loss), the direct jumbo analogue of
 # the standard CLS+CE path.
 #
-# 6 array tasks (0-5): Jumbo multiplier J x MLP expansion factor E
-#   Task | J (jumbo_multiplier) | E (jumbo-mlp-expansion)
-#   -----|----------------------|------------------------
-#     0  |          1           |   1x  (hidden = 1 * J*D)
-#     1  |          3           |   1x
-#     2  |          6           |   1x
-#     3  |          1           |   2x  (hidden = 2 * J*D)
-#     4  |          3           |   2x
-#     5  |          6           |   2x
-#
-# Tasks 3-5 (E=2x) need more memory than 0-2 (E=1x): doubling the MLP
-# expansion factor doubles the wide Jumbo FFN's hidden width, increasing both
-# parameter and activation memory, most at J=6. --mem bumped to 256G
-# accordingly (tasks 0-2 originally succeeded at 128G, but re-running the
-# whole array here rather than splitting configs across two --mem values).
+# 3 array tasks (0-2): Jumbo multiplier J at MLP expansion factor 1x -- the
+# only configs actually reported in the appendix (MLP=2x is not currently
+# reported, left incomplete). alpha=1.0 to match the current main-text CE
+# checkpoint's weight (the previous run of this script used the stale
+# alpha=0.1, before that correction).
+#   Task | J (jumbo_multiplier)
+#   -----|----------------------
+#     0  |          1
+#     1  |          3
+#     2  |          6
 #
 # J=1 is NOT equivalent to the standard CLS run: even at J=1 the jumbo token
 # is routed through its own dedicated wide FFN (Jumbo MLP) after each
@@ -51,7 +46,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=256G
 #SBATCH --time=48:00:00
-#SBATCH --array=0-5%3
+#SBATCH --array=0-2
 #SBATCH --output=final_logs/%A/%A_%a.out
 #SBATCH --error=final_logs/%A/%A_%a.err
 
@@ -66,7 +61,7 @@ export PYTHONPATH=""
 source "/scratch/$USER/BarcodeMAE_venv/bin/activate"
 
 export WANDB_MODE=offline
-export WANDB_DIR="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE/wandb_final/array_${SLURM_ARRAY_JOB_ID}"
+export WANDB_DIR="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE_final/BarcodeMAE/wandb_final/array_${SLURM_ARRAY_JOB_ID}"
 mkdir -p "$WANDB_DIR"
 mkdir -p results_final
 mkdir -p "final_logs/${SLURM_ARRAY_JOB_ID}"
@@ -77,25 +72,24 @@ nvidia-smi
 python -c "import torch; print(f'PyTorch {torch.__version__} | CUDA {torch.cuda.is_available()} | {torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"no GPU\"}')"
 
 # ── Sweep grid ────────────────────────────────────────────────────────────────
-J_VALS=(  1 3 6 1 3 6 )
-MLP_VALS=(1 1 1 2 2 2 )
+J_VALS=(1 3 6)
 
 J="${J_VALS[$SLURM_ARRAY_TASK_ID]}"
-E="${MLP_VALS[$SLURM_ARRAY_TASK_ID]}"
+E=1
 
 # ── Fixed config (matches bioscan5m_final.sh maelm/cls_ce exactly) ────────────
 DATASET="BIOSCAN-5M"
-DATA_DIR="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE/data/${DATASET}"
+DATA_DIR="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE_final/BarcodeMAE/data/${DATASET}"
 K_MER=6; STRIDE=6; N_LAYERS=6; N_HEADS=6; N_DEC_LAYERS=6; N_DEC_HEADS=6
 BATCH_SIZE=128; LR=0.00007; WD=0.00001
 MASKED_LOSS_WEIGHT=0.999; MASK_TOKEN_RATIO=1.0; RANDOM_TOKEN_RATIO=0.0
-EPOCHS=35; AUX_LOSS_WEIGHT=0.1; AUX_LOSS_WARMUP=5; TAXA="genus"
+EPOCHS=35; AUX_LOSS_WEIGHT=1.0; AUX_LOSS_WARMUP=5; TAXA="genus"
 TEMPERATURE=0.07
 
 # ── Naming ────────────────────────────────────────────────────────────────────
-RUN_NAME="jumbo_j${J}_mlp${E}_k${K_MER}_${N_LAYERS}L${N_HEADS}H_${N_DEC_LAYERS}DL${N_DEC_HEADS}DH_maelm_ce"
+RUN_NAME="jumbo_j${J}_mlp${E}_k${K_MER}_${N_LAYERS}L${N_HEADS}H_${N_DEC_LAYERS}DL${N_DEC_HEADS}DH_maelm_ce_aux${AUX_LOSS_WEIGHT}"
 
-CKPT_BASE="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE/main_checkpoints_final/ablations/jumbo/${DATASET}/${RUN_NAME}"
+CKPT_BASE="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE_final/BarcodeMAE/main_checkpoints_final/ablations/jumbo/${DATASET}/${RUN_NAME}"
 CHECKPOINT="${CKPT_BASE}/checkpoint.pt"
 CHECKPOINT_ENC="${CKPT_BASE}/checkpoint_encoder.pt"
 mkdir -p "${CKPT_BASE}"
