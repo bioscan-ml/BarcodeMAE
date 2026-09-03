@@ -9,12 +9,18 @@
 # REQUIRES its_export_tasks.sh to have been run first (produces
 # data/ITS-5M/tasks/test{1,2}_tasks.csv).
 #
-# 6 array tasks (0-5): (maelm|transformer) x (binary|triplet|ce)
-# Each task loops over tokens/cls/tokens_with_cls internally.
+# 18 array tasks (0-17): (maelm|transformer) x (binary|triplet|ce) x
+# (tokens|cls|tokens_with_cls), one representation per task -- each requires
+# a fresh full pass over the 5.23M-sequence gallery to embed it, so looping
+# all 3 representations sequentially inside one task (the previous version
+# of this script) does not fit in a single job's time limit; splitting them
+# into separate tasks lets each one fit in the same --time budget instead of
+# needing a longer one.
 #
 # Results: results_final/KNN_ITS_family_k1.txt
 #
-# Submit:  sbatch slurm/final_scripts/its_family_ablation_knn.sh
+# Submit everything:      sbatch slurm/final_scripts/its_family_ablation_knn.sh
+# Submit specific tasks:  sbatch --array=1,2,4,5,7,8,10,11,13,14 slurm/final_scripts/its_family_ablation_knn.sh
 # ============================================================================
 #SBATCH --job-name=its_family_knn
 #SBATCH --account=def-lila-ab
@@ -24,7 +30,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=128G
 #SBATCH --time=06:00:00
-#SBATCH --array=0-5
+#SBATCH --array=0-17
 #SBATCH --output=final_logs/%A/%A_%a.out
 #SBATCH --error=final_logs/%A/%A_%a.err
 
@@ -52,12 +58,20 @@ TASKS_DIR="${DATA_DIR}/tasks"
 CKPT_ROOT="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE_final/BarcodeMAE/main_checkpoints_final/ablations/taxonomy_level/${DATASET}"
 K_MER=6; N_LAYERS=6; N_HEADS=6
 
-# ── Grid (6 tasks): matches ablation_taxonomy_level.sh's family-level configs ─
-ARCHS=("maelm" "maelm" "maelm" "transformer" "transformer" "transformer")
-AUX_TASKS=("binary" "triplet" "ce" "binary" "triplet" "ce")
+# ── Grid (18 tasks): matches ablation_taxonomy_level.sh's family-level
+# configs x the 3 representations, one representation per task ────────────
+ARCHS=(); AUX_TASKS=(); REPRS_GRID=()
+for A in "maelm" "transformer"; do
+    for T in "binary" "triplet" "ce"; do
+        for R in "tokens" "cls" "tokens_with_cls"; do
+            ARCHS+=("${A}"); AUX_TASKS+=("${T}"); REPRS_GRID+=("${R}")
+        done
+    done
+done
 
 ARCH="${ARCHS[$SLURM_ARRAY_TASK_ID]}"
 AUX_TASK="${AUX_TASKS[$SLURM_ARRAY_TASK_ID]}"
+REPR="${REPRS_GRID[$SLURM_ARRAY_TASK_ID]}"
 
 if [ "${ARCH}" = "maelm" ]; then
     RUN_NAME="abl_taxafamily_k${K_MER}_${N_LAYERS}L${N_HEADS}H_6DL6DH_${ARCH}_cls_${AUX_TASK}"
@@ -68,20 +82,18 @@ else
 fi
 
 CKPT="${CKPT_ROOT}/${RUN_NAME}/${CFILE}"
-echo "Arch: ${ARCH} | Aux: ${AUX_TASK} | Ckpt: ${CKPT}"
+echo "Arch: ${ARCH} | Aux: ${AUX_TASK} | Repr: ${REPR} | Ckpt: ${CKPT}"
 [ ! -f "${CKPT}" ] && echo "ERROR: checkpoint not found at ${CKPT}" && exit 1
 
-OVERALL_EXIT=0
-for REPR in "tokens" "cls" "tokens_with_cls"; do
-    python barcodebert/knn_its_clean.py \
-        --pretrained-checkpoint "${CKPT}" \
-        --data-dir "${DATA_DIR}" --tasks-dir "${TASKS_DIR}" \
-        --representation-type "${REPR}" --n-neighbors 1 --metric cosine \
-        --run-name "knnclean_family_${ARCH}_${AUX_TASK}_${REPR}" \
-        --results-file results_final/KNN_ITS_family_k1.txt \
-        --log-wandb --wandb-project barcodemae_cls
-    EC=$?; [ ${EC} -ne 0 ] && echo "ERROR: knn_its_clean.py failed for ${REPR}" && OVERALL_EXIT=${EC}
-done
+python barcodebert/knn_its_clean.py \
+    --pretrained-checkpoint "${CKPT}" \
+    --data-dir "${DATA_DIR}" --tasks-dir "${TASKS_DIR}" \
+    --representation-type "${REPR}" --n-neighbors 1 --metric cosine \
+    --run-name "knnclean_family_${ARCH}_${AUX_TASK}_${REPR}" \
+    --results-file results_final/KNN_ITS_family_k1.txt \
+    --log-wandb --wandb-project barcodemae_cls
+EC=$?
+[ ${EC} -ne 0 ] && echo "ERROR: knn_its_clean.py failed for ${REPR}"
 
-echo "All done at: $(date) | exit: ${OVERALL_EXIT}"
-exit ${OVERALL_EXIT}
+echo "All done at: $(date) | exit: ${EC}"
+exit ${EC}

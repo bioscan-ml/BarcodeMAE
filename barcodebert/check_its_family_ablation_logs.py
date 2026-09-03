@@ -1,46 +1,49 @@
 """
-Audit tool for its_family_ablation_knn.sh's 6-task SLURM array.
+Audit tool for its_family_ablation_knn.sh's SLURM array.
 
-Each of the 6 array tasks (arch in {maelm, transformer} x aux in
-{binary, triplet, ce}) loops over all 3 representations (tokens, cls,
-tokens_with_cls) SEQUENTIALLY within one job, running knn_its_clean.py three
-times and appending every result to the single shared file
-results_final/KNN_ITS_family_k1.txt. Two things can cause a result to be
-"missing" even though the run happened:
+The current version of that script runs one (arch, aux, representation)
+combination per array task -- 18 tasks total (2 archs x 3 aux objectives x 3
+representations). An older version of the script looped over all 3
+representations sequentially inside one task (6 array tasks); this tool
+still reads logs from that older layout too, since both write results to
+the same shared file results_final/KNN_ITS_family_k1.txt with the same key
+format, and old logs may still be lying around.
 
-  1. The job/task genuinely failed or was killed partway through (OOM,
-     timeout, crash) -- some or all of its 3 representations never ran.
-  2. The value WAS computed and printed to stdout, but its results-file
-     line got lost: knn_its_clean.py writes each (task,k) result to the
-     shared file in the same loop iteration it's printed in, but if this
-     array task's write raced with another concurrently-running array
-     task's append to that same file (parallel filesystem, no locking),
-     the line can be silently dropped even though the run succeeded.
+Two distinct reasons a (arch, aux, repr) result can be missing:
 
-This script tells the two cases apart: it parses every log for (a) which of
-the 6 (arch,aux) tasks completed vs failed, (b) which representations
-finished within each task, and (c) cross-checks every accuracy value
-printed to stdout against the actual results file, flagging any that are
-printed in the log but absent from the file (case 2 -- recoverable without
-rerunning anything).
+  1. It genuinely never finished: the task's log has no matching entry at
+     all, or ends abruptly mid-run (most likely a SLURM walltime kill --
+     each representation requires a full pass over the 5.23M-sequence
+     gallery to embed it, which is why the old sequential-loop version of
+     this script routinely got killed partway through its 2nd or 3rd
+     representation before the time limit).
+  2. It finished and printed a result, but the result-file line was lost:
+     knn_its_clean.py writes each (task,k) result to the shared results
+     file in the same loop iteration it's printed in, but many array tasks
+     append to that ONE file concurrently -- on a parallel filesystem
+     without locking, two simultaneous appends can silently drop a line
+     even though the value was correctly computed.
+
+This script tells the two cases apart: for every (arch, aux, repr) in the
+full 18-entry grid it reports whether a log exists, whether that log's run
+finished cleanly, and cross-checks every accuracy value actually printed to
+stdout against the results file, flagging any that are printed but absent
+from the file (case 2 -- recoverable without rerunning anything).
 
 Run on the cluster (standard library only):
 
     python barcodebert/check_its_family_ablation_logs.py \\
-        --logs-dir final_logs/<ARRAY_JOB_ID> \\
         --results-file results_final/KNN_ITS_family_k1.txt
 
---logs-dir accepts either one job's log directory (containing
-<ARRAY_JOB_ID>_<TASK_ID>.out files) or a parent directory containing several
-such job directories (e.g. if the array was resubmitted after partial
-failures) -- it is searched recursively for *.out files.
+--logs-dir defaults to final_logs/ and is searched recursively, so it does
+not need to be pointed at one specific array job's folder -- logs from
+other, unrelated jobs mixed into that tree are silently skipped.
 """
 import argparse
 import glob
 import os
 import re
 
-# Mirrors its_family_ablation_knn.sh's grid (ARCHS/AUX_TASKS arrays).
 ARCHES = ["maelm", "transformer"]
 AUX_TASKS = ["binary", "triplet", "ce"]
 REPRS = ["tokens", "cls", "tokens_with_cls"]
@@ -50,7 +53,14 @@ TEST_SET_TAGS = {
     "Test3 (MycoAI)": "test3",
 }
 
-HEADER_RE = re.compile(r"^Arch: (?P<arch>\S+) \| Aux: (?P<aux>\S+) \| Ckpt: (?P<ckpt>\S+)")
+# New (current) script version: one repr per task, printed directly in the header.
+HEADER_RE_NEW = re.compile(
+    r"^Arch: (?P<arch>\S+) \| Aux: (?P<aux>\S+) \| Repr: (?P<repr>\S+) \| Ckpt: (?P<ckpt>\S+)"
+)
+# Old script version: 3 reprs looped per task, repr not in the header --
+# recovered instead from each sequential run's "Namespace(...)" printout.
+HEADER_RE_OLD = re.compile(r"^Arch: (?P<arch>\S+) \| Aux: (?P<aux>\S+) \| Ckpt: (?P<ckpt>\S+)")
+
 CKPT_MISSING_RE = re.compile(r"^ERROR: checkpoint not found at (\S+)")
 REPR_FAILED_RE = re.compile(r"^ERROR: knn_its_clean\.py failed for (\S+)")
 ALL_DONE_RE = re.compile(r"^All done at: .* \| exit: (\d+)")
@@ -61,30 +71,41 @@ ACCURACY_RE = re.compile(r"^\s*\[(\S+)\] k=(\d+): accuracy=([\d.]+)%")
 
 
 def parse_log(path):
-    """Returns a dict describing one array task's log (arch, aux, and,
-    for each of the up to 3 sequential representation runs within it, its
-    repr name, whether it failed, and every (test_tag, task, k, accuracy)
-    it printed)."""
+    """Returns a dict with: path, arch, aux, ckpt, ckpt_missing, exit_code,
+    repr_failures (set of reprs explicitly reported as failed), and runs
+    (list of {"repr": str|None, "accuracies": [(test_tag, task, k, acc), ...]})."""
     info = {
         "path": path,
-        "header": None,
+        "arch": None,
+        "aux": None,
+        "ckpt": None,
         "ckpt_missing": False,
         "exit_code": None,
-        "repr_failures": set(),   # reprs explicitly reported as failed
-        "runs": [],  # list of {"repr": str|None, "accuracies": [...]}
+        "repr_failures": set(),
+        "runs": [],
     }
     current_run = None
     current_test_tag = None
     current_task = None
+    header_format = None  # "new" | "old"
 
     with open(path, "r", errors="replace") as f:
         for line in f:
             line = line.rstrip("\n")
 
-            m = HEADER_RE.match(line)
-            if m:
-                info["header"] = m.groupdict()
-                continue
+            if info["arch"] is None:
+                m = HEADER_RE_NEW.match(line)
+                if m:
+                    info["arch"], info["aux"], info["ckpt"] = m.group("arch"), m.group("aux"), m.group("ckpt")
+                    header_format = "new"
+                    current_run = {"repr": m.group("repr"), "accuracies": []}
+                    info["runs"].append(current_run)
+                    continue
+                m = HEADER_RE_OLD.match(line)
+                if m:
+                    info["arch"], info["aux"], info["ckpt"] = m.group("arch"), m.group("aux"), m.group("ckpt")
+                    header_format = "old"
+                    continue
 
             if CKPT_MISSING_RE.match(line):
                 info["ckpt_missing"] = True
@@ -100,21 +121,22 @@ def parse_log(path):
                 info["exit_code"] = int(m.group(1))
                 continue
 
-            # A new "Configuration:\n\nNamespace(...)" block marks the start
-            # of one of the (up to 3) sequential knn_its_clean.py invocations.
-            m = RUN_NAME_IN_NAMESPACE_RE.search(line)
-            if m and line.strip().startswith("Namespace("):
-                run_name = m.group(1)
-                repr_ = None
-                for r in REPRS:
-                    if run_name.endswith(f"_{r}"):
-                        repr_ = r
-                        break
-                current_run = {"repr": repr_, "run_name": run_name, "accuracies": []}
-                info["runs"].append(current_run)
-                current_test_tag = None
-                current_task = None
-                continue
+            if header_format == "old":
+                # A new "Configuration:\n\nNamespace(...)" block marks the start
+                # of one of the (up to 3) sequential knn_its_clean.py invocations.
+                m = RUN_NAME_IN_NAMESPACE_RE.search(line)
+                if m and line.strip().startswith("Namespace("):
+                    run_name = m.group(1)
+                    repr_ = None
+                    for r in REPRS:
+                        if run_name.endswith(f"_{r}"):
+                            repr_ = r
+                            break
+                    current_run = {"repr": repr_, "accuracies": []}
+                    info["runs"].append(current_run)
+                    current_test_tag = None
+                    current_task = None
+                    continue
 
             m = TESTSET_START_RE.match(line)
             if m:
@@ -175,88 +197,103 @@ def main():
         print(f"WARNING: no keys loaded from {args.results_file} (missing or empty) -- "
               f"every found accuracy will be reported as 'missing from results file'.\n")
 
-    expected_grid = {(arch, aux) for arch in ARCHES for aux in AUX_TASKS}
-    seen_grid = set()
+    # grid_status[(arch, aux, repr)] = "ok" | "failed" | "ckpt_missing" | not present (never seen)
+    grid_status = {}
+    grid_log = {}
     recoverable = []
     no_header_count = 0
-    ckpt_missing_count = 0
-    fully_ok_count = 0
-    partial_count = 0
 
     for path in out_files:
         info = parse_log(path)
 
-        if info["header"] is None:
+        if info["arch"] is None:
             no_header_count += 1
             if args.verbose:
                 print(f"[NO HEADER]      {path}  (not an its_family_ablation_knn.sh log, or job crashed "
                       f"before printing config)")
             continue
 
-        h = info["header"]
-        arch, aux = h["arch"], h["aux"]
-        seen_grid.add((arch, aux))
-        model_name = os.path.basename(h["ckpt"])
+        arch, aux = info["arch"], info["aux"]
+        model_name = os.path.basename(info["ckpt"]) if info["ckpt"] else "?"
 
         if info["ckpt_missing"]:
-            ckpt_missing_count += 1
-            print(f"[CKPT MISSING]   {path}  arch={arch} aux={aux}  ckpt={h['ckpt']}")
+            for repr_ in REPRS:
+                grid_status[(arch, aux, repr_)] = "ckpt_missing"
+                grid_log[(arch, aux, repr_)] = path
+            print(f"[CKPT MISSING]   {path}  arch={arch} aux={aux}  ckpt={info['ckpt']}")
             continue
 
-        ran_reprs = {r["repr"] for r in info["runs"] if r["repr"] is not None}
-        missing_reprs = set(REPRS) - ran_reprs
-        failed_reprs = info["repr_failures"]
-
-        status_bits = []
-        if missing_reprs:
-            status_bits.append(f"never ran: {sorted(missing_reprs)}")
-        if failed_reprs:
-            status_bits.append(f"reported failed: {sorted(failed_reprs)}")
-        if info["exit_code"] not in (0, None) and not status_bits:
-            status_bits.append(f"nonzero exit {info['exit_code']}, but all 3 reprs ran and printed results")
-        if info["exit_code"] is None and not missing_reprs:
-            status_bits.append("no 'All done' line (job likely killed/timed out at the very end)")
-
-        if status_bits:
-            partial_count += 1
-            print(f"[PARTIAL]        {path}  arch={arch} aux={aux}  " + "; ".join(status_bits))
-        else:
-            fully_ok_count += 1
-
-        # Cross-check every printed accuracy against the results file, for
-        # every representation run found in this log (even failed ones may
-        # have printed some accuracies before failing).
         for run in info["runs"]:
             repr_ = run["repr"]
             if repr_ is None:
                 continue
+            key_triple = (arch, aux, repr_)
+            failed = repr_ in info["repr_failures"] or (info["exit_code"] not in (0, None))
+            has_accuracy = len(run["accuracies"]) > 0
+            if failed and not has_accuracy:
+                status = "failed"
+            elif not has_accuracy:
+                status = "no_output"  # started (repr known) but nothing printed -- likely killed mid-run
+            else:
+                status = "ok"
+            # Prefer "ok" if we see it from any log (in case of reruns/duplicates).
+            if grid_status.get(key_triple) != "ok":
+                grid_status[key_triple] = status
+                grid_log[key_triple] = path
+
             run_name = f"knnclean_family_{arch}_{aux}_{repr_}"
             for test_tag, task, k, acc in run["accuracies"]:
                 if test_tag is None or task is None:
                     continue
-                key = f"{run_name}_{task}_{model_name}_{test_tag}_k{k}"
-                if key not in result_keys:
-                    recoverable.append((path, arch, aux, repr_, test_tag, task, k, acc, key))
+                rkey = f"{run_name}_{task}_{model_name}_{test_tag}_k{k}"
+                if rkey not in result_keys:
+                    recoverable.append((path, arch, aux, repr_, test_tag, task, k, acc, rkey))
 
-    missing_grid = sorted(expected_grid - seen_grid)
+    expected_grid = [(a, x, r) for a in ARCHES for x in AUX_TASKS for r in REPRS]
+    counts = {"ok": 0, "failed": 0, "no_output": 0, "ckpt_missing": 0, "never_ran": 0}
+    missing_entries = []
+    for entry in expected_grid:
+        status = grid_status.get(entry)
+        if status is None:
+            counts["never_ran"] += 1
+            missing_entries.append((entry, "never_ran", None))
+        else:
+            counts[status] += 1
+            if status != "ok":
+                missing_entries.append((entry, status, grid_log[entry]))
 
     print("\n" + "=" * 70)
     print("SUMMARY")
     print("=" * 70)
     print(f"Log files scanned:              {len(out_files)}")
-    print(f"Expected (arch,aux) tasks:      {len(expected_grid)} (2 archs x 3 aux objectives)")
-    print(f"Tasks with a log:               {len(seen_grid)}")
-    print(f"  Fully OK (all 3 reprs ran):   {fully_ok_count}")
-    print(f"  Partial / problem:            {partial_count}")
-    print(f"  Checkpoint missing:           {ckpt_missing_count}")
-    print(f"Unrelated logs skipped:          {no_header_count}  (other jobs mixed into --logs-dir; pass --verbose to list them)")
+    print(f"Expected grid size:             {len(expected_grid)} (2 archs x 3 aux objectives x 3 representations)")
+    print(f"  OK:                           {counts['ok']}")
+    print(f"  Failed (explicit error):      {counts['failed']}")
+    print(f"  No output (started, no result -- likely killed mid-run): {counts['no_output']}")
+    print(f"  Checkpoint missing:           {counts['ckpt_missing']}")
+    print(f"  Never ran (no log at all):    {counts['never_ran']}")
+    print(f"Unrelated logs skipped:         {no_header_count}  (other jobs mixed into --logs-dir; pass --verbose to list them)")
 
-    if missing_grid:
-        print(f"\n(arch,aux) tasks with NO log file at all ({len(missing_grid)}):")
-        for arch, aux in missing_grid:
-            print(f"  arch={arch} aux={aux}")
+    if missing_entries:
+        print(f"\nSTILL MISSING ({len(missing_entries)}) -- these are what you need to (re)run:")
+        for (arch, aux, repr_), status, path in missing_entries:
+            loc = f"  ({path})" if path else ""
+            print(f"  arch={arch:<11} aux={aux:<7} repr={repr_:<15} status={status}{loc}")
+
+        runnable = [e for e, s, _ in missing_entries if s != "ckpt_missing"]
+        ckpt_blocked = [e for e, s, _ in missing_entries if s == "ckpt_missing"]
+        if runnable:
+            idx_map = {entry: i for i, entry in enumerate(expected_grid)}
+            indices = sorted(idx_map[e] for e in runnable)
+            print(f"\nTo resubmit only the missing-but-runnable entries ({len(indices)} tasks):")
+            print(f"  sbatch --array={','.join(str(i) for i in indices)} slurm/final_scripts/its_family_ablation_knn.sh")
+        if ckpt_blocked:
+            print(f"\n{len(ckpt_blocked)} entries are blocked on a missing checkpoint (train it first, "
+                  f"then resubmit those array indices):")
+            for arch, aux, repr_ in ckpt_blocked:
+                print(f"  arch={arch} aux={aux} repr={repr_}")
     else:
-        print("\nEvery expected (arch,aux) task has at least one log file.")
+        print("\nEvery expected grid entry is OK.")
 
     if recoverable:
         print(f"\n{'=' * 70}\nRECOVERABLE: printed in log but MISSING from {args.results_file} ({len(recoverable)})")
