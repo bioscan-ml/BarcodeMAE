@@ -151,15 +151,24 @@ def load_results_file(path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--logs-dir", required=True, help="Directory (searched recursively) containing *.out log files")
+    parser.add_argument("--logs-dir", default="final_logs",
+                         help="Directory searched recursively for *.out files. Doesn't need to be the "
+                              "specific job's folder -- point this at the whole final_logs/ root (or "
+                              "even higher) and non-matching logs from other jobs are silently skipped. "
+                              "Default: %(default)s")
     parser.add_argument("--results-file", default="results_final/KNN_ITS_family_k1.txt",
                          help="Path to the shared results file to cross-check against")
+    parser.add_argument("--verbose", action="store_true",
+                         help="Also print one line per log file that doesn't match this script's "
+                              "header format (unrelated jobs mixed into --logs-dir). Off by default "
+                              "since --logs-dir is meant to be pointed at a broad search root.")
     args = parser.parse_args()
 
     out_files = sorted(glob.glob(os.path.join(args.logs_dir, "**", "*.out"), recursive=True))
     if not out_files:
         print(f"No .out files found under {args.logs_dir}")
         return
+    print(f"Scanning {len(out_files)} .out files under {args.logs_dir} ...\n")
 
     result_keys = load_results_file(args.results_file)
     if not result_keys:
@@ -179,7 +188,9 @@ def main():
 
         if info["header"] is None:
             no_header_count += 1
-            print(f"[NO HEADER]      {path}  (job likely never started / crashed before printing config)")
+            if args.verbose:
+                print(f"[NO HEADER]      {path}  (not an its_family_ablation_knn.sh log, or job crashed "
+                      f"before printing config)")
             continue
 
         h = info["header"]
@@ -238,7 +249,7 @@ def main():
     print(f"  Fully OK (all 3 reprs ran):   {fully_ok_count}")
     print(f"  Partial / problem:            {partial_count}")
     print(f"  Checkpoint missing:           {ckpt_missing_count}")
-    print(f"No-header logs (unparsed):      {no_header_count}")
+    print(f"Unrelated logs skipped:          {no_header_count}  (other jobs mixed into --logs-dir; pass --verbose to list them)")
 
     if missing_grid:
         print(f"\n(arch,aux) tasks with NO log file at all ({len(missing_grid)}):")
