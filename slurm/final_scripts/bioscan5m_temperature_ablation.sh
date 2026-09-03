@@ -42,18 +42,21 @@ export PYTHONPATH=""
 source "/scratch/$USER/BarcodeMAE_venv/bin/activate"
 
 export WANDB_MODE=offline
-export WANDB_DIR="/project/6045013/m4safari/BarcodeMAE/wandb_final/array_${SLURM_ARRAY_JOB_ID}"
+export WANDB_DIR="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE/wandb_final/array_${SLURM_ARRAY_JOB_ID}"
 mkdir -p "$WANDB_DIR"
 mkdir -p results_final
 mkdir -p "final_logs/${SLURM_ARRAY_JOB_ID}"
 
 WANDB_PROJECT="barcodemae_cls"
 DATASET="BIOSCAN-5M"
-DATA_DIR="/project/6045013/m4safari/BarcodeMAE/data/${DATASET}"
+DATA_DIR="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE/data/${DATASET}"
 
-# Best BIOSCAN-5M config: encoder-decoder (maelm), +CLS+CE, CLS representation.
-# Same naming convention as bioscan5m_softmaxknn_eval.sh.
-CKPT="/project/6045013/m4safari/BarcodeMAE/main_checkpoints_final/${DATASET}/final_k6_6L6H_6DL6DH_maelm_cls_ce/checkpoint_encoder.pt"
+# Best BIOSCAN-5M config: encoder-decoder (maelm), +CLS+CE, CLS representation,
+# auxiliary-loss weight alpha=1.0 (the aux_weight ablation checkpoint that
+# matches the main text's reported CE results -- the previous CKPT here was
+# the stale alpha=0.1 version, which is why this ablation's results didn't
+# match the main text).
+CKPT="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE/main_checkpoints_final/ablations/aux_weight/${DATASET}/ablw_bioscan5m_k6_6L6H_6DL6DH_maelm_cls_ce_w1.0/checkpoint_encoder.pt"
 [ ! -f "${CKPT}" ] && echo "ERROR: checkpoint not found at ${CKPT}" && exit 1
 
 # ── Grid (7 tasks): temperature values (0.07 excluded, already have it) ─────
