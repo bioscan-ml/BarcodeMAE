@@ -35,12 +35,16 @@ export PYTHONPATH=""
 source "/scratch/$USER/BarcodeMAE_venv/bin/activate"
 
 # mycoai's __init__.py calls wandb.login('allow') unconditionally on import,
-# even though this script never logs anything to wandb itself. WANDB_MODE=
-# offline still spins up wandb's background service process (just skips
-# cloud sync), which can still hit a service-start timeout / tempfile race
-# on a shared login node; WANDB_MODE=disabled short-circuits wandb.setup()
-# to a no-op before it ever touches the service, avoiding that path entirely.
+# even though this script never logs anything to wandb itself. It calls
+# wandb.setup() before checking WANDB_MODE, so offline/disabled don't avoid
+# spawning wandb's background service subprocess either way. That subprocess
+# writes a port file into a fresh tempdir under TMPDIR/tmp -- on this node
+# that dir is disappearing before the write happens (ServiceStartTimeoutError
+# -> FileNotFoundError on /tmp/tmpXXXXXXXX/port-*.txt*), so point TMPDIR at
+# scratch instead, which is stable and won't get swept mid-run.
 export WANDB_MODE=disabled
+export TMPDIR="/scratch/$USER/tmp_wandb"
+mkdir -p "$TMPDIR"
 
 mkdir -p "final_logs/${SLURM_JOB_ID}"
 
