@@ -35,10 +35,12 @@ export PYTHONPATH=""
 source "/scratch/$USER/BarcodeMAE_venv/bin/activate"
 
 # mycoai's __init__.py calls wandb.login('allow') unconditionally on import,
-# even though this script never logs anything to wandb itself -- without
-# offline mode that call tries to reach the network and hangs/times out on
-# nodes with no internet egress.
-export WANDB_MODE=offline
+# even though this script never logs anything to wandb itself. WANDB_MODE=
+# offline still spins up wandb's background service process (just skips
+# cloud sync), which can still hit a service-start timeout / tempfile race
+# on a shared login node; WANDB_MODE=disabled short-circuits wandb.setup()
+# to a no-op before it ever touches the service, avoiding that path entirely.
+export WANDB_MODE=disabled
 
 mkdir -p "final_logs/${SLURM_JOB_ID}"
 
