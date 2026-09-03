@@ -2,16 +2,18 @@
 # ============================================================================
 # Ablation: Aux Task Taxonomy Level Sweep
 #
-# Tests whether training the CLS at a coarser level (family, order) changes
+# Tests whether training the CLS at a coarser level (family) changes
 # downstream representation quality vs genus (used in main experiments).
+# BIN level is covered separately by ablation_taxonomy_level_bin.sh; "order"
+# is not run.
 #
-# 6 aux configs × 2 taxonomy levels = 12 tasks
-#   tasks  0- 1: maelm       + binary,  levels [family, order]
-#   tasks  2- 3: maelm       + triplet, levels [family, order]
-#   tasks  4- 5: maelm       + ce,      levels [family, order]
-#   tasks  6- 7: transformer + binary,  levels [family, order]
-#   tasks  8- 9: transformer + triplet, levels [family, order]
-#   tasks 10-11: transformer + ce,      levels [family, order]
+# 6 aux configs × 1 taxonomy level (family) = 6 tasks
+#   task 0: maelm       + binary
+#   task 1: maelm       + triplet
+#   task 2: maelm       + ce
+#   task 3: transformer + binary
+#   task 4: transformer + triplet
+#   task 5: transformer + ce
 #
 # BIOSCAN-5M: KNN/ZSC evaluation is run at genus level (same as main
 # experiments) so results are directly comparable.
@@ -35,7 +37,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=128G
 #SBATCH --time=24:00:00
-#SBATCH --array=0-11%4
+#SBATCH --array=0-5%4
 #SBATCH --output=final_logs/%A/%A_%a.out
 #SBATCH --error=final_logs/%A/%A_%a.err
 
@@ -50,36 +52,36 @@ export PYTHONPATH=""
 source "/scratch/$USER/BarcodeMAE_venv/bin/activate"
 
 export WANDB_MODE=offline
-export WANDB_DIR="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE/wandb_final/array_${SLURM_ARRAY_JOB_ID}"
+export WANDB_DIR="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE_final/BarcodeMAE/wandb_final/array_${SLURM_ARRAY_JOB_ID}"
 mkdir -p "$WANDB_DIR"
 mkdir -p results_final
 
 WANDB_PROJECT="barcodemae_cls"
 
-# ── Grid (12 tasks) ───────────────────────────────────────────────────────────
+# ── Grid (6 tasks) ────────────────────────────────────────────────────────────
 ARCHS=(
-    "maelm"       "maelm"        # tasks  0-1:  binary
-    "maelm"       "maelm"        # tasks  2-3:  triplet
-    "maelm"       "maelm"        # tasks  4-5:  ce
-    "transformer" "transformer"  # tasks  6-7:  binary
-    "transformer" "transformer"  # tasks  8-9:  triplet
-    "transformer" "transformer"  # tasks 10-11: ce
+    "maelm"        # task 0: binary
+    "maelm"        # task 1: triplet
+    "maelm"        # task 2: ce
+    "transformer"  # task 3: binary
+    "transformer"  # task 4: triplet
+    "transformer"  # task 5: ce
 )
 AUX_TASKS=(
-    "binary"  "binary"
-    "triplet" "triplet"
-    "ce"      "ce"
-    "binary"  "binary"
-    "triplet" "triplet"
-    "ce"      "ce"
+    "binary"
+    "triplet"
+    "ce"
+    "binary"
+    "triplet"
+    "ce"
 )
 TAXA_LEVELS=(
-    "family" "order"
-    "family" "order"
-    "family" "order"
-    "family" "order"
-    "family" "order"
-    "family" "order"
+    "family"
+    "family"
+    "family"
+    "family"
+    "family"
+    "family"
 )
 
 ARCH="${ARCHS[$SLURM_ARRAY_TASK_ID]}"
@@ -92,7 +94,7 @@ if [ "${DATASET}" = "ITS-5M" ]; then
     DATA_DIR="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE_final/BarcodeMAE/data/${DATASET}"
     EPOCHS=15
 else
-    DATA_DIR="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE/data/${DATASET}"
+    DATA_DIR="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE_final/BarcodeMAE/data/${DATASET}"
     EPOCHS=35
 fi
 

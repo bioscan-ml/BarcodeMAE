@@ -43,7 +43,7 @@ export PYTHONPATH=""
 source "/scratch/$USER/BarcodeMAE_venv/bin/activate"
 
 export WANDB_MODE=offline
-export WANDB_DIR="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE/wandb_final/array_${SLURM_ARRAY_JOB_ID}"
+export WANDB_DIR="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE_final/BarcodeMAE/wandb_final/array_${SLURM_ARRAY_JOB_ID}"
 mkdir -p "$WANDB_DIR"
 mkdir -p results_final
 mkdir -p "final_logs/${SLURM_ARRAY_JOB_ID}"
@@ -66,7 +66,7 @@ TAXA="bin"
 
 # ── Dataset (BIOSCAN-5M only) ──────────────────────────────────────────────────
 DATASET="BIOSCAN-5M"
-DATA_DIR="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE/data/${DATASET}"
+DATA_DIR="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE_final/BarcodeMAE/data/${DATASET}"
 
 # ── Fixed config (matches ablation_taxonomy_level.sh) ─────────────────────────
 K_MER=6; STRIDE=6; N_LAYERS=6; N_HEADS=6; N_DEC_LAYERS=6; N_DEC_HEADS=6
@@ -86,7 +86,7 @@ else
     RUN_NAME="abl_taxa${TAXA}_k${K_MER}_${N_LAYERS}L${N_HEADS}H_${ARCH}_cls_${AUX_TASK}_aux${AUX_LOSS_WEIGHT}"
 fi
 
-CKPT_BASE="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE/main_checkpoints_final/ablations/taxonomy_level/${DATASET}/${RUN_NAME}"
+CKPT_BASE="/home/m4safari/projects/def-lila-ab/m4safari/BarcodeMAE_final/BarcodeMAE/main_checkpoints_final/ablations/taxonomy_level/${DATASET}/${RUN_NAME}"
 CHECKPOINT="${CKPT_BASE}/checkpoint.pt"
 CHECKPOINT_ENC="${CKPT_BASE}/checkpoint_encoder.pt"
 mkdir -p "${CKPT_BASE}"
