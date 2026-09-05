@@ -35,7 +35,16 @@ module load python/3.11
 
 export PYTHONNOUSERSITE=1
 export PYTHONPATH=""
-source "/scratch/$USER/BarcodeMAE_venv/bin/activate"
+# Task 6 (gena_lm / AIRI-Institute/moderngena-base) needs a newer transformers
+# than the shared venv has -- ModernBERT's model_type wasn't added to
+# CONFIG_MAPPING until transformers ~4.48, so AutoConfig.from_pretrained
+# raises KeyError('modernbert') on the shared venv. Use the dedicated
+# venv with the newer transformers for just this one task.
+if [ "${SLURM_ARRAY_TASK_ID}" = "6" ]; then
+    source "/scratch/$USER/BarcodeMAE_venv_modern/bin/activate"
+else
+    source "/scratch/$USER/BarcodeMAE_venv/bin/activate"
+fi
 
 # See its5m_external_baselines.sh for the shared-venv pip-install warning --
 # same rule applies here (don't pip install inside an array job).
