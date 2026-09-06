@@ -49,6 +49,15 @@ fi
 # See its5m_external_baselines.sh for the shared-venv pip-install warning --
 # same rule applies here (don't pip install inside an array job).
 
+# ModernBERT's HF implementation wraps its embeddings layer in torch.compile()
+# by default (self.compiled_embeddings). BarcodeMAE_venv_modern's installed
+# triton doesn't match this torch build's inductor backend expectations
+# (ImportError: cannot import name 'triton_key' from triton.compiler.compiler),
+# so compilation fails and takes the whole forward pass down with it. None of
+# the other 6 models use torch.compile, so disabling dynamo globally is a
+# no-op for them and just forces GENA-LM to eager mode.
+export TORCHDYNAMO_DISABLE=1
+
 export WANDB_MODE=offline
 # Compute nodes have no internet -- force transformers/huggingface_hub to use
 # the local cache only (checkpoints already downloaded on the login node),
