@@ -43,7 +43,7 @@ mkdir -p "final_logs/${SLURM_JOB_ID}"
 BM_REPO="/scratch/$USER/BarcodeMamba-dev"
 CHECKPOINT_DIR="/scratch/$USER/barcodemamba_checkpoints/BarcodeMamba-plus-BIOSCAN-5M"
 BPE_TOKENIZER="${CHECKPOINT_DIR}/bpe_tokenizer.pkl"
-DATA_DIR="${REPO_DIR:-$HOME/BarcodeMAE-plus}_final/BarcodeMAE/data/BIOSCAN-5M"
+DATA_DIR="${REPO_DIR:-$HOME/BarcodeMAE-plus}/data/BIOSCAN-5M"
 TEMPS="0.01 0.02 0.05 0.07 0.1 0.2 0.5 1.0"
 
 echo "=== UNIFORM KNN EVALUATION ==="

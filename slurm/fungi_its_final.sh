@@ -73,7 +73,7 @@ BATCH_SIZE=128; LR=0.00007; WD=0.00001
 MASKED_LOSS_WEIGHT=0.999; MASK_TOKEN_RATIO=1.0; RANDOM_TOKEN_RATIO=0.0
 PRETRAIN_EPOCHS=15
 AUX_LOSS_WEIGHT=0.1; AUX_LOSS_WARMUP=5
-os# k=16, m=4 for all aux tasks → equal labeled samples per batch (64/128)
+# k=16, m=4 for all aux tasks → equal labeled samples per batch (64/128)
 K_CLASSES=16; M_PER_CLASS=4; NUM_PAIRS=128; TAXA="genus"
 TRIPLET_MARGIN=0.0; CLS_TAXA_LOSS_W=0.1   # triplet: softplus, best from sweep task 4
 

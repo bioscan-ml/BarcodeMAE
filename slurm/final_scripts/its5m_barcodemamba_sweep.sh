@@ -48,7 +48,7 @@ mkdir -p "final_logs/${SLURM_ARRAY_JOB_ID}"
 BM_REPO="/scratch/$USER/BarcodeMamba-dev"
 CHECKPOINT_BASE="/scratch/$USER/barcodemamba_checkpoints/models_release"
 BPE_TOKENIZER="${CHECKPOINT_BASE}/bpe_tokenizer.pkl"
-DATA_DIR="${REPO_DIR:-$HOME/BarcodeMAE-plus}_final/BarcodeMAE/data/ITS-5M"
+DATA_DIR="${REPO_DIR:-$HOME/BarcodeMAE-plus}/data/ITS-5M"
 TASKS_DIR="${DATA_DIR}/tasks"
 TEMPS="0.01 0.02 0.05 0.07 0.1 0.2 0.5 1.0"
 

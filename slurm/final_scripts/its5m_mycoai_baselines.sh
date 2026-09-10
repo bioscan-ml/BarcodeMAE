@@ -47,13 +47,13 @@ export PYTHONPATH=""
 source "/scratch/$USER/BarcodeMAE_venv/bin/activate"
 
 export WANDB_MODE=offline
-export WANDB_DIR="/project/6045013/<your_cc_username>/BarcodeMAE/wandb_final/array_${SLURM_ARRAY_JOB_ID}"
+export WANDB_DIR="${REPO_DIR:-$HOME/BarcodeMAE-plus}/wandb_final/array_${SLURM_ARRAY_JOB_ID}"
 mkdir -p "$WANDB_DIR"
 mkdir -p results_final
 mkdir -p "final_logs/${SLURM_ARRAY_JOB_ID}"
 
 WANDB_PROJECT="barcodemae_cls"
-DATA_DIR="/project/6045013/<your_cc_username>/BarcodeMAE/data/ITS-5M"
+DATA_DIR="${REPO_DIR:-$HOME/BarcodeMAE-plus}/data/ITS-5M"
 TASKS_DIR="${DATA_DIR}/tasks"
 [ ! -d "${TASKS_DIR}" ] && echo "ERROR: ${TASKS_DIR} not found — run its_export_tasks.sh first" && exit 1
 CHECKPOINT_DIR="/scratch/$USER/mycoai_models"

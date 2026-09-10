@@ -10,6 +10,24 @@ A PyTorch implementation of BarcodeMAE+, a model for enhancing DNA foundation mo
 
 #### Model checkpoints are available here: (link coming soon)
 
+## Setup
+
+0. Clone this repository and create an environment (Python 3.10+; developed and tested on 3.11)
+
+```shell
+git clone <this-repo-url>
+cd BarcodeMAE-plus
+python3.11 -m venv .venv
+source .venv/bin/activate
+```
+
+1. Install the required libraries
+
+```shell
+pip install -r requirements.txt
+pip install -e .
+```
+
 ## Quick start
 
 Load a pretrained checkpoint and run evaluation directly.
@@ -41,7 +59,7 @@ python barcodebert/knn_probing.py \
   --n-neighbors 1 3 5 7 10 15 20 25 50
 ```
 
-Best fungal ITS / UNITE+INSD configuration (encoder-decoder MAE-LM + CLS + binary same-genus objective, `cls` representation, leakage-free genus-level evaluation on the Yeast and Filamentous test sets):
+Best fungal ITS / UNITE+INSD configuration (encoder-decoder MAE-LM + CLS + binary same-genus objective, `cls` representation, leakage-free genus-level evaluation — this evaluates the Yeast, Filamentous, and MycoAI test sets in one pass):
 
 ```shell
 python barcodebert/knn_its_clean.py \
@@ -55,16 +73,6 @@ python barcodebert/knn_its_clean.py \
   --tasks genus_level
 ```
 
-## Setup
-
-0. Clone this repository
-1. Install the required libraries
-
-```shell
-pip install -r requirements.txt
-pip install -e .
-```
-
 ## Preparing the data
 
 1. Download the metadata file and copy it into the data folder
@@ -75,65 +83,161 @@ cd data/
 python data_split.py BIOSCAN-5M_Dataset_metadata.tsv
 ```
 
-## Reproducing the results
+## Pretraining
 
-1. Download the checkpoint and copy it to the model_checkpoints directory
-2. Run KNN evaluation
+All ten configurations in the paper (encoder-decoder MAE-LM vs. encoder-only Transformer, with/without a CLS token, and each of the three auxiliary objectives) are trained with `barcodebert/pretraining.py`. Encoder/decoder are both 6 layers, 6 heads, hidden dimension 768, following BarcodeBERT; masking ratio is fixed at 50% internally (not a CLI flag).
 
-```shell
-python barcodebert/knn_probing.py \
-  --run-name knn_evaluation \
-  --data-dir ./data/ \
-  --pretrained-checkpoint "./model_checkpoints/best_pretraining.pt" \
-  --log-wandb \
-  --dataset BIOSCAN-5M
-```
-
-## Pretraining from scratch
-
-1. Run pretraining
+### Worked example: best BIOSCAN-5M config (encoder-decoder + CLS + cross-entropy)
 
 ```shell
 python barcodebert/pretraining.py \
-  --dataset=BIOSCAN-5M \
-  --k_mer=6 \
-  --n_layers=6 \
-  --n_heads=6 \
-  --decoder-n-layers=6 \
-  --decoder-n-heads=6 \
-  --data_dir=data/ \
-  --checkpoint=model_checkpoints/BIOSCAN-5M/6-6-6/model_checkpoint.pt
+  --run-name bioscan5m_maelm_cls_ce \
+  --dataset BIOSCAN-5M \
+  --data-dir data/BIOSCAN-5M \
+  --arch maelm \
+  --k-mer 6 --stride 6 \
+  --n-layers 6 --n-heads 6 \
+  --decoder-n-layers 6 --decoder-n-heads 6 \
+  --batch-size 128 \
+  --lr 0.00007 \
+  --weight-decay 0.00001 \
+  --epochs 35 \
+  --mask-token-ratio 1.0 \
+  --random-token-ratio 0.0 \
+  --masked-loss-weight 0.999 \
+  --max-norm 0.5 \
+  --separate_loss true \
+  --mixed-precision \
+  --save-best-model \
+  --use-cls-token \
+  --aux-loss-type ce \
+  --aux-loss-weight 0.1 \
+  --aux-loss-warmup-epochs 5 \
+  --taxonomy-level genus \
+  --taxonomy-max-pairs 128 \
+  --k-classes 16 \
+  --m-per-class 4 \
+  --checkpoint model_checkpoints/BIOSCAN-5M/maelm_cls_ce/checkpoint.pt \
+  --checkpoint_maelm model_checkpoints/BIOSCAN-5M/maelm_cls_ce/checkpoint_encoder.pt
 ```
 
-## Reproducing the baselines
+For `--arch maelm` checkpoints, evaluation (Quick start / `knn_probing.py`) should point at the `--checkpoint_maelm` encoder-only file, not `--checkpoint`. For `--arch transformer`, use `--checkpoint` directly (no decoder to strip).
 
-`barcodebert/external_models.py` wraps off-the-shelf HuggingFace DNA foundation model checkpoints (DNABERT-2, DNABERT-S, Nucleotide Transformer, GENA-LM, Caduceus, HyenaDNA) so they can be evaluated with the same KNN pipeline used for BarcodeMAE+, via a separate dependency set (`requirements-external-baselines.txt` — see the file header for why this needs its own environment).
+### Other configurations
+
+Keep everything above the same and swap in these flags for the architecture/CLS/objective you want:
+
+| Config | Architecture | CLS | Objective | Extra flags (on top of the base architecture flags) |
+|---|---|---|---|---|
+| 1 | encoder-decoder (`--arch maelm`) | no | — | *(none)* |
+| 2 | encoder-decoder | yes | none | `--use-cls-token` |
+| 3 | encoder-decoder | yes | binary | `--use-cls-token --enable-cls-taxonomy --cls-taxonomy-loss-weight 0.1 --taxonomy-level genus --taxonomy-max-pairs 128 --k-classes 16 --m-per-class 4` |
+| 4 | encoder-decoder | yes | triplet | `--use-cls-token --aux-loss-type triplet --triplet-margin 0.0 --triplet-mining batch_hard --aux-loss-weight 0.1 --aux-loss-warmup-epochs 5 --taxonomy-level genus --taxonomy-max-pairs 128 --k-classes 16 --m-per-class 4` |
+| 5 | encoder-decoder | yes | CE | `--use-cls-token --aux-loss-type ce --aux-loss-weight 0.1 --aux-loss-warmup-epochs 5 --taxonomy-level genus --taxonomy-max-pairs 128 --k-classes 16 --m-per-class 4` |
+| 6–10 | encoder-only (`--arch transformer`, drop `--decoder-n-layers/--decoder-n-heads/--checkpoint_maelm`) | same as 1–5 | same as 1–5 | same as 1–5 |
+
+For fungal ITS / UNITE+INSD, use `--dataset ITS-5M --data-dir data/ITS-5M --epochs 15`; everything else (including the CLS/objective flags above) is unchanged.
+
+The exact SLURM job arrays that generated the paper's checkpoints — including run naming and checkpoint paths — are in [`slurm/bioscan5m_final.sh`](slurm/bioscan5m_final.sh) and [`slurm/fungi_its_final.sh`](slurm/fungi_its_final.sh). Edit the `#SBATCH --account` and any `$HOME`/`$SCRATCH`-relative paths at the top for your own cluster before submitting.
+
+## Evaluating the external baselines
+
+Table 3 (BIOSCAN-5M) and Table 4 (UNITE+INSD) compare BarcodeMAE+ against published DNA foundation models and fungal-ITS-specific baselines. None of these are retrained from scratch — each is evaluated zero-shot from its own published checkpoint.
+
+### HuggingFace-hosted baselines (DNABERT-2, DNABERT-S, Nucleotide Transformer, GROVER, GENA-LM, HyenaDNA, Omni-DNA, Caduceus)
+
+These need a separate environment with a newer `transformers` than the main training venv (see the header of `requirements-external-baselines.txt` for why — bumping the shared venv risks breaking Jumbo BERT pretraining):
 
 ```shell
+python3.11 -m venv --system-site-packages .venv-external
+source .venv-external/bin/activate
 pip install -r requirements-external-baselines.txt
-
-python barcodebert/knn_probing.py \
-  --external-model-id <huggingface-model-id> \
-  --data-dir ./data/ \
-  --dataset BIOSCAN-5M
 ```
 
-MycoAI (fungal ITS) and BarcodeMamba+ baselines use their own checkpoint formats and are evaluated with dedicated scripts:
+`barcodebert/external_models.py` wraps each checkpoint's HuggingFace `AutoModel`/`AutoModelForMaskedLM`/`AutoModelForCausalLM` so it can be evaluated with the same KNN pipeline used for BarcodeMAE+. `--external-model-cls` must match how the checkpoint is loaded:
+
+| Model | `--external-model-id` | `--external-model-cls` | `--external-max-length` |
+|---|---|---|---|
+| DNABERT-2 | `zhihan1996/DNABERT-2-117M` | `auto` | 660 |
+| DNABERT-S | `zhihan1996/DNABERT-S` | `auto` | 660 |
+| Nucleotide Transformer | `InstaDeepAI/nucleotide-transformer-500m-human-ref` | `auto` | 660 |
+| GROVER | `PoetschLab/GROVER` | `masked-lm` | 660 |
+| GENA-LM | `AIRI-Institute/gena-lm-bert-base-t2t` | `masked-lm` | 660 |
+| GENA-LM (ModernGENA variant) | `AIRI-Institute/moderngena-base` | `auto` | 660 |
+| HyenaDNA-tiny | `LongSafari/hyenadna-tiny-1k-seqlen-hf` | `causal-lm` | 1000 |
+| Omni-DNA | `zehui127/Omni-DNA-116M` | `causal-lm` | 660 |
+| Caduceus-PS-1k | `kuleshov-group/caduceus-ps_seqlen-1k_d_model-256_n_layer-4_lr-8e-3` | `masked-lm` | 1000 |
 
 ```shell
-# MycoAI-BERT / MycoAI-CNN on fungal ITS
-python barcodebert/knn_its_mycoai.py --data-dir ./data/ --pretrained-checkpoint <path_to_mycoai_checkpoint>
+# BIOSCAN-5M
+python barcodebert/knn_probing.py \
+  --external-model-id zhihan1996/DNABERT-2-117M \
+  --external-model-cls auto \
+  --external-max-length 660 \
+  --dataset BIOSCAN-5M \
+  --data-dir ./data/BIOSCAN-5M \
+  --taxon genus \
+  --knn-weights softmax --temperature 0.02 \
+  --n-neighbors 1 3 5 7 10 15 20 25 50
 
-# BarcodeMamba+ on BIOSCAN-5M
-python barcodebert/knn_probing_barcodemamba.py --data-dir ./data/ --pretrained-checkpoint <path_to_barcodemamba_checkpoint>
-
-# BarcodeMamba+ on fungal ITS
-python barcodebert/knn_its_barcodemamba.py --data-dir ./data/ --pretrained-checkpoint <path_to_barcodemamba_checkpoint>
+# Fungal ITS / UNITE+INSD
+python barcodebert/knn_its_clean.py \
+  --external-model-id zhihan1996/DNABERT-2-117M \
+  --external-model-cls auto \
+  --external-max-length 660 \
+  --data-dir ./data/ITS-5M \
+  --tasks-dir ./data/ITS-5M/tasks \
+  --knn-weights softmax --temperature 0.02 \
+  --n-neighbors 1 3 5 7 10 15 20 25 50
 ```
 
-The original CNN and DNABERT baseline reproductions (used for the earlier BarcodeMAE arXiv paper) are kept under `scripts/CNN/` and `scripts/DNABERT/`.
+Caduceus needs `mamba-ssm`/`causal-conv1d` (CUDA kernels) on top of `requirements-external-baselines.txt` — see the commented-out block at the end of that file.
 
-Reference SLURM scripts for the full pretraining experiment grid (10 configurations: encoder-decoder vs. encoder-only, with/without CLS, and each auxiliary objective) are in `slurm/bioscan5m_final.sh` and `slurm/fungi_its_final.sh`. Update the SLURM account/paths at the top of each script for your own cluster before submitting.
+### MycoAI-BERT / MycoAI-CNN (fungal ITS only)
+
+These ship as `mycoai.modules.seq_class_network.SeqClassNetwork` checkpoints (not HuggingFace), downloadable from [Zenodo](https://zenodo.org/records/10904344). Evaluated in the main venv — `mycoai` is already a dependency for ITS-5M data loading.
+
+```shell
+python barcodebert/knn_its_mycoai.py \
+  --checkpoint path/to/MycoAI-BERT.pt \
+  --data-dir ./data/ITS-5M \
+  --tasks-dir ./data/ITS-5M/tasks \
+  --knn-weights softmax --temperature 0.02 \
+  --n-neighbors 1 3 5 7 10 15 20 25 50
+```
+
+### BarcodeMamba+
+
+A state-space model distributed as a plain GitHub repo (not a HuggingFace `AutoModel`), so it needs a local clone of that repo plus its checkpoint directory:
+
+```shell
+# BIOSCAN-5M
+python barcodebert/knn_probing_barcodemamba.py \
+  --barcodemamba-repo path/to/BarcodeMamba-plus-repo \
+  --checkpoint-dir path/to/barcodemamba_checkpoints \
+  --data-dir ./data/BIOSCAN-5M \
+  --knn-weights softmax --temperature 0.02 \
+  --n-neighbors 1 3 5 7 10 15 20 25 50
+
+# Fungal ITS / UNITE+INSD
+python barcodebert/knn_its_barcodemamba.py \
+  --barcodemamba-repo path/to/BarcodeMamba-plus-repo \
+  --checkpoint-dir path/to/barcodemamba_checkpoints \
+  --data-dir ./data/ITS-5M \
+  --tasks-dir ./data/ITS-5M/tasks \
+  --knn-weights softmax --temperature 0.02 \
+  --n-neighbors 1 3 5 7 10 15 20 25 50
+```
+
+### BarcodeBERT
+
+BarcodeBERT is the same architecture family as BarcodeMAE+ (this repo, prior work), so its checkpoint is evaluated the same way as any of our own checkpoints — just point `--pretrained-checkpoint` at the BarcodeBERT checkpoint in `knn_probing.py` / `knn_its_clean.py` (Quick start above).
+
+### Original CNN / DNABERT baselines
+
+The CNN and DNABERT baseline reproductions from the earlier BarcodeMAE arXiv paper are kept under `scripts/CNN/` and `scripts/DNABERT/`, unrelated to the HuggingFace-adapter path above.
+
+The exact SLURM scripts that generated the paper's baseline numbers are in [`slurm/final_scripts/`](slurm/final_scripts/): `external_baseline_knn.sh`, `bioscan5m_external_baselines_modern.sh`, `its5m_external_baselines_modern.sh`, `its5m_mycoai_baselines.sh`, `bioscan5m_barcodemamba_sweep.sh`, and `its5m_barcodemamba_sweep.sh`.
 
 ## Citation
 

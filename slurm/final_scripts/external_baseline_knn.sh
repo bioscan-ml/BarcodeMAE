@@ -124,7 +124,7 @@ MAX_LEN="${GRID_MAXLEN[$SLURM_ARRAY_TASK_ID]}"
 # ── Dataset (overridable via --export=DATASET=...) ────────────────────────────
 DATASET="${DATASET:-BIOSCAN-5M}"
 if [ "${DATASET}" = "ITS-5M" ]; then
-    DATA_DIR="${REPO_DIR:-$HOME/BarcodeMAE-plus}_final/BarcodeMAE/data/${DATASET}"
+    DATA_DIR="${REPO_DIR:-$HOME/BarcodeMAE-plus}/data/${DATASET}"
 else
     DATA_DIR="${REPO_DIR:-$HOME/BarcodeMAE-plus}/data/${DATASET}"
 fi

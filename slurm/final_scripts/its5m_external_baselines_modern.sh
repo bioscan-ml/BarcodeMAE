@@ -56,14 +56,14 @@ export WANDB_MODE=offline
 # instead of trying (and hanging/failing on) a network check first.
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
-export WANDB_DIR="/project/6045013/<your_cc_username>/BarcodeMAE/wandb_final/array_${SLURM_ARRAY_JOB_ID}"
+export WANDB_DIR="${REPO_DIR:-$HOME/BarcodeMAE-plus}/wandb_final/array_${SLURM_ARRAY_JOB_ID}"
 mkdir -p "$WANDB_DIR"
 mkdir -p results_final
 mkdir -p "final_logs/${SLURM_ARRAY_JOB_ID}"
 
 WANDB_PROJECT="barcodemae_cls"
 DATASET="ITS-5M"
-DATA_DIR="/project/6045013/<your_cc_username>/BarcodeMAE/data/${DATASET}"
+DATA_DIR="${REPO_DIR:-$HOME/BarcodeMAE-plus}/data/${DATASET}"
 TASKS_DIR="${DATA_DIR}/tasks"
 [ ! -d "${TASKS_DIR}" ] && echo "ERROR: ${TASKS_DIR} not found — run its_export_tasks.sh first" && exit 1
 TEMPERATURE=0.07
