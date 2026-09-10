@@ -1,0 +1,3181 @@
+#!/usr/bin/env python
+
+import builtins
+import contextlib
+import math
+import os
+import shutil
+import subprocess
+import sys
+import time
+from datetime import datetime
+from socket import gethostname
+
+import torch
+import torch.distributed as dist
+import torch.optim
+from torch import nn
+from torch.utils.data.distributed import DistributedSampler
+
+from barcodebert.Sampler_balanced import DistributedKClassMSampleSampler, KClassMSampleSampler
+from transformers import BertConfig, BertForTokenClassification
+
+from barcodebert import levenshtein, utils
+from barcodebert.cls_taxonomy_classifier import (
+    CLSTaxonomyClassifier,
+    compute_cls_taxonomy_classification_loss,
+)
+from barcodebert.datasets import DNADataset
+from barcodebert.io import safe_save_model
+from barcodebert.jumbo_taxonomy_classifier import compute_taxonomy_classification_loss
+from barcodebert.taxonomy_aux_losses import (
+    TaxonomyClassificationHead,
+    crossentropy_taxonomy_loss,
+    supcon_loss,
+    triplet_loss_batch_hard,
+)
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../..")))
+from biological_masker import (
+    TemperatureCompatibleBiologicalMasker,
+    create_temperature_schedule,
+    get_temperature_biological_replacements,
+)
+from torch.cuda.amp import autocast
+
+from barcodebert.jumbo_transformer import create_jumbo_transformer_model
+from barcodebert.maelm_model import MAELMModel
+
+BASE_BATCH_SIZE = 128
+
+
+def run_epoch_knn_eval(config, epoch, eval_ckpt_path):
+    r"""
+    Run the full KNN evaluation (same script/metrics as a post-hoc
+    knn_probing.py / knn_its.py run, on the whole train + test data) against
+    the checkpoint just saved for this epoch, as a subprocess.
+
+    Non-fatal: a failure here is printed as a warning and pretraining
+    continues, since this is a monitoring aid (watch for overfitting epoch
+    by epoch), not part of the training objective.
+    """
+    if not eval_ckpt_path or not os.path.isfile(eval_ckpt_path):
+        print(f"Skipping epoch-{epoch} KNN eval: checkpoint not found at {eval_ckpt_path}")
+        return
+
+    run_tag = f"{config.run_name}_epoch{epoch}" if getattr(config, "run_name", None) else f"epoch{epoch}"
+    representation_type = getattr(config, "knn_eval_representation_type", "tokens")
+    neighbors = [str(k) for k in getattr(config, "knn_eval_neighbors", [1])]
+    metric = getattr(config, "knn_eval_metric", "cosine")
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+
+    if config.dataset_name == "ITS-5M":
+        script = os.path.join(script_dir, "knn_its.py")
+        results_file = getattr(config, "knn_eval_results_file", None) or "results_final/KNN_ITS_RESULTS_epochwise.txt"
+        cmd = [
+            sys.executable, script,
+            "--pretrained-checkpoint", eval_ckpt_path,
+            "--data-dir", config.data_dir,
+            "--run-name", f"knn_its_{run_tag}",
+            "--n-neighbors", *neighbors,
+            "--metric", metric,
+            "--representation-type", representation_type,
+            "--results-file", results_file,
+        ]
+    else:
+        script = os.path.join(script_dir, "knn_probing.py")
+        results_file = getattr(config, "knn_eval_results_file", None) or "results_final/KNN_RESULTS_epochwise.txt"
+        cmd = [
+            sys.executable, script,
+            "--pretrained-checkpoint", eval_ckpt_path,
+            "--dataset", config.dataset_name,
+            "--data-dir", config.data_dir,
+            "--representation_type", representation_type,
+            "--taxon", getattr(config, "knn_eval_taxon", "genus"),
+            "--n-neighbors", *neighbors,
+            "--run-name", f"knn_{run_tag}",
+            "--results-file", results_file,
+        ]
+
+    if getattr(config, "log_wandb", False):
+        cmd += ["--log-wandb", "--wandb-project", config.wandb_project]
+
+    results_dir = os.path.dirname(results_file)
+    if results_dir:
+        os.makedirs(results_dir, exist_ok=True)
+
+    print(f"=== Epoch {epoch}: running full KNN evaluation ({os.path.basename(script)}) ===", flush=True)
+    t_start = time.time()
+    result = subprocess.run(cmd)
+    dt = time.time() - t_start
+    if result.returncode != 0:
+        print(f"WARNING: epoch-{epoch} KNN eval failed (exit code {result.returncode}) after {dt:.1f}s "
+              "— continuing pretraining.", flush=True)
+    else:
+        print(f"Epoch {epoch} KNN eval done in {dt:.1f}s -> {results_file}", flush=True)
+
+
+def run(config):
+    r"""
+    Run training job (one worker if using distributed training).
+
+    Parameters
+    ----------
+    config : argparse.Namespace or OmegaConf
+        The configuration for this experiment.
+    """
+    if config.log_wandb:
+        # Lazy import of wandb, since logging to wandb is optional
+        import wandb
+
+    if config.seed is not None:
+        utils.set_rng_seeds_fixed(config.seed)
+
+    if config.deterministic:
+        print("Running in deterministic cuDNN mode. Performance may be slower, but more reproducible.")
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+    # DISTRIBUTION ============================================================
+    # Enable DDP only if we truly have >1 processes
+    config.world_size = int(os.environ.get("WORLD_SIZE", 1))
+    config.distributed = config.world_size > 1
+
+    # Total batch size across all ranks
+    config.batch_size = config.batch_size_per_gpu * config.world_size
+
+    if config.distributed:
+        # (Optional) keep if you rely on SLURM env setup
+        utils.setup_slurm_distributed()
+
+        config.global_rank = int(os.environ["RANK"])
+        config.local_rank = int(os.environ["LOCAL_RANK"])
+        print(
+            f"Rank {config.global_rank} of {config.world_size} on {gethostname()}"
+            f" (local GPU {config.local_rank} of {torch.cuda.device_count()})."
+            f" Communicating with master at {os.environ['MASTER_ADDR']}:{os.environ['MASTER_PORT']}"
+        )
+        dist.init_process_group(backend="nccl")
+    else:
+        config.global_rank = 0
+        config.local_rank = 0  # or None
+
+    # Suppress printing if this is not the master process for the node
+    if config.distributed and config.global_rank != 0:
+
+        def print_pass(*args, **kwargs):
+            pass
+
+        builtins.print = print_pass
+
+    print()
+    print("Configuration:")
+    print()
+    print(config)
+    print()
+    print(f"Found {torch.cuda.device_count()} GPUs and {utils.get_num_cpu_available()} CPUs.")
+
+    # Check which device to use
+    use_cuda = not config.no_cuda and torch.cuda.is_available()
+
+    if config.distributed and not use_cuda:
+        raise EnvironmentError("Distributed training with NCCL requires CUDA.")
+    if not use_cuda:
+        device = torch.device("cpu")
+    elif config.local_rank is not None:
+        device = f"cuda:{config.local_rank}"
+    else:
+        device = "cuda"
+
+    print(f"Using device {device}", flush=True)
+
+    # ==========================================
+    # Initialize biological masker
+    biological_masker = None
+    temperature_schedule = None
+    if config.random_token_ratio > 0.0:
+        try:
+            biological_masker = TemperatureCompatibleBiologicalMasker.from_cache_dir(
+                cache_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "masking_codes", "kmer_cache"),
+                k_mer_size=config.k_mer,
+                tokenize_n_nucleotide=config.tokenize_n_nucleotide,
+                device=device,
+            )
+            print(" Biological masking enabled")
+
+            temperature_schedule = create_temperature_schedule(
+                start_temp=2.5, end_temp=1.0, total_epochs=config.epochs, schedule_type="exponential"
+            )
+            print(" Temperature schedule:", temperature_schedule)
+
+        except FileNotFoundError as e:
+            print(f" Warning: {e}")
+            print("Using uniform random masking instead")
+            biological_masker = None
+        else:
+            print("No biological masking will be applied")
+            print("All tokens are based with [MASK]")
+    # ==========================================
+
+    # DATASET =================================================================
+
+    if config.dataset_name not in ["CANADA-1.5M", "BIOSCAN-5M", "ITS-5M"]:
+        raise NotImplementedError(f"Dataset {config.dataset_name} not supported.")
+
+    # Handle default stride dynamically set to equal k-mer size
+    if config.stride is None:
+        config.stride = config.k_mer
+
+    # Check if taxonomy classification is enabled
+    enable_genus_classification = (
+        config.enable_genus_classification if hasattr(config, "enable_genus_classification") else False
+    )
+    taxonomy_level = (
+        config.taxonomy_level_for_classification if hasattr(config, "taxonomy_level_for_classification") else "genus"
+    )
+    if taxonomy_level == "bin" and config.dataset_name != "BIOSCAN-5M":
+        raise ValueError("--taxonomy-level bin is only supported for --dataset BIOSCAN-5M.")
+
+    # Check if CLS token taxonomy classification is enabled
+    use_cls_token = config.use_cls_token if hasattr(config, "use_cls_token") else False
+    enable_cls_taxonomy = config.enable_cls_taxonomy if hasattr(config, "enable_cls_taxonomy") else False
+
+    # If CLS taxonomy is enabled, we need the CLS token (taxonomy labels come from the dataset)
+    if enable_cls_taxonomy:
+        use_cls_token = True
+
+    # Labels are needed for the k×m balanced sampler even without any classification task
+    use_km_sampler = (
+        getattr(config, "k_classes", None) is not None and getattr(config, "m_per_class", None) is not None
+    )
+    need_taxonomy_labels = enable_genus_classification or enable_cls_taxonomy or use_km_sampler
+
+    dataset_args = {
+        "k_mer": config.k_mer,
+        "stride": config.stride,
+        "max_len": config.max_len,
+        "tokenizer": config.tokenizer,
+        "bpe_path": config.bpe_path,
+        "tokenize_n_nucleotide": config.tokenize_n_nucleotide,
+        "dataset_format": config.dataset_name,
+        "return_taxonomy_level": taxonomy_level if need_taxonomy_labels else None,
+        "use_cls_token": use_cls_token,
+        # For BIOSCAN-5M: return BIN and family labels to augment pair creation
+        "return_bin_labels": config.dataset_name == "BIOSCAN-5M" and need_taxonomy_labels,
+        "return_family_labels": config.dataset_name == "BIOSCAN-5M" and need_taxonomy_labels,
+    }
+    if config.dataset_name == "ITS-5M":
+        dataset_train = DNADataset(
+            file_path=os.path.join(config.data_dir, "trainset.fasta"),
+            randomize_offset=True,
+            **dataset_args,
+        )
+        dataset_val = DNADataset(
+            file_path=os.path.join(config.data_dir, "trainset_valid.fasta"),
+            randomize_offset=False,
+            **dataset_args,
+        )
+        eval_set = "Val"
+    else:
+        dataset_train = DNADataset(
+            file_path=os.path.join(config.data_dir, "pre_training.csv"),
+            randomize_offset=True,
+            **dataset_args,
+        )
+        dataset_val = DNADataset(
+            file_path=os.path.join(config.data_dir, "supervised_train.csv"),
+            randomize_offset=False,
+            **dataset_args,
+        )
+        eval_set = "Val"
+    # Dataloader --------------------------------------------------------------
+    dl_train_kwargs = {
+        "batch_size": config.batch_size_per_gpu,
+        "drop_last": True,
+        "sampler": None,
+        "shuffle": True,
+        "worker_init_fn": utils.worker_seed_fn,
+    }
+    dl_val_kwargs = {
+        "batch_size": config.batch_size_per_gpu,
+        "drop_last": False,
+        "sampler": None,
+        "shuffle": False,
+        "worker_init_fn": utils.worker_seed_fn,
+    }
+    if config.cpu_workers is None:
+        config.cpu_workers = utils.get_num_cpu_available()
+    if use_cuda:
+        cuda_kwargs = {"num_workers": config.cpu_workers, "pin_memory": True}
+        dl_train_kwargs.update(cuda_kwargs)
+        dl_val_kwargs.update(cuda_kwargs)
+
+    # Decide which sampler to use for training ---------------------------------
+    if use_km_sampler:
+        k = config.k_classes
+        m = config.m_per_class
+        batch_size_per_gpu = config.batch_size_per_gpu
+        if k * m > batch_size_per_gpu:
+            raise ValueError(
+                f"k×m sampler requires k * m <= batch_size_per_gpu, "
+                f"but k={k}, m={m} (k*m={k*m}) > batch_size_per_gpu={batch_size_per_gpu}. "
+                "Increase --batch-size-per-gpu or reduce --k-classes / --m-per-class."
+            )
+        if not hasattr(dataset_train, "taxonomy_labels") or dataset_train.taxonomy_labels is None:
+            raise ValueError(
+                "k×m sampler requires taxonomy labels but none were found. "
+                "Check that --taxonomy-level matches a labeled column in your dataset."
+            )
+        train_labels = dataset_train.taxonomy_labels
+        sampler_seed = config.seed if config.seed is not None else 0
+        n_random = batch_size_per_gpu - k * m
+        print(
+            f"Using k×m hybrid sampler: k={k} classes × m={m} samples "
+            f"+ {n_random} random (incl. unlabelled) per batch "
+            f"→ batch_size={batch_size_per_gpu}, "
+            f"guaranteed positive pairs/batch = {k * m * (m - 1) // 2}"
+        )
+
+        cover_full = getattr(config, "cover_full_dataset", True)
+        if config.distributed:
+            dl_train_kwargs["sampler"] = DistributedKClassMSampleSampler(
+                train_labels,
+                k=k,
+                m=m,
+                batch_size=batch_size_per_gpu,
+                seed=sampler_seed,
+                shuffle=True,
+                cover_full_dataset=cover_full,
+            )
+            dl_train_kwargs["shuffle"] = False
+            # Validation still uses standard DistributedSampler (no need for balance there)
+            dl_val_kwargs["sampler"] = DistributedSampler(
+                dataset_val,
+                shuffle=False,
+                drop_last=False,
+            )
+            dl_val_kwargs["shuffle"] = False
+        else:
+            dl_train_kwargs["sampler"] = KClassMSampleSampler(
+                train_labels,
+                k=k,
+                m=m,
+                batch_size=batch_size_per_gpu,
+                seed=sampler_seed,
+                shuffle=True,
+                cover_full_dataset=cover_full,
+            )
+            dl_train_kwargs["shuffle"] = False
+
+    elif config.distributed:
+        # Standard distributed sampler (original behaviour)
+        dl_train_kwargs["sampler"] = DistributedSampler(
+            dataset_train,
+            shuffle=True,
+            seed=config.seed if config.seed is not None else 0,
+            drop_last=False,
+        )
+        dl_train_kwargs["shuffle"] = False
+        dl_val_kwargs["sampler"] = DistributedSampler(
+            dataset_val,
+            shuffle=False,
+            drop_last=False,
+        )
+        dl_val_kwargs["shuffle"] = False
+
+    dataloader_train = torch.utils.data.DataLoader(dataset_train, **dl_train_kwargs)
+    dataloader_val = torch.utils.data.DataLoader(dataset_val, **dl_val_kwargs)
+
+    # LOAD PRE-EMPTION CHECKPOINT =============================================
+    checkpoint = None
+    config.model_output_dir = None
+    if config.checkpoint_path:
+        config.model_output_dir = os.path.dirname(config.checkpoint_path)
+    if not config.checkpoint_path:
+        # Not trying to resume from a checkpoint
+        pass
+    elif not os.path.isfile(config.checkpoint_path):
+        # Looks like we're trying to resume from the checkpoint that this job
+        # will itself create. Let's assume this is to let the job resume upon
+        # preemption, and it just hasn't been preempted yet.
+        print(f"Skipping premature resumption from preemption: no checkpoint file found at '{config.checkpoint_path}'")
+        if config.checkpoint_path_resume and os.path.isfile(config.checkpoint_path_resume):
+            # Resume from another checkpoint instead
+            print(f"Loading resumption checkpoint '{config.checkpoint_path_resume}'", flush=True)
+            checkpoint = torch.load(config.checkpoint_path_resume, map_location=device)
+    else:
+        print(f"Loading resumption checkpoint '{config.checkpoint_path}'", flush=True)
+        # Map model parameters to be load to the specified gpu.
+        checkpoint = torch.load(config.checkpoint_path, map_location=device)
+
+    if checkpoint is None:
+        # Our epochs go from 1 to n_epoch, inclusive
+        start_epoch = 1
+        start_step_in_epoch = 0
+    else:
+        # Calculate where to resume
+        loaded_step = checkpoint["total_step"]
+        batches_per_epoch = len(dataloader_train)
+
+        # Which epoch should we resume in?
+        start_epoch = (loaded_step // batches_per_epoch) + 1
+
+        # Which batch within that epoch should we start from?
+        start_step_in_epoch = loaded_step % batches_per_epoch
+
+        print(f"Resuming at epoch {start_epoch}, batch {start_step_in_epoch}")
+
+        if config.seed is not None:
+            # Make sure we don't get the same behaviour as we did on the
+            # first epoch repeated on this resumed epoch.
+            utils.set_rng_seeds_fixed(config.seed + start_epoch, all_gpu=False)
+
+    # MODEL ===================================================================
+    base_pairs = "ACGT"
+    if config.predict_n_nucleotide:
+        base_pairs += "N"
+
+    if config.tokenizer == "kmer":
+        max_position_embeddings = max(512, math.ceil(1536 / config.stride))
+        n_output_tokens = len(base_pairs) ** config.k_mer
+        n_special_tokens = len(dataset_train.special_tokens)
+        n_all_tokens = n_output_tokens + n_special_tokens
+    elif config.tokenizer == "bpe":
+        max_position_embeddings = config.max_len
+        n_output_tokens = dataset_train.vocab_size
+        n_special_tokens = 5
+        n_all_tokens = n_output_tokens
+    else:
+        raise NotImplementedError(f"Tokenizer {config.tokenizer} is not supported.")
+
+    # Initializing a model (with random weights) from the bert-base-uncased style configuration
+    if checkpoint is not None and "bert_config" in checkpoint:
+        print("Using bert_config from checkpoint")
+        bert_config = BertConfig(**checkpoint["bert_config"])
+    else:
+
+        bert_config = BertConfig(
+            vocab_size=dataset_train.vocab_size,
+            num_hidden_layers=config.n_layers,
+            num_attention_heads=config.n_heads,
+            num_labels=n_output_tokens,
+            output_hidden_states=True,
+            max_position_embeddings=max_position_embeddings,
+            hidden_size=config.encoder_embed_dim,
+        )
+
+    if config.arch == "maelm":
+
+        if checkpoint is not None and "decoder_config" in checkpoint:
+            print("Using decoder_config from checkpoint")
+            decoder_config = BertConfig(**checkpoint["decoder_config"])
+        else:
+            print("Using BertConfig for the decoder")
+            decoder_config = BertConfig(
+                vocab_size=dataset_train.vocab_size,
+                num_hidden_layers=config.decoder_n_layers,
+                num_attention_heads=config.decoder_n_heads,
+                num_labels=n_output_tokens,
+                max_position_embeddings=max_position_embeddings,
+                hidden_size=config.decoder_embed_dim,
+            )
+        print("Using MAELMModel with BertConfig for the decoder (not mosaic-bert)")
+        enable_genus_classification = (
+            config.enable_genus_classification if hasattr(config, "enable_genus_classification") else False
+        )
+        jumbo_source = config.jumbo_source if hasattr(config, "jumbo_source") else "decoder"
+        pool_jumbo_for_taxonomy = config.pool_jumbo_for_taxonomy if hasattr(config, "pool_jumbo_for_taxonomy") else False
+        taxonomy_pool_type = config.taxonomy_pool_type if hasattr(config, "taxonomy_pool_type") else "mean"
+
+        n_registers = getattr(config, "n_registers", 0)
+        model = MAELMModel(
+            bert_config,
+            decoder_config,
+            config.jumbo,
+            config.jumbo_multiplier,
+            config.share_jumbo_layers,
+            enable_genus_classification=enable_genus_classification,
+            jumbo_source=jumbo_source,
+            pool_jumbo_for_taxonomy=pool_jumbo_for_taxonomy,
+            taxonomy_pool_type=taxonomy_pool_type,
+            mlp_expansion_factor=config.jumbo_mlp_expansion,
+            use_cls_token=use_cls_token,
+            n_registers=n_registers,
+        )
+
+    elif config.arch == "transformer":
+        decoder_config = None
+        if config.jumbo:
+            enable_genus_classification = (
+                config.enable_genus_classification if hasattr(config, "enable_genus_classification") else False
+            )
+            if enable_genus_classification:
+                print("Using JumboBertForTokenClassification with Taxonomy Classification")
+                from barcodebert.jumbo_transformer_with_taxonomy import (
+                    create_jumbo_transformer_with_taxonomy,
+                )
+
+                model = create_jumbo_transformer_with_taxonomy(
+                    bert_config,
+                    config.jumbo_multiplier,
+                    config.share_jumbo_layers,
+                    enable_taxonomy_classification=True,
+                    mlp_expansion_factor=config.jumbo_mlp_expansion,
+                )
+            else:
+                print("Using JumboBertForTokenClassification")
+                model = create_jumbo_transformer_model(
+                    bert_config, config.jumbo_multiplier, config.share_jumbo_layers, config.jumbo_mlp_expansion
+                )
+        else:
+            model = BertForTokenClassification(bert_config)
+
+    # Create CLS taxonomy classifier if enabled -------------------------------
+    cls_taxonomy_classifier = None
+    if enable_cls_taxonomy and use_cls_token:
+        print(f"Creating CLS taxonomy classifier for {taxonomy_level} classification")
+        cls_taxonomy_classifier = CLSTaxonomyClassifier(
+            hidden_dim=bert_config.hidden_size, classifier_hidden_dim=256, dropout=0.1
+        )
+        print(f"CLS taxonomy classifier created with hidden_dim={bert_config.hidden_size}")
+
+    # Auxiliary CE head (for crossentropy_taxonomy_loss) ----------------------
+    taxonomy_ce_head = None
+    if getattr(config, "aux_loss_type", None) == "ce":
+        n_taxonomy_classes = int(max(dataset_train.taxonomy_labels)) + 1
+        taxonomy_ce_head = TaxonomyClassificationHead(
+            hidden_dim=bert_config.hidden_size,
+            num_classes=n_taxonomy_classes,
+            dropout=0.1,
+        )
+        print(f"Aux CE head created: hidden={bert_config.hidden_size}, classes={n_taxonomy_classes}")
+
+    # Configure model for distributed training --------------------------------
+    print("\nModel architecture:")
+    print(model, flush=True)
+    if cls_taxonomy_classifier is not None:
+        print("\nCLS Taxonomy Classifier:")
+        print(cls_taxonomy_classifier, flush=True)
+    print()
+
+    if not use_cuda:
+        print("Using CPU (this will be slow)", flush=True)
+    elif config.distributed:
+        # Convert batchnorm into SyncBN, using stats computed from all GPUs
+        model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
+        # For multiprocessing distributed, the DistributedDataParallel
+        # constructor should always set a single device scope, otherwise
+        # DistributedDataParallel will use all available devices.
+        model = model.to(device)
+        if cls_taxonomy_classifier is not None:
+            cls_taxonomy_classifier = cls_taxonomy_classifier.to(device)
+        if taxonomy_ce_head is not None:
+            taxonomy_ce_head = taxonomy_ce_head.to(device)
+        torch.cuda.set_device(device)
+        model = nn.parallel.DistributedDataParallel(
+            model,
+            device_ids=[config.local_rank],
+            output_device=config.local_rank,
+            find_unused_parameters=False,
+            static_graph=True,
+        )
+        if cls_taxonomy_classifier is not None:
+            cls_taxonomy_classifier = nn.parallel.DistributedDataParallel(
+                cls_taxonomy_classifier,
+                device_ids=[config.local_rank],
+                output_device=config.local_rank,
+                find_unused_parameters=False,
+                static_graph=True,
+            )
+        if taxonomy_ce_head is not None:
+            taxonomy_ce_head = nn.parallel.DistributedDataParallel(
+                taxonomy_ce_head,
+                device_ids=[config.local_rank],
+                output_device=config.local_rank,
+                find_unused_parameters=False,
+                static_graph=True,
+            )
+        # if hasattr(model, "static_graph"):
+        #     model.static_graph = True
+        # # Older PyTorch private API:
+        # if hasattr(model, "_set_static_graph"):
+        #     model._set_static_graph()
+
+    else:
+        if config.local_rank is not None:
+            torch.cuda.set_device(config.local_rank)
+        model = model.to(device)
+        if cls_taxonomy_classifier is not None:
+            cls_taxonomy_classifier = cls_taxonomy_classifier.to(device)
+        if taxonomy_ce_head is not None:
+            taxonomy_ce_head = taxonomy_ce_head.to(device)
+
+    # OPTIMIZATION ============================================================
+    # Optimizer ---------------------------------------------------------------
+    # Set up the optimizer
+
+    # Bigger batch sizes mean better estimates of the gradient, so we can use a
+    # bigger learning rate. See https://arxiv.org/abs/1706.02677
+    # Hence we scale the learning rate linearly with the total batch size.
+    config.lr = config.lr_relative * config.batch_size / BASE_BATCH_SIZE
+
+    # Fetch the constructor of the appropriate optimizer from torch.optim
+    # Set up parameter groups with potentially different learning rates
+    optimizer_params = []
+
+    # Check if we have a taxonomy classifier inside the model (Jumbo-based)
+    model_deref = model.module if hasattr(model, "module") else model
+    has_model_taxonomy_classifier = (
+        hasattr(model_deref, "taxonomy_classifier") and model_deref.taxonomy_classifier is not None
+    )
+
+    # Determine if we should use separate LR for taxonomy classifier
+    use_separate_taxonomy_lr = (
+        hasattr(config, "taxonomy_classifier_lr")
+        and config.taxonomy_classifier_lr is not None
+        and (has_model_taxonomy_classifier or cls_taxonomy_classifier is not None)
+    )
+
+    if use_separate_taxonomy_lr:
+        # Separate learning rates for main model and taxonomy classifier(s)
+        taxonomy_lr = config.taxonomy_classifier_lr
+
+        if has_model_taxonomy_classifier:
+            # Exclude taxonomy_classifier parameters from main model params
+            main_model_params = [p for n, p in model.named_parameters() if "taxonomy_classifier" not in n]
+            taxonomy_classifier_params = list(model_deref.taxonomy_classifier.parameters())
+
+            optimizer_params.append({"params": main_model_params, "lr": config.lr, "name": "main_model"})
+            optimizer_params.append(
+                {"params": taxonomy_classifier_params, "lr": taxonomy_lr, "name": "taxonomy_classifier"}
+            )
+            print(f"Using separate LR: main_model={config.lr:.2e}, taxonomy_classifier={taxonomy_lr:.2e}")
+        else:
+            # No taxonomy classifier in model, just use main model params
+            optimizer_params.append({"params": model.parameters(), "lr": config.lr, "name": "main_model"})
+
+        # Add CLS taxonomy classifier if it exists
+        if cls_taxonomy_classifier is not None:
+            optimizer_params.append(
+                {"params": cls_taxonomy_classifier.parameters(), "lr": taxonomy_lr, "name": "cls_taxonomy_classifier"}
+            )
+            print(f"CLS taxonomy classifier using LR: {taxonomy_lr:.2e}")
+
+        if taxonomy_ce_head is not None:
+            optimizer_params.append(
+                {"params": taxonomy_ce_head.parameters(), "lr": taxonomy_lr, "name": "taxonomy_ce_head"}
+            )
+            print(f"Taxonomy CE head using LR: {taxonomy_lr:.2e}")
+
+    else:
+        # Same learning rate for all parameters (original behavior)
+        extra = []
+        if cls_taxonomy_classifier is not None:
+            extra.append({"params": cls_taxonomy_classifier.parameters()})
+        if taxonomy_ce_head is not None:
+            extra.append({"params": taxonomy_ce_head.parameters()})
+        if extra:
+            optimizer_params = [{"params": model.parameters()}] + extra
+            print("Optimizer includes model + aux head parameters (same LR)")
+        else:
+            optimizer_params = [{"params": model.parameters()}]
+
+    # Create optimizer
+    optimizer = getattr(torch.optim, config.optimizer)(optimizer_params, lr=config.lr, weight_decay=config.weight_decay)
+
+    # Scheduler ---------------------------------------------------------------
+    # Set up the learning rate scheduler
+    if config.scheduler.lower() == "onecycle":
+        scheduler = torch.optim.lr_scheduler.OneCycleLR(
+            optimizer,
+            [p["lr"] for p in optimizer.param_groups],
+            epochs=config.epochs,
+            steps_per_epoch=len(dataloader_train),
+        )
+    else:
+        raise NotImplementedError(f"Scheduler {config.scheduler} not supported.")
+
+    # Loss function -----------------------------------------------------------
+    # Set up loss function
+    criterion = nn.CrossEntropyLoss()
+
+    distance_table = None
+    if config.pretrain_levenshtein and not config.levenshtein_vectorized:
+        distance_table = levenshtein.build_lookup_table(config.k_mer).to(device)
+
+    # Mixed Precision ---------------------------------------------------------
+    # Set up automatic mixed precision training
+    scaler = None
+    if config.mixed_precision and use_cuda:
+        from torch.cuda.amp import GradScaler
+
+        scaler = GradScaler()
+        print("Mixed precision training enabled with GradScaler.")
+    elif config.mixed_precision:
+        print("Warning: Mixed precision requested but CUDA is not available. Running in full precision.")
+
+    # Mask schedule -----------------------------------------------------------
+    if False:
+        # Linearly increase to 0.75% masking ratio (disabled)
+        # mask_ratios = [(0.75 - 0.25) / config.epochs * x + 0.1 for x in range(config.epochs + 1)]
+        raise ValueError("Mask schedule not implemented")
+    else:
+        # Constant masking rate
+        mask_ratios = [0.50 for x in range(config.epochs + 1)]
+
+    # LOGGING =================================================================
+    # Setup logging and saving
+
+    # If resuming from a checkpoint, restore run_id/run_name so all jobs log to the same wandb run
+    if checkpoint is not None and config.run_id is None:
+        ckpt_config = checkpoint.get("config")
+        if ckpt_config is not None and hasattr(ckpt_config, "run_id") and ckpt_config.run_id is not None:
+            config.run_id = ckpt_config.run_id
+            print(f"Restored run_id from checkpoint: {config.run_id}")
+        if config.run_name is None and ckpt_config is not None and hasattr(ckpt_config, "run_name") and ckpt_config.run_name is not None:
+            config.run_name = ckpt_config.run_name
+            print(f"Restored run_name from checkpoint: {config.run_name}")
+
+    # SLURM job array support: Use shared run_id for all tasks in the same array
+    # This makes all array tasks log to the same wandb run
+    if config.run_id is None:
+        slurm_array_job_id = os.environ.get("SLURM_ARRAY_JOB_ID")
+        slurm_array_task_id = os.environ.get("SLURM_ARRAY_TASK_ID")
+        if slurm_array_job_id is not None:
+            # Include task ID so each array task gets its own wandb run
+            if slurm_array_task_id is not None:
+                config.run_id = f"slurm_{slurm_array_job_id}_t{slurm_array_task_id}"
+            else:
+                config.run_id = f"slurm_{slurm_array_job_id}"
+            if config.global_rank == 0:
+                print(f"SLURM job array detected: Array Job ID={slurm_array_job_id}, Task ID={slurm_array_task_id}")
+                print(f"wandb run_id: {config.run_id}")
+
+    # If we're using wandb, initialize the run, or resume it if the job was preempted.
+    if config.log_wandb and config.global_rank == 0:
+        wandb_run_name = config.run_name
+        if wandb_run_name is not None and config.run_id is not None:
+            wandb_run_name = f"{wandb_run_name}__{config.run_id}"
+        EXCLUDED_WANDB_CONFIG_KEYS = [
+            "log_wandb",
+            "wandb_entity",
+            "wandb_project",
+            "global_rank",
+            "local_rank",
+            "run_name",
+            "run_id",
+            "model_output_dir",
+        ]
+
+        # Add SLURM array task info to tags if in job array
+        wandb_tags = ["pretrain"]
+        slurm_array_task_id = os.environ.get("SLURM_ARRAY_TASK_ID")
+        if slurm_array_task_id is not None:
+            wandb_tags.append(f"array_task_{slurm_array_task_id}")
+
+        wandb.init(
+            name=wandb_run_name,
+            id=config.run_id,
+            resume="allow",
+            group=config.run_id,
+            entity=config.wandb_entity,
+            project=config.wandb_project,
+            config=wandb.helper.parse_config(config, exclude=EXCLUDED_WANDB_CONFIG_KEYS),
+            job_type="pretrain",
+            tags=wandb_tags,
+        )
+        # If a run_id was not supplied at the command prompt, wandb will
+        # generate a name. Let's use that as the run_name.
+        if config.run_name is None:
+            config.run_name = wandb.run.name
+        if config.run_id is None:
+            config.run_id = wandb.run.id
+
+    # If we still don't have a run name, generate one from the current time.
+    if config.run_name is None:
+        config.run_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    if config.run_id is None:
+        config.run_id = utils.generate_id()
+
+    # If no checkpoint path was supplied, automatically determine the path to
+    # which we will save the model checkpoint.
+    if not config.checkpoint_path and config.models_dir:
+        config.model_output_dir = os.path.join(
+            config.models_dir,
+            config.dataset_name,
+            f"{config.run_name}__{config.run_id}",
+        )
+        config.checkpoint_path = os.path.join(config.model_output_dir, "checkpoint_pretraining.pt")
+        if config.log_wandb and config.global_rank == 0:
+            wandb.config.update({"checkpoint_path": config.checkpoint_path}, allow_val_change=True)
+
+    # For consistency with finetune, linearprobe and kNN jobs, record the
+    # pretrained_run_name and pretrained_run_id.
+    if config.log_wandb and config.global_rank == 0:
+        wandb.config.update({"pretrained_run_name": config.run_name, "pretrained_run_id": config.run_id})
+
+    if config.checkpoint_path is None:
+        print("Model will not be saved.")
+    else:
+        os.makedirs(config.model_output_dir, exist_ok=True)
+        print(f"Model will be saved to '{config.checkpoint_path}'")
+
+    # RESUME ==================================================================
+    # Now that everything is set up, we can load the state of the model,
+    # optimizer, and scheduler from a checkpoint, if supplied.
+
+    # Initialize step related variables as if we're starting from scratch.
+    # Their values will be overridden by the checkpoint if we're resuming.
+    total_step = 0
+    n_samples_seen = 0
+
+    best_stats = {"max_accuracy": 0, "best_epoch": 0}
+
+    if checkpoint is not None:
+        print(f"Loading state from checkpoint (epoch {checkpoint['epoch']})")
+        total_step = checkpoint["total_step"]
+        n_samples_seen = checkpoint["n_samples_seen"]
+
+        # Handle different checkpoint formats
+        model_state_dict = checkpoint["model"]
+
+        # Check if we need to handle distributed model wrapper
+        if config.distributed:
+            # If model is wrapped in DistributedDataParallel but checkpoint isn't
+            if not any(key.startswith("module.") for key in model_state_dict.keys()):
+                model_state_dict = {f"module.{k}": v for k, v in model_state_dict.items()}
+        else:
+            # If checkpoint has 'module.' prefix but model doesn't
+            if any(key.startswith("module.") for key in model_state_dict.keys()):
+                model_state_dict = {k.replace("module.", ""): v for k, v in model_state_dict.items()}
+
+        try:
+            model.load_state_dict(model_state_dict, strict=True)
+            print("Successfully loaded model state dict")
+        except Exception as e:
+            print(f"Error loading model state dict: {e}")
+            print("Available keys in checkpoint:", list(checkpoint["model"].keys())[:10])
+            print("Expected keys in model:", list(model.state_dict().keys())[:10])
+            raise
+
+        optimizer.load_state_dict(checkpoint["optimizer"])
+        scheduler.load_state_dict(checkpoint["scheduler"])
+        print("Successfully loaded optimizer and scheduler state dicts")
+
+        # Load scaler state if available and we're using mixed precision
+        if scaler is not None and "scaler" in checkpoint:
+            scaler.load_state_dict(checkpoint["scaler"])
+            print("Loaded scaler state from checkpoint.")
+        elif scaler is not None:
+            print("Scaler state not found in checkpoint, using fresh scaler.")
+
+        # Load CLS taxonomy classifier state if available
+        if cls_taxonomy_classifier is not None and "cls_taxonomy_classifier" in checkpoint:
+            cls_taxonomy_classifier.load_state_dict(checkpoint["cls_taxonomy_classifier"])
+            print("Loaded CLS taxonomy classifier state from checkpoint.")
+        elif cls_taxonomy_classifier is not None:
+            print("CLS taxonomy classifier state not found in checkpoint, using fresh classifier.")
+
+        if taxonomy_ce_head is not None and "taxonomy_ce_head" in checkpoint:
+            taxonomy_ce_head.load_state_dict(checkpoint["taxonomy_ce_head"])
+            print("Loaded taxonomy CE head state from checkpoint.")
+        elif taxonomy_ce_head is not None:
+            print("Taxonomy CE head state not found in checkpoint, using fresh head.")
+
+        # Verify configs match for MAELM
+        if config.arch == "maelm":
+            if "decoder_config" in checkpoint:
+                # Verify decoder config exists and is loadable
+                BertConfig(**checkpoint["decoder_config"])
+                print("✓ Decoder config loaded successfully")
+            else:
+                print("⚠️  Warning: No decoder config found in checkpoint")
+
+        if checkpoint["config"].epochs != config.epochs:
+            print(
+                f"Warning: checkpoint epochs ({checkpoint['config'].epochs}) "
+                f"!= current epochs ({config.epochs}). Rebuilding scheduler.",
+                flush=True,
+            )
+
+        best_stats["max_accuracy"] = checkpoint.get("max_accuracy", 0)
+        best_stats["best_epoch"] = checkpoint.get("best_epoch", 0)
+
+    # TRAIN ===================================================================
+    print()
+    print("Configuration:")
+    print()
+    print(config, flush=True)
+    print()
+
+    # Ensure modules are on the correct device
+    model = model.to(device)
+
+    timing_stats = {}
+    t_end_epoch = time.time()
+    for epoch in range(start_epoch, config.epochs + 1):
+        t_start_epoch = time.time()
+        if config.seed is not None:
+            # If the job is resumed from preemption, our RNG state is currently set the
+            # same as it was at the start of the first epoch, not where it was when we
+            # stopped training. This is not good as it means jobs which are resumed
+            # don't do the same thing as they would be if they'd run uninterrupted
+            # (making preempted jobs non-reproducible).
+            # To address this, we reset the seed at the start of every epoch. Since jobs
+            # can only save at the end of and resume at the start of an epoch, this
+            # makes the training process reproducible. But we shouldn't use the same
+            # RNG state for each epoch - instead we use the original seed to define the
+            # series of seeds that we will use at the start of each epoch.
+            epoch_seed = utils.determine_epoch_seed(config.seed, epoch=epoch)
+            # We want each GPU to have a different seed to the others to avoid
+            # correlated randomness between the workers on the same batch.
+            # We offset the seed for this epoch by the GPU rank, so every GPU will get a
+            # unique seed for the epoch. This means the job is only precisely
+            # reproducible if it is rerun with the same number of GPUs (and the same
+            # number of CPU workers for the dataloader).
+            utils.set_rng_seeds_fixed(epoch_seed + config.global_rank, all_gpu=False)
+            if isinstance(getattr(dataloader_train, "generator", None), torch.Generator):
+                # Finesse the dataloader's RNG state, if it is not using the global state.
+                dataloader_train.generator.manual_seed(epoch_seed + config.global_rank)
+            if isinstance(getattr(dataloader_train.sampler, "generator", None), torch.Generator):
+                # Finesse the sampler's RNG state, if it is not using the global RNG state.
+                dataloader_train.sampler.generator.manual_seed(config.seed + epoch + 10000 * config.global_rank)
+
+        if hasattr(dataloader_train.sampler, "set_epoch"):
+            # Handling for DistributedSampler.
+            # Set the epoch for the sampler so that it can shuffle the data
+            # differently for each epoch, but synchronized across all GPUs.
+            dataloader_train.sampler.set_epoch(epoch)
+
+        # Train ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        # Note the number of samples seen before this epoch started, so we can
+        # calculate the number of samples seen in this epoch.
+        n_samples_seen_before = n_samples_seen
+        # Run one epoch of training
+        train_stats, total_step, n_samples_seen = train_one_epoch(
+            config=config,
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            criterion=criterion,
+            dataloader=dataloader_train,
+            num_labels=n_output_tokens,
+            mask_ratio=mask_ratios[epoch - 1],
+            device=device,
+            epoch=epoch,
+            n_epoch=config.epochs,
+            total_step=total_step,
+            n_samples_seen=n_samples_seen,
+            distance_table=distance_table,
+            n_special_tokens=n_special_tokens,
+            n_all_tokens=n_all_tokens,
+            biological_masker=biological_masker,
+            temperature_schedule=temperature_schedule,
+            scaler=scaler,
+            bert_config=bert_config,
+            cls_taxonomy_classifier=cls_taxonomy_classifier,
+            taxonomy_ce_head=taxonomy_ce_head,
+            decoder_config=decoder_config,
+            best_stats=best_stats,
+            start_epoch=start_epoch,
+            start_step_in_epoch=start_step_in_epoch if epoch == start_epoch else 0,
+        )
+        t_end_train = time.time()
+
+        timing_stats["train"] = t_end_train - t_start_epoch
+        n_epoch_samples = n_samples_seen - n_samples_seen_before
+        train_stats["throughput"] = n_epoch_samples / timing_stats["train"]
+
+        print(f"Pretraining epoch {epoch}/{config.epochs} summary:")
+        print(f"  Steps ..............{len(dataloader_train):8d}")
+        print(f"  Samples ............{n_epoch_samples:8d}")
+        if timing_stats["train"] > 172800:
+            print(f"  Duration ...........{timing_stats['train']/86400:11.2f} days")
+        elif timing_stats["train"] > 5400:
+            print(f"  Duration ...........{timing_stats['train']/3600:11.2f} hours")
+        elif timing_stats["train"] > 120:
+            print(f"  Duration ...........{timing_stats['train']/60:11.2f} minutes")
+        else:
+            print(f"  Duration ...........{timing_stats['train']:11.2f} seconds")
+        print(f"  Throughput .........{train_stats['throughput']:11.2f} samples/sec")
+        print(f"  Loss ...............{train_stats['loss']:14.5f}")
+        print(f"  Accuracy ...........{train_stats['accuracy']:11.2f} %")
+
+        # Print taxonomy classification metrics if available
+        taxonomy_level_display = taxonomy_level.capitalize()
+        if f"{taxonomy_level}_loss" in train_stats:
+            print(f"  {taxonomy_level_display} Loss .........{train_stats[f'{taxonomy_level}_loss']:14.5f}")
+            print(f"  {taxonomy_level_display} Accuracy .....{train_stats[f'{taxonomy_level}_accuracy']:11.2f} %")
+            print(f"  {taxonomy_level_display} Pairs ........{train_stats[f'{taxonomy_level}_pairs']:8d}")
+
+        print(flush=True)
+
+        # Validate ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        # Evaluate on validation set
+        t_start_val = time.time()
+
+        eval_stats = evaluate(
+            config=config,
+            model=model,
+            criterion=criterion,
+            dataloader=dataloader_val,
+            num_labels=n_output_tokens,
+            mask_ratio=mask_ratios[epoch - 1],
+            device=device,
+            distance_table=distance_table,
+            n_special_tokens=n_special_tokens,
+            n_all_tokens=n_all_tokens,
+            biological_masker=biological_masker,
+        )
+        t_end_val = time.time()
+        timing_stats["val"] = t_end_val - t_start_val
+        eval_stats["throughput"] = len(dataloader_val.dataset) / timing_stats["val"]
+
+        # Check if this is the new best model
+        if eval_stats["accuracy"] >= best_stats["max_accuracy"]:
+            best_stats["max_accuracy"] = eval_stats["accuracy"]
+            best_stats["best_epoch"] = epoch
+
+        print(f"Evaluating epoch {epoch}/{config.epochs} summary:")
+        if timing_stats["val"] > 172800:
+            print(f"  Duration ...........{timing_stats['val']/86400:11.2f} days")
+        elif timing_stats["val"] > 5400:
+            print(f"  Duration ...........{timing_stats['val']/3600:11.2f} hours")
+        elif timing_stats["val"] > 120:
+            print(f"  Duration ...........{timing_stats['val']/60:11.2f} minutes")
+        else:
+            print(f"  Duration ...........{timing_stats['val']:11.2f} seconds")
+        print(f"  Throughput .........{eval_stats['throughput']:11.2f} samples/sec")
+        print(f"  Loss ...............{eval_stats['loss']:14.5f}")
+        print(f"  Accuracy ...........{eval_stats['accuracy']:11.2f} %")
+
+        # Print taxonomy classification metrics if available
+        if f"{taxonomy_level}_loss" in eval_stats:
+            print(f"  {taxonomy_level_display} Loss .........{eval_stats[f'{taxonomy_level}_loss']:14.5f}")
+            print(f"  {taxonomy_level_display} Accuracy .....{eval_stats[f'{taxonomy_level}_accuracy'] * 100:11.2f} %")
+            print(f"  {taxonomy_level_display} Pairs ........{eval_stats[f'{taxonomy_level}_pairs']:8d}")
+
+        # Save model ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        t_start_save = time.time()
+
+        # When --lambda-save is set, only save at epochs 25, 30, 35 (each to a separate file)
+        lambda_save_epochs = {25, 30, 35}
+        skip_save = getattr(config, "lambda_save", False) and epoch not in lambda_save_epochs
+
+        if config.model_output_dir and (not config.distributed or config.global_rank == 0) and not skip_save:
+            actual_model = model.module if hasattr(model, "module") else model
+
+            save_dict = {
+                "model": actual_model,
+                "optimizer": optimizer,
+                "scheduler": scheduler,
+            }
+            # Add CLS taxonomy classifier if it exists
+            if cls_taxonomy_classifier is not None:
+                actual_cls_classifier = (
+                    cls_taxonomy_classifier.module
+                    if hasattr(cls_taxonomy_classifier, "module")
+                    else cls_taxonomy_classifier
+                )
+                save_dict["cls_taxonomy_classifier"] = actual_cls_classifier
+            if taxonomy_ce_head is not None:
+                save_dict["taxonomy_ce_head"] = (
+                    taxonomy_ce_head.module if hasattr(taxonomy_ce_head, "module") else taxonomy_ce_head
+                )
+            # Add scaler state if using mixed precision
+            if scaler is not None:
+                save_dict["scaler"] = scaler.state_dict()
+
+            # When --lambda-save is set, each target epoch gets its own file
+            def _epoch_ckpt_path(base_path, ep):
+                if getattr(config, "lambda_save", False):
+                    root, ext = os.path.splitext(base_path)
+                    return f"{root}_epoch{ep}{ext}"
+                return base_path
+
+            if config.arch == "maelm":
+                # Get the actual model (handle distributed wrapper)
+
+                # Save encoder-only checkpoint (for inference/fine-tuning)
+                if hasattr(config, "checkpoint_path_encoder") and config.checkpoint_path_encoder:
+                    save_dict_encoder = {
+                        "model": actual_model.encoder,
+                        "optimizer": optimizer,
+                        "scheduler": scheduler,
+                    }
+                    # Preserve register tokens so load_pretrained_model can reconstruct RegisterBertModel
+                    if actual_model.n_registers > 0:
+                        save_dict_encoder["register_tokens"] = actual_model.register_tokens.detach()
+                    # Add scaler state if using mixed precision
+                    if scaler is not None:
+                        save_dict_encoder["scaler"] = scaler.state_dict()
+
+                    safe_save_model(
+                        save_dict_encoder,
+                        _epoch_ckpt_path(config.checkpoint_path_encoder, epoch),
+                        config=config,
+                        epoch=epoch,
+                        total_step=total_step,
+                        n_samples_seen=n_samples_seen,
+                        bert_config=bert_config.to_dict(),
+                        **best_stats,
+                    )
+
+                # Save full model checkpoint (for resuming training)
+                safe_save_model(
+                    save_dict,
+                    _epoch_ckpt_path(config.checkpoint_path, epoch),
+                    config=config,
+                    epoch=epoch,
+                    total_step=total_step,
+                    n_samples_seen=n_samples_seen,
+                    bert_config=bert_config.to_dict(),
+                    decoder_config=decoder_config.to_dict(),
+                    **best_stats,
+                )
+
+            elif config.arch == "transformer":
+                safe_save_model(
+                    save_dict,
+                    _epoch_ckpt_path(config.checkpoint_path, epoch),
+                    config=config,
+                    epoch=epoch,
+                    total_step=total_step,
+                    n_samples_seen=n_samples_seen,
+                    bert_config=bert_config.to_dict(),
+                    **best_stats,
+                )
+
+            if config.save_best_model and best_stats["best_epoch"] == epoch:
+                ckpt_path_best = os.path.join(config.model_output_dir, "best_pretraining.pt")
+                print(f"Copying model to {ckpt_path_best}")
+                shutil.copyfile(config.checkpoint_path, ckpt_path_best)
+
+            # Epoch-wise KNN evaluation (opt-in overfitting monitor) --------------
+            knn_eval_every_epoch = getattr(config, "knn_eval_every_epoch", 0)
+            if knn_eval_every_epoch and epoch % knn_eval_every_epoch == 0:
+                if config.arch == "maelm" and getattr(config, "checkpoint_path_encoder", None):
+                    knn_eval_ckpt = _epoch_ckpt_path(config.checkpoint_path_encoder, epoch)
+                else:
+                    knn_eval_ckpt = _epoch_ckpt_path(config.checkpoint_path, epoch)
+                run_epoch_knn_eval(config, epoch, knn_eval_ckpt)
+
+        t_end_save = time.time()
+        timing_stats["saving"] = t_end_save - t_start_save
+
+        # Log to wandb ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        # Overall time won't include uploading to wandb, but there's nothing
+        # we can do about that.
+        timing_stats["overall"] = time.time() - t_end_epoch
+        t_end_epoch = time.time()
+
+        # Send training and eval stats for this epoch to wandb
+        if config.log_wandb and config.global_rank == 0:
+            wandb.log(
+                {
+                    "Pretraining/stepwise/epoch": epoch,
+                    "Pretraining/stepwise/epoch_progress": epoch,
+                    "Pretraining/stepwise/n_samples_seen": n_samples_seen,
+                    "Pretraining/epochwise/epoch": epoch,
+                    **{f"Pretraining/epochwise/Train/{k}": v for k, v in train_stats.items()},
+                    **{f"Pretraining/epochwise/{eval_set}/{k}": v for k, v in eval_stats.items()},
+                    **{f"Pretraining/epochwise/duration/{k}": v for k, v in timing_stats.items()},
+                },
+                step=total_step,
+            )
+            # Record the wandb time as contributing to the next epoch
+            timing_stats = {"wandb": time.time() - t_end_epoch}
+        else:
+            # Reset timing stats
+            timing_stats = {}
+        # Print with flush=True forces the output buffer to be printed immediately
+        print(flush=True)
+
+    if start_epoch > config.epochs:
+        print("Pretraining already completed!")
+    else:
+        print(f"Pretraining complete! (Trained epochs {start_epoch} to {config.epochs})")
+    print(
+        f"Best {eval_set} accuracy was {best_stats['max_accuracy']:.2f}%,"
+        f" seen at the end of epoch {best_stats['best_epoch']}",
+        flush=True,
+    )
+
+
+def train_one_epoch(
+    config,
+    model,
+    optimizer,
+    scheduler,
+    criterion,
+    dataloader,
+    num_labels,
+    mask_ratio=0.5,
+    device="cuda",
+    epoch=1,
+    n_epoch=None,
+    total_step=0,
+    n_samples_seen=0,
+    distance_table=None,
+    n_special_tokens=2,
+    n_all_tokens=-1,
+    biological_masker=None,
+    temperature_schedule=None,
+    scaler=None,
+    save_every_steps=5000,
+    bert_config=None,
+    decoder_config=None,
+    best_stats=None,
+    start_epoch=0,
+    start_step_in_epoch=0,
+    cls_taxonomy_classifier=None,
+    taxonomy_ce_head=None,
+):
+    r"""
+    Train the encoder and classifier for one epoch.
+
+    Parameters
+    ----------
+    config : argparse.Namespace or OmegaConf
+        The global config object.
+    model : torch.nn.Module
+        The encoder/decoder network.
+    optimizer : torch.optim.Optimizer
+        The optimizer.
+    scheduler : torch.optim.lr_scheduler._LRScheduler
+        The learning rate scheduler.
+    criterion : torch.nn.Module
+        The loss function.
+    dataloader : torch.utils.data.DataLoader
+        A dataloader for the training set.
+    num_labels : int,
+        The number of labels (number of different tokens)
+    mask_ratio : float, default=0.5
+        The ratio of tokens to mask out.
+    device : str or torch.device, default="cuda"
+        The device to use.
+    epoch : int, default=1
+        The current epoch number (indexed from 1).
+    n_epoch : int, optional
+        The total number of epochs scheduled to train for.
+    total_step : int, default=0
+        The total number of steps taken so far.
+    n_samples_seen : int, default=0
+        The total number of samples seen so far.
+    distance_table : torch.Tensor, optional
+        A pre-computed table of Levenshtein distances between all possible k-mers.
+    n_special_tokens: int, default=2
+        Number of special (non-kmer) tokens used by the tokenizer.
+
+    Returns
+    -------
+    results: dict
+        A dictionary containing the training performance for this epoch.
+    total_step : int
+        The total number of steps taken after this epoch.
+    n_samples_seen : int
+        The total number of samples seen after this epoch.
+    """
+    # Put the model in train mode
+    model.train()
+
+    if config.log_wandb:
+        # Lazy import of wandb, since logging to wandb is optional
+        import wandb
+
+    loss_epoch = 0
+    masked_loss_epoch = 0
+    non_masked_loss_epoch = 0
+    acc_epoch = 0
+    acc_kpt_epoch = 0
+    acc_all_epoch = 0
+    genus_loss_epoch = 0
+    genus_acc_epoch = 0
+    genus_pairs_epoch = 0
+    n_batches_processed = 0
+
+    base_pairs = "ACGT"
+    if config.predict_n_nucleotide:
+        base_pairs += "N"
+
+    n_output_tokens = num_labels  # len(base_pairs) ** config.k_mer
+
+    if config.print_interval is None:
+        # Default to printing to console every time we log to wandb
+        config.print_interval = config.log_interval
+
+    t_end_batch = time.time()
+    t_start_wandb = t_end_wandb = None
+    enable_genus_classification = (
+        config.enable_genus_classification if hasattr(config, "enable_genus_classification") else False
+    )
+    enable_cls_taxonomy = getattr(config, "enable_cls_taxonomy", False)
+    use_taxonomy_labels = enable_genus_classification or enable_cls_taxonomy or (
+        getattr(config, "k_classes", None) is not None and getattr(config, "m_per_class", None) is not None
+    )
+    taxonomy_level = (
+        config.taxonomy_level_for_classification if hasattr(config, "taxonomy_level_for_classification") else "genus"
+    )
+    # Capitalize for display
+    taxonomy_level_display = taxonomy_level.capitalize()
+
+    for batch_idx, batch_data in enumerate(dataloader):
+        # Unpack batch data (may include genus/BIN/family labels if enabled for BIOSCAN-5M)
+        bin_labels = None
+        family_labels = None
+        if use_taxonomy_labels:
+            # Check if BIN and family labels are being returned (BIOSCAN-5M only)
+            if config.dataset_name == "BIOSCAN-5M" and len(batch_data) == 6:
+                sequences, y_true, att_mask, genus_labels, bin_labels, family_labels = batch_data
+            elif len(batch_data) == 4:
+                sequences, y_true, att_mask, genus_labels = batch_data
+            else:
+                raise ValueError(f"Unexpected batch data length: {len(batch_data)}")
+        else:
+            sequences, y_true, att_mask = batch_data
+            genus_labels = None
+
+        # Skip batches we already processed
+        if epoch == start_epoch and batch_idx < start_step_in_epoch:
+            continue
+
+        n_batches_processed += 1
+        t_start_batch = time.time()
+        batch_size_this_gpu = sequences.shape[0]
+
+        # Move training inputs and targets to the GPU
+        sequences = sequences.to(device)
+        att_mask = att_mask.to(device)
+        if genus_labels is not None:
+            genus_labels = genus_labels.to(device)
+        if bin_labels is not None:
+            bin_labels = bin_labels.to(device)
+        if family_labels is not None:
+            family_labels = family_labels.to(device)
+
+        # Build the masking on the fly ----------------------------------------
+        # t_start_masking = time.time()
+
+        # Create a mask for allowed tokens i.e. that excludes all special tokens [<MASK>, <UNK>, <CLS>]
+        special_tokens_mask = sequences > (n_special_tokens - 1)
+
+        if config.tokenize_n_nucleotide:
+            # Either exlude the last token [N..N] if config.predict_n_nucleotide == True
+            # Or exclude all tokens containing Ns i.e "bad kamers" whose index in the vocab
+            # is greater than 4**k
+            special_tokens_mask &= sequences < (n_special_tokens + n_output_tokens - 1)
+
+        # If using CLS token, exclude position 0 from masking
+        if config.use_cls_token:
+            special_tokens_mask[:, 0] = False
+
+        special_tokens_mask = special_tokens_mask.to(device)
+        masked_input = sequences.clone()
+
+        random_mask = torch.rand(sequences.shape, device=device)
+
+        mask_token_ratio = config.mask_token_ratio
+
+        # out of the mask tokens (50%), mask_token_ratio are replaced with random tokens
+        random_token_ratio = config.random_token_ratio + config.mask_token_ratio
+
+        masked_unseen_tokens = (random_mask < mask_token_ratio * mask_ratio) & special_tokens_mask
+        masked_random_tokens = (
+            (random_mask >= mask_token_ratio * mask_ratio)
+            & (random_mask < random_token_ratio * mask_ratio)
+            & special_tokens_mask
+        )
+        masked_original_tokens = (
+            (random_mask >= random_token_ratio * mask_ratio) & (random_mask < mask_ratio) & special_tokens_mask
+        )
+
+        input_maskout = masked_unseen_tokens | masked_random_tokens | masked_original_tokens
+        # Apply the masks
+        masked_input[masked_unseen_tokens] = 0  # Masking the token
+
+        # Replace with random token where mask_random_token is True
+        # Generate random tokens
+        if biological_masker is not None:
+            current_temperature = temperature_schedule[epoch - 1]
+            tokens_to_replace = sequences[masked_random_tokens]
+            # Get biological replacements (guaranteed different from originals)
+            biological_replacements = get_temperature_biological_replacements(
+                tokens_to_replace, biological_masker, current_temperature
+            )
+            masked_input[masked_random_tokens] = biological_replacements
+
+            # SIMPLE DEBUG - only first batch of first epoch
+            if batch_idx == 0 and epoch == 1:
+                print("\n🔬 Biological masking check:")
+                for i in range(min(5, len(tokens_to_replace))):
+                    orig_id = tokens_to_replace[i].item()
+                    repl_id = biological_replacements[i].item()
+                    orig_kmer = dataloader.dataset.vocab.lookup_token(orig_id)
+                    repl_kmer = dataloader.dataset.vocab.lookup_token(repl_id)
+                    same = " SAME!" if orig_id == repl_id else "OK"
+                    print(f"  {orig_kmer} → {repl_kmer} {same}")
+
+        else:
+            min_token_id = n_special_tokens  # 0 is for masking, 1 is for <UNK>
+            max_token_id = n_all_tokens  # number of all tokens (including special)
+            random_tokens = torch.randint_like(masked_input, low=min_token_id, high=max_token_id)
+
+            # Ensure random tokens are not the same as the original tokens
+            while True:
+                same_as_original = (random_tokens == masked_input) & masked_random_tokens
+                if not same_as_original.any():
+                    break
+                random_tokens[same_as_original] = torch.randint(
+                    size=(same_as_original.sum().item(),), low=min_token_id, high=max_token_id, device=device
+                )
+
+            masked_input[masked_random_tokens] = random_tokens[masked_random_tokens]
+
+        # Forward pass --------------------------------------------------------
+        t_start_forward = time.time()
+        # N.B. To accurately time steps on GPU we need to use torch.cuda.Event
+        ct_forward = torch.cuda.Event(enable_timing=True)
+        ct_forward.record()
+        if scaler is not None:
+            with autocast():
+                # Perform the forward pass through the model
+                if config.arch == "maelm":
+                    # print("MAELM is implemented")
+                    out = model(masked_input, att_mask, masked_unseen_tokens, config.maelm_version)
+                elif config.arch == "transformer":
+                    need_hidden = enable_cls_taxonomy or (
+                        getattr(config, "aux_loss_type", None) is not None
+                        and getattr(config, "use_cls_token", False)
+                    )
+                    out = model(masked_input, attention_mask=att_mask, output_hidden_states=need_hidden)
+
+                logits = out.logits.view(-1, n_output_tokens)
+
+                # Measure loss
+                if config.pretrain_levenshtein:
+                    soft_targets = levenshtein.softmax_batch_levenshtein_matrices_vectorized(
+                        sequences, config.k_mer, dataloader.dataset.vocab
+                    ).to(device)
+                    with torch.no_grad():
+                        targets = torch.argmax(soft_targets, dim=-1)
+                    soft_targets = soft_targets.view(-1, n_output_tokens)
+                    if config.separate_loss:
+
+                        masked_indices = input_maskout.view(-1)
+                        non_masked_indices = ~masked_indices & special_tokens_mask.view(-1)  # ignore special tokens
+
+                        masked_loss = criterion(logits[masked_indices], soft_targets[masked_indices])
+                        non_masked_loss = criterion(logits[non_masked_indices], soft_targets[non_masked_indices])
+
+                        masked_loss_weight = config.masked_loss_weight
+                        non_masked_loss_weight = 1 - masked_loss_weight
+                        loss = masked_loss_weight * masked_loss + non_masked_loss_weight * non_masked_loss
+                    else:
+                        loss = criterion(
+                            logits[special_tokens_mask.view(-1)], soft_targets[special_tokens_mask.view(-1)]
+                        )
+
+                else:
+                    # Need to remove the special token from the index in sequences
+                    targets = sequences - n_special_tokens * (sequences > (n_special_tokens - 1))
+
+                    if config.separate_loss:
+                        logits = out.logits.view(-1, n_output_tokens)
+                        targets_flat = targets.view(-1)
+
+                        masked_indices = input_maskout.view(-1)
+                        non_masked_indices = ~masked_indices & special_tokens_mask.view(-1)  # ignore special tokens
+
+                        masked_loss = criterion(logits[masked_indices], targets_flat[masked_indices])
+                        non_masked_loss = criterion(logits[non_masked_indices], targets_flat[non_masked_indices])
+
+                        masked_loss_weight = config.masked_loss_weight
+                        non_masked_loss_weight = 1 - masked_loss_weight
+                        loss = masked_loss_weight * masked_loss + non_masked_loss_weight * non_masked_loss
+
+                    # Need to remove the <UNK> and <CLS> tokens from the index in sequences
+                    else:
+                        loss = criterion(
+                            out.logits.view(-1, n_output_tokens)[special_tokens_mask.view(-1)],
+                            targets.view(-1)[special_tokens_mask.view(-1)],
+                        )
+        else:
+            # Standard precision forward pass
+            if config.arch == "maelm":
+                out = model(masked_input, att_mask, masked_unseen_tokens, config.maelm_version)
+            elif config.arch == "transformer":
+                need_hidden = enable_cls_taxonomy or (
+                    getattr(config, "aux_loss_type", None) is not None
+                    and getattr(config, "use_cls_token", False)
+                )
+                out = model(masked_input, attention_mask=att_mask, output_hidden_states=need_hidden)
+
+            logits = out.logits.view(-1, n_output_tokens)
+
+            # Same loss computation as above
+            if config.pretrain_levenshtein:
+                soft_targets = levenshtein.softmax_batch_levenshtein_matrices_vectorized(
+                    sequences, config.k_mer, dataloader.dataset.vocab
+                ).to(device)
+                with torch.no_grad():
+                    targets = torch.argmax(soft_targets, dim=-1)
+                soft_targets = soft_targets.view(-1, n_output_tokens)
+                if config.separate_loss:
+                    masked_indices = input_maskout.view(-1)
+                    non_masked_indices = ~masked_indices & special_tokens_mask.view(-1)
+                    masked_loss = criterion(logits[masked_indices], soft_targets[masked_indices])
+                    non_masked_loss = criterion(logits[non_masked_indices], soft_targets[non_masked_indices])
+                    masked_loss_weight = config.masked_loss_weight
+                    non_masked_loss_weight = 1 - masked_loss_weight
+                    loss = masked_loss_weight * masked_loss + non_masked_loss_weight * non_masked_loss
+                else:
+                    loss = criterion(logits[special_tokens_mask.view(-1)], soft_targets[special_tokens_mask.view(-1)])
+            else:
+                targets = sequences - n_special_tokens * (sequences > (n_special_tokens - 1))
+                if config.separate_loss:
+                    targets_flat = targets.view(-1)
+                    masked_indices = input_maskout.view(-1)
+                    non_masked_indices = ~masked_indices & special_tokens_mask.view(-1)
+                    masked_loss = criterion(logits[masked_indices], targets_flat[masked_indices])
+                    non_masked_loss = criterion(logits[non_masked_indices], targets_flat[non_masked_indices])
+                    masked_loss_weight = config.masked_loss_weight
+                    non_masked_loss_weight = 1 - masked_loss_weight
+                    loss = masked_loss_weight * masked_loss + non_masked_loss_weight * non_masked_loss
+                else:
+                    loss = criterion(
+                        out.logits.view(-1, n_output_tokens)[special_tokens_mask.view(-1)],
+                        targets.view(-1)[special_tokens_mask.view(-1)],
+                    )
+
+        # Taxonomy classification loss (if enabled) ------------------------------
+        taxonomy_loss = None
+        taxonomy_acc = None
+        num_taxonomy_pairs = 0
+        num_same_pairs = 0
+        num_diff_pairs = 0
+
+        if enable_genus_classification and genus_labels is not None:
+            # Check if model has taxonomy classifier and jumbo tokens are available
+            model_deref = model.module if config.distributed else model
+            if hasattr(model_deref, "taxonomy_classifier") and model_deref.taxonomy_classifier is not None:
+                # Get jumbo tokens from output
+                if hasattr(out, "jumbo_tokens") and out.jumbo_tokens is not None:
+                    # Enable debug printing for first 3 batches of first epoch
+                    debug_print = epoch == 1 and batch_idx < 3
+                    max_pairs = getattr(config, "taxonomy_max_pairs", 32)
+                    with autocast() if scaler is not None else contextlib.nullcontext():
+                        taxonomy_loss, taxonomy_acc, num_taxonomy_pairs, num_same_pairs, num_diff_pairs = (
+                            compute_taxonomy_classification_loss(
+                                out.jumbo_tokens,
+                                genus_labels,
+                                model_deref.taxonomy_classifier,
+                                same_ratio=0.5,
+                                max_pairs=max_pairs,
+                                debug_print=debug_print,
+                                bin_labels=bin_labels,
+                                family_labels=family_labels,
+                                use_pos_weight=getattr(config, "taxonomy_use_pos_weight", False),
+                            )
+                        )
+
+                    # Add taxonomy loss to total loss if valid
+                    if taxonomy_loss is not None:
+                        taxonomy_loss_weight = config.genus_loss_weight if hasattr(config, "genus_loss_weight") else 0.1
+                        loss = loss + taxonomy_loss_weight * taxonomy_loss
+
+        # CLS token taxonomy classification loss (if enabled) --------------------
+        cls_taxonomy_loss = None
+        cls_taxonomy_acc = None
+        num_cls_taxonomy_pairs = 0
+        num_cls_same_pairs = 0
+        num_cls_diff_pairs = 0
+
+        if (
+            config.enable_cls_taxonomy
+            and config.use_cls_token
+            and cls_taxonomy_classifier is not None
+            and genus_labels is not None
+        ):
+            # Get the CLS representation:
+            # - MAELM: use out.cls_token (encoder output at position 0, before decoder/projection)
+            # - Transformer: use out.hidden_states (last layer, CLS at position 0)
+            if config.arch == "maelm":
+                cls_hidden = getattr(out, "cls_token", None)  # (B, 1, D_encoder)
+            else:
+                hs = getattr(out, "hidden_states", None)
+                if isinstance(hs, tuple):
+                    hs = hs[-1]  # last layer → (B, seq_len, D)
+                cls_hidden = hs  # CLS at position 0
+
+            if cls_hidden is not None:
+                # Enable debug printing for first 3 batches of first epoch
+                debug_print = epoch == 1 and batch_idx < 3
+
+                # Dereference classifier if wrapped in DDP
+                cls_classifier_deref = cls_taxonomy_classifier.module if config.distributed else cls_taxonomy_classifier
+
+                max_pairs = getattr(config, "taxonomy_max_pairs", 32)
+                with autocast() if scaler is not None else contextlib.nullcontext():
+                    cls_taxonomy_loss, cls_taxonomy_acc, num_cls_taxonomy_pairs, num_cls_same_pairs, num_cls_diff_pairs = (
+                        compute_cls_taxonomy_classification_loss(
+                            cls_hidden,
+                            genus_labels,
+                            cls_classifier_deref,
+                            same_ratio=0.5,
+                            max_pairs=max_pairs,
+                            debug_print=debug_print,
+                            bin_labels=bin_labels,
+                            family_labels=family_labels,
+                            use_pos_weight=getattr(config, "taxonomy_use_pos_weight", False),
+                        )
+                    )
+
+                # Add CLS taxonomy loss to total loss if valid
+                if cls_taxonomy_loss is not None:
+                    cls_taxonomy_loss_weight = (
+                        config.cls_taxonomy_loss_weight if hasattr(config, "cls_taxonomy_loss_weight") else 0.1
+                    )
+                    loss = loss + cls_taxonomy_loss_weight * cls_taxonomy_loss
+
+        # Auxiliary loss (triplet / supcon / ce) ---------------------------------
+        aux_loss = None
+        aux_loss_type = getattr(config, "aux_loss_type", None)
+        if aux_loss_type is not None and genus_labels is not None:
+            # Extract (B, D) embedding from out — mirrors representation_type in representations_from_df
+            aux_emb = None
+            if getattr(config, "jumbo", False):
+                if hasattr(out, "jumbo_tokens") and out.jumbo_tokens is not None:
+                    aux_emb = out.jumbo_tokens.mean(dim=1)                      # jumbo_avg
+            elif config.arch == "maelm" and getattr(config, "use_cls_token", False):
+                cls = getattr(out, "cls_token", None)                           # (B, 1, D)
+                if cls is not None:
+                    n_reg = getattr(config, "n_registers", 0)
+                    if n_reg > 0 and getattr(out, "register_tokens", None) is not None:
+                        combined = torch.cat([cls, out.register_tokens], dim=1) # (B, 1+R, D)
+                        aux_emb = combined.mean(dim=1)                          # tokens_with_registers
+                    else:
+                        aux_emb = cls.squeeze(1)                                # cls
+            elif config.arch == "transformer" and getattr(config, "use_cls_token", False):
+                hs = getattr(out, "hidden_states", None)
+                if isinstance(hs, tuple):
+                    hs = hs[-1]
+                if hs is not None:
+                    aux_emb = hs[:, 0, :]                                       # cls
+
+            aux_metrics = None
+            if aux_emb is not None:
+                with autocast() if scaler is not None else contextlib.nullcontext():
+                    if aux_loss_type == "triplet":
+                        aux_loss, aux_metrics = triplet_loss_batch_hard(
+                            aux_emb, genus_labels,
+                            margin=getattr(config, "triplet_margin", 0.3),
+                            mining=getattr(config, "triplet_mining", "batch_hard"),
+                        )
+                    elif aux_loss_type == "supcon":
+                        aux_loss, aux_metrics = supcon_loss(
+                            aux_emb, genus_labels,
+                            temperature=getattr(config, "supcon_temperature", 0.07),
+                        )
+                    elif aux_loss_type == "ce":
+                        ce_head = taxonomy_ce_head.module if config.distributed else taxonomy_ce_head
+                        aux_loss, aux_metrics = crossentropy_taxonomy_loss(aux_emb, genus_labels, ce_head)
+
+                if aux_loss is not None:
+                    aux_weight = getattr(config, "aux_loss_weight", 0.1)
+                    warmup_epochs = getattr(config, "aux_loss_warmup_epochs", 0)
+                    if warmup_epochs > 0:
+                        aux_weight = aux_weight * min(1.0, (epoch - 1) / warmup_epochs)
+                    loss = loss + aux_weight * aux_loss
+
+        # Keep aliases for backward compatibility in logging
+        genus_loss = taxonomy_loss
+        genus_acc = taxonomy_acc
+        num_genus_pairs = num_taxonomy_pairs
+
+        # Backward pass -------------------------------------------------------
+        # Reset gradients
+        optimizer.zero_grad()
+        # Now the backward pass
+        ct_backward = torch.cuda.Event(enable_timing=True)
+        ct_backward.record()
+        if torch.isnan(loss) or torch.isinf(loss):
+            print(f"Skipping batch due to invalid loss: {loss}")
+            optimizer.zero_grad()
+            continue
+        if scaler is not None:
+            # Mixed precision backward pass
+            scaler.scale(loss).backward()
+        else:
+            loss.backward()
+
+        # Update --------------------------------------------------------------
+        # Use our optimizer to update the model parameters
+        ct_optimizer = torch.cuda.Event(enable_timing=True)
+        ct_optimizer.record()
+        if scaler is not None:
+            # Mixed precision optimizer step
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.max_norm)
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            # Standard optimizer step
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.max_norm)
+            optimizer.step()
+
+        # Reset gradients
+        optimizer.zero_grad()
+
+        # Step the scheduler each batch
+        scheduler.step()
+
+        # Increment training progress counters
+        total_step += 1
+        batch_size_all = batch_size_this_gpu * config.world_size
+        n_samples_seen += batch_size_all
+
+        # Logging -------------------------------------------------------------
+        # Log details about training progress
+        t_start_logging = time.time()
+        ct_logging = torch.cuda.Event(enable_timing=True)
+        ct_logging.record()
+
+        # Update the total loss for the epoch
+        loss_batch = loss.clone()
+        if config.distributed:
+            # Fetch results from other GPUs
+            dist.reduce(loss_batch, 0, op=dist.ReduceOp.AVG)
+        loss_batch = loss_batch.item()
+        loss_epoch += loss_batch
+
+        if config.separate_loss:
+            masked_loss_batch = masked_loss.clone()
+            non_masked_loss_batch = non_masked_loss.clone()
+
+            if config.distributed:
+                # Fetch results from other GPUs
+                dist.reduce(masked_loss_batch, 0, op=dist.ReduceOp.AVG)
+                dist.reduce(non_masked_loss_batch, 0, op=dist.ReduceOp.AVG)
+
+            masked_loss_batch = masked_loss_batch.item()
+            non_masked_loss_batch = non_masked_loss_batch.item()
+
+            masked_loss_epoch += masked_loss_batch
+            non_masked_loss_epoch += non_masked_loss_batch
+
+        # Handle genus classification metrics
+        if genus_loss is not None and genus_acc is not None:
+            genus_loss_batch = genus_loss.clone()
+            genus_acc_batch = genus_acc.clone()
+
+            if config.distributed:
+                # Fetch results from other GPUs
+                dist.reduce(genus_loss_batch, 0, op=dist.ReduceOp.AVG)
+                dist.reduce(genus_acc_batch, 0, op=dist.ReduceOp.AVG)
+
+            genus_loss_batch_val = genus_loss_batch.item()
+            genus_acc_batch_val = 100.0 * genus_acc_batch.item()
+
+            genus_loss_epoch += genus_loss_batch_val
+            genus_acc_epoch += genus_acc_batch_val
+            genus_pairs_epoch += num_genus_pairs
+        else:
+            genus_loss_batch_val = None
+            genus_acc_batch_val = None
+
+        with torch.no_grad():
+            x_pred = torch.argmax(out.logits, dim=-1)
+
+        if epoch <= 1 and batch_idx == 0:
+            # Debugging
+            print("sequences.shape     =", sequences.shape)
+            print("y_true.shape        =", y_true.shape)
+            print("input_maskout.shape =", input_maskout.shape)
+            print("masked_input.shape  =", masked_input.shape)
+            print("targets.shape       =", targets.shape)
+            print("x_pred.shape        =", x_pred.shape)
+            print("logits.shape        =", out.logits.shape)
+            print("loss.shape          =", loss.shape)
+            # Debugging intensifies
+            print("sequences[0]     =", sequences[0])
+            print("attention_mask[0]=", att_mask[0])
+            print("input_maskout[0] =", input_maskout[0])
+            print("y_true[0]        =", y_true[0])
+            print("masked_input[0]  =", masked_input[0])
+            print("targets[0]       =", targets[0])
+            print("x_pred[0]        =", x_pred[0])
+            print("logits[0]        =", out.logits[0])
+            print("loss =", loss.detach().item())
+
+        # Compute accuracy
+        with torch.no_grad():
+            is_correct = x_pred == targets
+            # Overall accuracy, including tokens which weren't masked out
+            acc_all = is_correct[special_tokens_mask].sum() / is_correct[special_tokens_mask].numel()
+            # Accuracy only on the masked tokens
+            acc_msk = (
+                is_correct[input_maskout & special_tokens_mask].sum() / (input_maskout & special_tokens_mask).sum()
+            )
+            # Accuracy only on the non-masked tokens
+            acc_kpt = (
+                is_correct[~input_maskout & special_tokens_mask].sum() / (~input_maskout & special_tokens_mask).sum()
+            )
+            if config.distributed:
+                # Fetch results from other GPUs
+                dist.reduce(acc_all, 0, op=dist.ReduceOp.AVG)
+                dist.reduce(acc_msk, 0, op=dist.ReduceOp.AVG)
+                dist.reduce(acc_kpt, 0, op=dist.ReduceOp.AVG)
+            acc_all = 100.0 * acc_all.item()
+            acc_msk = 100.0 * acc_msk.item()
+            acc_kpt = 100.0 * acc_kpt.item()
+            acc_epoch += acc_msk
+            acc_kpt_epoch += acc_kpt
+            acc_all_epoch += acc_all
+
+        # Log to console
+        if batch_idx <= 2 or batch_idx % config.print_interval == 0 or batch_idx >= len(dataloader) - 1:
+            if config.separate_loss:
+                log_msg = (
+                    f"Train Epoch:{epoch:3d}"
+                    + (f"/{n_epoch}" if n_epoch is not None else "")
+                    + " Step:{:6d}/{}".format(batch_idx + 1, len(dataloader))
+                    + " LossMask:{:8.5f}".format(masked_loss_batch)
+                    + " LossSeen:{:8.5f}".format(non_masked_loss_batch)
+                    + " Loss:{:8.5f}".format(loss_batch)
+                    + " AccMask:{:6.2f}%".format(acc_msk)
+                    + " AccSeen:{:6.2f}%".format(acc_kpt)
+                )
+                if genus_loss_batch_val is not None:
+                    log_msg += (
+                        f" {taxonomy_level_display}Loss:{{:7.4f}} "
+                        f"{taxonomy_level_display}Acc:{{:5.1f}}% Pairs:{{}}({{}}/{{}}same/diff)"
+                    ).format(genus_loss_batch_val, genus_acc_batch_val, num_genus_pairs, num_same_pairs, num_diff_pairs)
+                if cls_taxonomy_loss is not None:
+                    log_msg += " CLSLoss:{:7.4f} CLSAcc:{:5.1f}% CLSPairs:{}({}/{} same/diff)".format(
+                        cls_taxonomy_loss.item(), cls_taxonomy_acc.item() * 100.0,
+                        num_cls_taxonomy_pairs, num_cls_same_pairs, num_cls_diff_pairs,
+                    )
+                if aux_loss is not None:
+                    _aux_w = getattr(config, "aux_loss_weight", 0.1)
+                    _warmup = getattr(config, "aux_loss_warmup_epochs", 0)
+                    _eff_w = _aux_w * min(1.0, (epoch - 1) / _warmup) if _warmup > 0 else _aux_w
+                    log_msg += " AuxLoss({}):{:7.4f}(w={:.3f})".format(
+                        getattr(config, "aux_loss_type", "?"), aux_loss.item(), _eff_w
+                    )
+                    if aux_metrics is not None:
+                        if "frac_active" in aux_metrics:
+                            log_msg += " FracActive:{:.2f}".format(aux_metrics["frac_active"])
+                        if "mean_pos_dist" in aux_metrics:
+                            log_msg += " PosDist:{:.3f} NegDist:{:.3f}".format(
+                                aux_metrics["mean_pos_dist"], aux_metrics["mean_neg_dist"]
+                            )
+                        if "mean_n_positives" in aux_metrics:
+                            log_msg += " AvgPos:{:.1f}".format(aux_metrics["mean_n_positives"])
+                        if "accuracy" in aux_metrics:
+                            log_msg += " CEAcc:{:.2f}%".format(aux_metrics["accuracy"] * 100)
+                log_msg += " LR: {}".format(scheduler.get_last_lr())
+                print(log_msg, flush=True)
+            else:
+                log_msg = (
+                    f"Train Epoch:{epoch:3d}"
+                    + (f"/{n_epoch}" if n_epoch is not None else "")
+                    + " Step:{:6d}/{}".format(batch_idx + 1, len(dataloader))
+                    + " Loss:{:8.5f}".format(loss_batch)
+                    + " AccMask:{:6.2f}%".format(acc_msk)
+                    + " AccSeen:{:6.2f}%".format(acc_kpt)
+                )
+                if genus_loss_batch_val is not None:
+                    log_msg += (
+                        f" {taxonomy_level_display}Loss:{{:7.4f}} "
+                        f"{taxonomy_level_display}Acc:{{:5.1f}}% Pairs:{{}}({{}}/{{}}same/diff)"
+                    ).format(genus_loss_batch_val, genus_acc_batch_val, num_genus_pairs, num_same_pairs, num_diff_pairs)
+                if cls_taxonomy_loss is not None:
+                    log_msg += " CLSLoss:{:7.4f} CLSAcc:{:5.1f}% CLSPairs:{}({}/{} same/diff)".format(
+                        cls_taxonomy_loss.item(), cls_taxonomy_acc.item() * 100.0,
+                        num_cls_taxonomy_pairs, num_cls_same_pairs, num_cls_diff_pairs,
+                    )
+                if aux_loss is not None:
+                    _aux_w = getattr(config, "aux_loss_weight", 0.1)
+                    _warmup = getattr(config, "aux_loss_warmup_epochs", 0)
+                    _eff_w = _aux_w * min(1.0, (epoch - 1) / _warmup) if _warmup > 0 else _aux_w
+                    log_msg += " AuxLoss({}):{:7.4f}(w={:.3f})".format(
+                        getattr(config, "aux_loss_type", "?"), aux_loss.item(), _eff_w
+                    )
+                log_msg += " LR: {}".format(scheduler.get_last_lr())
+                print(log_msg, flush=True)
+
+        # Mid-epoch checkpoint every save_every_steps
+        if total_step > 0 and (total_step % save_every_steps == 0) and config.global_rank == 0:
+            actual_model = model.module if hasattr(model, "module") else model
+            save_dict = {
+                "model": actual_model,
+                "optimizer": optimizer,
+                "scheduler": scheduler,
+            }
+            if cls_taxonomy_classifier is not None:
+                actual_cls_classifier = (
+                    cls_taxonomy_classifier.module
+                    if hasattr(cls_taxonomy_classifier, "module")
+                    else cls_taxonomy_classifier
+                )
+                save_dict["cls_taxonomy_classifier"] = actual_cls_classifier
+            if taxonomy_ce_head is not None:
+                save_dict["taxonomy_ce_head"] = (
+                    taxonomy_ce_head.module if hasattr(taxonomy_ce_head, "module") else taxonomy_ce_head
+                )
+            if scaler is not None:
+                save_dict["scaler"] = scaler.state_dict()
+            print(f"[Resuming] saving checkpoint at global step {total_step}", flush=True)
+            if config.arch == "maelm":
+                safe_save_model(
+                    save_dict, config.checkpoint_path, config=config,
+                    epoch=epoch, total_step=total_step, n_samples_seen=n_samples_seen,
+                    bert_config=bert_config.to_dict(), decoder_config=decoder_config.to_dict(),
+                    **best_stats,
+                )
+            elif config.arch == "transformer":
+                safe_save_model(
+                    save_dict, config.checkpoint_path, config=config,
+                    epoch=epoch, total_step=total_step, n_samples_seen=n_samples_seen,
+                    bert_config=bert_config.to_dict(), **best_stats,
+                )
+
+        # Compute mask ratio actually used
+        actual_masking = (masked_unseen_tokens.sum() / masked_unseen_tokens.nelement()).item()
+        actual_random_token = (masked_random_tokens.sum() / masked_random_tokens.nelement()).item()
+        actual_original_token = (masked_original_tokens.sum() / masked_original_tokens.nelement()).item()
+
+        mask_ratio_actual = input_maskout.sum() / input_maskout.nelement()
+        if config.distributed:
+            dist.reduce(mask_ratio_actual, 0, op=dist.ReduceOp.AVG)
+        mask_ratio_actual = mask_ratio_actual.item()
+
+        # Log to wandb
+        if config.log_wandb and config.global_rank == 0 and batch_idx % config.log_interval == 0:
+            # Create a log dictionary to send to wandb
+            # Epoch progress interpolates smoothly between epochs
+            epoch_progress = epoch - 1 + (batch_idx + 1) / len(dataloader)
+            # Throughput is the number of samples processed per second
+            throughput = batch_size_all / (t_start_logging - t_end_batch)
+            log_dict = {
+                "Pretraining/stepwise/epoch": epoch,
+                "Pretraining/stepwise/epoch_progress": epoch_progress,
+                "Pretraining/stepwise/n_samples_seen": n_samples_seen,
+                "Pretraining/stepwise/Train/throughput": throughput,
+                "Pretraining/stepwise/Train/loss": loss_batch,
+                "Pretraining/stepwise/Train/accuracy": acc_msk,
+                "Pretraining/stepwise/Train/accuracy_unmasked": acc_kpt,
+                "Pretraining/stepwise/Train/accuracy_overall": acc_all,
+                "Pretraining/stepwise/Train/mask_ratio": mask_ratio,
+                "Pretraining/stepwise/Train/mask_ratio_actual": mask_ratio_actual,
+                "Pretraining/stepwise/Train/mask_ratio_masking": actual_masking,
+                "Pretraining/stepwise/Train/mask_ratio_random_token": actual_random_token,
+                "Pretraining/stepwise/Train/mask_ratio_original_token": actual_original_token,
+            }
+            if config.separate_loss:
+                log_dict = {
+                    "Pretraining/stepwise/epoch": epoch,
+                    "Pretraining/stepwise/epoch_progress": epoch_progress,
+                    "Pretraining/stepwise/n_samples_seen": n_samples_seen,
+                    "Pretraining/stepwise/Train/throughput": throughput,
+                    "Pretraining/stepwise/Train/loss": loss_batch,
+                    "Pretraining/stepwise/Train/loss_masked": masked_loss_batch,
+                    "Pretraining/stepwise/Train/loss_unmasked": non_masked_loss_batch,
+                    "Pretraining/stepwise/Train/accuracy": acc_msk,
+                    "Pretraining/stepwise/Train/accuracy_unmasked": acc_kpt,
+                    "Pretraining/stepwise/Train/accuracy_overall": acc_all,
+                    "Pretraining/stepwise/Train/mask_ratio": mask_ratio,
+                    "Pretraining/stepwise/Train/mask_ratio_actual": mask_ratio_actual,
+                    "Pretraining/stepwise/Train/mask_ratio_masking": actual_masking,
+                    "Pretraining/stepwise/Train/mask_ratio_random_token": actual_random_token,
+                    "Pretraining/stepwise/Train/mask_ratio_original_token": actual_original_token,
+                }
+            # Add taxonomy classification metrics if available
+            if genus_loss_batch_val is not None:
+                # Use dynamic taxonomy level in logging keys
+                log_dict[f"Pretraining/stepwise/{taxonomy_level_display}/loss"] = genus_loss_batch_val
+                log_dict[f"Pretraining/stepwise/{taxonomy_level_display}/accuracy"] = genus_acc_batch_val
+                log_dict[f"Pretraining/stepwise/{taxonomy_level_display}/num_pairs"] = num_genus_pairs
+                log_dict[f"Pretraining/stepwise/{taxonomy_level_display}/num_positive_pairs"] = num_same_pairs
+                log_dict[f"Pretraining/stepwise/{taxonomy_level_display}/num_negative_pairs"] = num_diff_pairs
+
+            # Add CLS taxonomy classification metrics if available
+            if cls_taxonomy_loss is not None:
+                log_dict["Pretraining/stepwise/CLS/loss"] = cls_taxonomy_loss.item()
+                log_dict["Pretraining/stepwise/CLS/accuracy"] = cls_taxonomy_acc.item() * 100.0
+                log_dict["Pretraining/stepwise/CLS/num_pairs"] = num_cls_taxonomy_pairs
+                log_dict["Pretraining/stepwise/CLS/num_positive_pairs"] = num_cls_same_pairs
+                log_dict["Pretraining/stepwise/CLS/num_negative_pairs"] = num_cls_diff_pairs
+
+            # Track the learning rate of each parameter group
+            for lr_idx in range(len(optimizer.param_groups)):
+                if "name" in optimizer.param_groups[lr_idx]:
+                    grp_name = optimizer.param_groups[lr_idx]["name"]
+                elif len(optimizer.param_groups) == 1:
+                    grp_name = ""
+                else:
+                    grp_name = f"grp{lr_idx}"
+                if grp_name != "":
+                    grp_name = f"-{grp_name}"
+                grp_lr = optimizer.param_groups[lr_idx]["lr"]
+                log_dict[f"Pretraining/stepwise/lr{grp_name}"] = grp_lr
+            # Synchronize ensures everything has finished running on each GPU
+            torch.cuda.synchronize()
+            # Record how long it took to do each step in the pipeline
+            if t_start_wandb is not None:
+                # Record how long it took to send to wandb last time
+                log_dict["Pretraining/stepwise/duration/wandb"] = t_end_wandb - t_start_wandb
+            log_dict["Pretraining/stepwise/duration/dataloader"] = t_start_batch - t_end_batch
+            log_dict["Pretraining/stepwise/duration/preamble"] = t_start_forward - t_start_batch
+            log_dict["Pretraining/stepwise/duration/forward"] = ct_forward.elapsed_time(ct_backward) / 1000
+            log_dict["Pretraining/stepwise/duration/backward"] = ct_backward.elapsed_time(ct_optimizer) / 1000
+            log_dict["Pretraining/stepwise/duration/optimizer"] = ct_optimizer.elapsed_time(ct_logging) / 1000
+            log_dict["Pretraining/stepwise/duration/overall"] = time.time() - t_end_batch
+            t_start_wandb = time.time()
+            log_dict["Pretraining/stepwise/duration/logging"] = t_start_wandb - t_start_logging
+            # Send to wandb
+            wandb.log(log_dict, step=total_step)
+            t_end_wandb = time.time()
+
+        # Record the time when we finished this batch
+        t_end_batch = time.time()
+
+    if config.separate_loss:
+        results = {
+            "loss": loss_epoch / n_batches_processed,
+            "loss_masked": masked_loss_epoch / n_batches_processed,
+            "loss_non_masked": non_masked_loss_epoch / n_batches_processed,
+            "accuracy": acc_epoch / n_batches_processed,
+            "accuracy_unmasked": acc_kpt_epoch / n_batches_processed,
+            "accuracy_overall": acc_all_epoch / n_batches_processed,
+        }
+    else:
+        results = {
+            "loss": loss_epoch / n_batches_processed,
+            "accuracy": acc_epoch / n_batches_processed,
+            "accuracy_unmasked": acc_kpt_epoch / n_batches_processed,
+            "accuracy_overall": acc_all_epoch / n_batches_processed,
+        }
+
+    # Add taxonomy classification metrics if any pairs were created
+    if genus_pairs_epoch > 0:
+        # Use dynamic taxonomy level in result keys
+        results[f"{taxonomy_level}_loss"] = genus_loss_epoch / n_batches_processed
+        results[f"{taxonomy_level}_accuracy"] = genus_acc_epoch / n_batches_processed
+        results[f"{taxonomy_level}_pairs"] = genus_pairs_epoch
+
+    return results, total_step, n_samples_seen
+
+
+def evaluate(
+    config,
+    model,
+    criterion,
+    dataloader,
+    num_labels,
+    mask_ratio=0.5,
+    device="cuda",
+    distance_table=None,
+    n_special_tokens=2,
+    n_all_tokens=-1,
+    biological_masker=None,
+):
+    r"""
+    Evaluate the encoder on the validation data.
+
+    Parameters
+    ----------
+    config : argparse.Namespace or OmegaConf
+        The global config object.
+    model : torch.nn.Module
+        The encoder/decoder network.
+    criterion : torch.nn.Module
+        The loss function.
+    dataloader : torch.utils.data.DataLoader
+        A dataloader for the training set.
+    num_labels : int,
+        The number of labels (number of different tokens)
+    mask_ratio : float, default=0.5
+        The ratio of tokens to mask out.
+    device : str or torch.device, default="cuda"
+        The device to use.
+    distance_table : torch.Tensor, optional
+        A pre-computed table of Levenshtein distances between all possible k-mers.
+
+    Returns
+    -------
+    results: dict
+        A dictionary containing the evaluation performance.
+    """
+    # Put the model in train mode
+    model.eval()
+
+    loss_epoch = 0
+    masked_loss_epoch = 0
+    non_masked_loss_epoch = 0
+    acc_epoch = 0
+    acc_kpt_epoch = 0
+    acc_all_epoch = 0
+    n_samples = 0
+
+    base_pairs = "ACGT"
+    if config.predict_n_nucleotide:
+        base_pairs += "N"
+
+    n_output_tokens = num_labels  # len(base_pairs) ** config.k_mer
+
+    if config.print_interval is None:
+        # Default to printing to console every time we log to wandb
+        config.print_interval = config.log_interval
+
+    # Check if taxonomy classification is enabled
+    enable_genus_classification = (
+        config.enable_genus_classification if hasattr(config, "enable_genus_classification") else False
+    )
+    enable_cls_taxonomy = getattr(config, "enable_cls_taxonomy", False)
+    use_taxonomy_labels = enable_genus_classification or enable_cls_taxonomy or (
+        getattr(config, "k_classes", None) is not None and getattr(config, "m_per_class", None) is not None
+    )
+
+    # Set the random seed to be stable for the evaluation
+    # (This is stable if you change the batch size, but not if you change the number of GPU workers)
+    rng = torch.Generator(device=device).manual_seed(config.global_rank)
+
+    with torch.no_grad():
+        for batch_idx, batch_data in enumerate(dataloader):
+            # Unpack batch data (may include genus/BIN/family labels if enabled for BIOSCAN-5M)
+            if use_taxonomy_labels:
+                # Handle BIOSCAN-5M with BIN/family labels (discard them in validation)
+                if config.dataset_name == "BIOSCAN-5M" and len(batch_data) == 6:
+                    sequences, _y_true, att_mask, _genus_labels, _bin_labels, _family_labels = batch_data
+                elif len(batch_data) == 4:
+                    sequences, _y_true, att_mask, _genus_labels = batch_data
+                else:
+                    raise ValueError(f"Unexpected batch data length in validation: {len(batch_data)}")
+            else:
+                sequences, _y_true, att_mask = batch_data
+
+            batch_size_this_gpu = sequences.shape[0]
+
+            # Move training inputs and targets to the GPU
+            sequences = sequences.to(device)
+            att_mask = att_mask.to(device)
+
+            # Build the masking on the fly ----------------------------------------
+            # t_start_masking = time.time()
+
+            # Create a mask for allowed tokens i.e. that excludes all special tokens [<MASK>, <UNK>, <CLS>]
+            special_tokens_mask = sequences > (n_special_tokens - 1)
+
+            if config.tokenize_n_nucleotide:
+                # Either exlude the last token [N..N] if config.predict_n_nucleotide == True
+                # Or exclude all tokens containing Ns i.e "bad kamers" whose index in the vocab
+                # is greater than 4**k
+                special_tokens_mask &= sequences < (n_special_tokens + n_output_tokens - 1)
+
+            # If using CLS token, exclude position 0 from masking
+            if config.use_cls_token:
+                special_tokens_mask[:, 0] = False
+
+            special_tokens_mask = special_tokens_mask.to(device)
+            masked_input = sequences.clone()
+            random_mask = torch.rand(masked_input.shape, generator=rng, device=device)
+
+            mask_token_ratio = config.mask_token_ratio
+            random_token_ratio = config.random_token_ratio + config.mask_token_ratio
+
+            masked_unseen_tokens = (random_mask < mask_token_ratio * mask_ratio) & special_tokens_mask
+            masked_random_tokens = (
+                (random_mask >= mask_token_ratio * mask_ratio)
+                & (random_mask < random_token_ratio * mask_ratio)
+                & special_tokens_mask
+            )
+            masked_original_tokens = (
+                (random_mask >= random_token_ratio * mask_ratio) & (random_mask < mask_ratio) & special_tokens_mask
+            )
+
+            input_maskout = masked_unseen_tokens | masked_random_tokens | masked_original_tokens
+            # Apply the masks
+            masked_input[masked_unseen_tokens] = 0  # Masking the token
+            # Keep original tokens where mask_keep_original is True (no action needed)
+            # Replace with random token where mask_random_token is True
+            # Generate random tokens
+            if biological_masker is not None:
+                current_temperature = 1.0
+                tokens_to_replace = sequences[masked_random_tokens]
+                # Get biological replacements (guaranteed different from originals)
+                biological_replacements = get_temperature_biological_replacements(
+                    tokens_to_replace, biological_masker, temperature=current_temperature
+                )
+                masked_input[masked_random_tokens] = biological_replacements
+
+            else:
+                min_token_id = n_special_tokens  # 0 is for masking, 1 is for <UNK>
+                max_token_id = n_all_tokens  # number of all tokens (including special)
+                random_tokens = torch.randint_like(masked_input, low=min_token_id, high=max_token_id)
+
+                # Ensure random tokens are not the same as the original tokens
+                while True:
+                    same_as_original = (random_tokens == masked_input) & masked_random_tokens
+                    if not same_as_original.any():
+                        break
+                    random_tokens[same_as_original] = torch.randint(
+                        size=(same_as_original.sum().item(),), low=min_token_id, high=max_token_id, device=device
+                    )
+
+                masked_input[masked_random_tokens] = random_tokens[masked_random_tokens]
+
+            # Forward pass ----------------------------------------------------
+            if config.arch == "maelm":
+                out = model(masked_input, att_mask, masked_unseen_tokens, config.maelm_version)
+            elif config.arch == "transformer":
+                out = model(masked_input, attention_mask=att_mask)
+
+            logits = out.logits.view(-1, n_output_tokens)
+
+            # Measure loss
+            if config.pretrain_levenshtein:
+                soft_targets = levenshtein.softmax_batch_levenshtein_matrices_vectorized(
+                    sequences, config.k_mer, dataloader.dataset.vocab
+                ).to(device)
+                with torch.no_grad():
+                    targets = torch.argmax(soft_targets, dim=-1)
+                soft_targets = soft_targets.view(-1, n_output_tokens)
+                if config.separate_loss:
+
+                    masked_indices = input_maskout.view(-1)
+                    non_masked_indices = ~masked_indices & special_tokens_mask.view(-1)  # ignore special tokens
+
+                    masked_loss = criterion(logits[masked_indices], soft_targets[masked_indices])
+                    non_masked_loss = criterion(logits[non_masked_indices], soft_targets[non_masked_indices])
+
+                    masked_loss_weight = config.masked_loss_weight
+                    non_masked_loss_weight = 1 - masked_loss_weight
+                    loss = masked_loss_weight * masked_loss + non_masked_loss_weight * non_masked_loss
+                else:
+                    loss = criterion(logits[special_tokens_mask.view(-1)], soft_targets[special_tokens_mask.view(-1)])
+
+            else:
+                # Need to remove the special token from the index in sequences
+                targets = sequences - n_special_tokens * (sequences > (n_special_tokens - 1))
+
+                if config.separate_loss:
+                    targets_flat = targets.view(-1)
+
+                    masked_indices = input_maskout.view(-1)
+                    non_masked_indices = ~masked_indices & special_tokens_mask.view(-1)  # ignore special tokens
+
+                    masked_loss = criterion(logits[masked_indices], targets_flat[masked_indices])
+                    non_masked_loss = criterion(logits[non_masked_indices], targets_flat[non_masked_indices])
+
+                    masked_loss_weight = config.masked_loss_weight
+                    non_masked_loss_weight = 1 - masked_loss_weight
+                    loss = masked_loss_weight * masked_loss + non_masked_loss_weight * non_masked_loss
+
+                # Need to remove the <UNK> and <CLS> tokens from the index in sequences
+                else:
+                    loss = criterion(
+                        out.logits.view(-1, n_output_tokens)[special_tokens_mask.view(-1)],
+                        targets.view(-1)[special_tokens_mask.view(-1)],
+                    )
+
+            # Metrics ---------------------------------------------------------
+            # Update the total loss for the epoch
+            loss_batch = loss * batch_size_this_gpu
+            if config.distributed:
+                # Fetch results from other GPUs
+                dist.reduce(loss_batch, 0, op=dist.ReduceOp.SUM)
+            loss_batch = loss_batch.item()
+            loss_epoch += loss_batch
+
+            if config.separate_loss:
+                masked_loss_batch = masked_loss * batch_size_this_gpu
+                non_masked_loss_batch = non_masked_loss * batch_size_this_gpu
+
+                if config.distributed:
+                    # Fetch results from other GPUs
+                    dist.reduce(masked_loss_batch, 0, op=dist.ReduceOp.SUM)
+                    dist.reduce(non_masked_loss_batch, 0, op=dist.ReduceOp.SUM)
+
+                masked_loss_batch = masked_loss_batch.item()
+                non_masked_loss_batch = non_masked_loss_batch.item()
+
+                masked_loss_epoch += masked_loss_batch
+                non_masked_loss_epoch += non_masked_loss_batch
+
+            # Compute accuracy
+            with torch.no_grad():
+                x_pred = torch.argmax(out.logits, dim=-1)
+            # Create a mask to ignore all special tokens [<MASK>, <UNK>]
+            special_tokens_mask = targets > (n_special_tokens - 1)
+
+            is_correct = x_pred == targets
+            # Overall accuracy, including tokens which weren't masked out
+            acc_all = (
+                batch_size_this_gpu * is_correct[special_tokens_mask].sum() / is_correct[special_tokens_mask].numel()
+            )
+            # Accuracy only on the masked tokens
+            acc_msk = (
+                batch_size_this_gpu
+                * is_correct[input_maskout & special_tokens_mask].sum()
+                / (input_maskout & special_tokens_mask).sum()
+            )
+            # Accuracy only on the non-masked tokens
+            acc_kpt = (
+                batch_size_this_gpu
+                * is_correct[~input_maskout & special_tokens_mask].sum()
+                / (~input_maskout & special_tokens_mask).sum()
+            )
+            if config.distributed:
+                # Fetch results from other GPUs
+                dist.reduce(acc_all, 0, op=dist.ReduceOp.SUM)
+                dist.reduce(acc_msk, 0, op=dist.ReduceOp.SUM)
+                dist.reduce(acc_kpt, 0, op=dist.ReduceOp.SUM)
+            acc_epoch += acc_msk
+            acc_kpt_epoch += acc_kpt
+            acc_all_epoch += acc_all
+
+            # Total batch size
+            if config.distributed:
+                batch_size = torch.tensor(batch_size_this_gpu, device=device)
+                dist.reduce(batch_size, 0, op=dist.ReduceOp.SUM)
+                batch_size = batch_size.item()
+            else:
+                batch_size = batch_size_this_gpu
+            n_samples += batch_size
+
+            if batch_idx % (config.print_interval * 10) == 0:
+                if config.separate_loss:
+                    print(
+                        "Eval",
+                        " Step:{:6d}/{}".format(batch_idx + 1, len(dataloader)),
+                        " Loss:{:8.5f}".format(loss_batch / batch_size),
+                        " LossMask:{:8.5f}".format(masked_loss_batch / batch_size),
+                        " LossSeen:{:8.5f}".format(non_masked_loss_batch / batch_size),
+                        " AccMask:{:6.2f}%".format(100.0 * acc_msk / batch_size),
+                        " AccSeen:{:6.2f}%".format(100.0 * acc_kpt / batch_size),
+                        flush=True,
+                    )
+                else:
+                    print(
+                        "Eval",
+                        " Step:{:6d}/{}".format(batch_idx + 1, len(dataloader)),
+                        " Loss:{:8.5f}".format(loss_batch / batch_size),
+                        " AccMask:{:6.2f}%".format(100.0 * acc_msk / batch_size),
+                        " AccSeen:{:6.2f}%".format(100.0 * acc_kpt / batch_size),
+                        flush=True,
+                    )
+
+    if config.separate_loss:
+        results = {
+            "loss": loss_epoch / n_samples,
+            "loss_masked": masked_loss_epoch / n_samples,
+            "loss_non_masked": non_masked_loss_epoch / n_samples,
+            "accuracy": 100.0 * acc_epoch / n_samples,
+            "accuracy_unmasked": 100.0 * acc_kpt_epoch / n_samples,
+            "accuracy_overall": 100.0 * acc_all_epoch / n_samples,
+            "n_samples": n_samples,
+        }
+    else:
+        results = {
+            "loss": loss_epoch / n_samples,
+            "accuracy": 100.0 * acc_epoch / n_samples,
+            "accuracy_unmasked": 100.0 * acc_kpt_epoch / n_samples,
+            "accuracy_overall": 100.0 * acc_all_epoch / n_samples,
+            "n_samples": n_samples,
+        }
+
+    return results
+
+
+def get_parser():
+    r"""
+    Build argument parser for the command line interface.
+
+    Returns
+    -------
+    parser : argparse.ArgumentParser
+        CLI argument parser.
+    """
+    import argparse
+    import sys
+
+    # Use the name of the file called to determine the name of the program
+    prog = os.path.split(sys.argv[0])[1]
+    if prog == "__main__.py" or prog == "__main__":
+        # If the file is called __main__.py, go up a level to the module name
+        prog = os.path.split(__file__)[1]
+    parser = argparse.ArgumentParser(
+        prog=prog,
+        description="Pretrain BarcodeBERT.",
+        add_help=False,
+    )
+    # Help arg ----------------------------------------------------------------
+    group = parser.add_argument_group("Help")
+    group.add_argument(
+        "--help",
+        "-h",
+        action="help",
+        help="Show this help message and exit.",
+    )
+    # Dataset args ------------------------------------------------------------
+    group = parser.add_argument_group("Dataset")
+    group.add_argument(
+        "--data-dir",
+        type=str,
+        default="data",
+        help="Directory within which the dataset can be found. Default: %(default)s",
+    )
+    group.add_argument(
+        "--dataset",
+        dest="dataset_name",
+        type=str,
+        default="CANADA-1.5M",
+        required=True,
+        help="This specifies the format of the .csv files in data-dir. \
+              In particular if the dataframe contains an index for each taxon. \
+              Default: %(default)s",
+    )
+    group.add_argument(
+        "--tokenizer",
+        type=str,
+        default="kmer",
+        help="Name of tokenizer to use for DNA sequences. Default: %(default)s",
+    )
+    group.add_argument(
+        "--bpe-path",
+        "--bpe_path",
+        type=str,
+        default="./",
+        help="Path of the bpe tokenizer to use for DNA sequences. Default: %(default)s",
+    )
+    group.add_argument(
+        "--k-mer",
+        "--k_mer",
+        type=int,
+        default=6,
+        help="Size of k-mer to use for DNA tokenization. Default: %(default)s",
+    )
+    group.add_argument(
+        "--stride",
+        type=int,
+        help="Stride to use for DNA tokenization. Default: Same as k-mer size.",
+    )
+    group.add_argument(
+        "--max-len",
+        "--max_len",
+        type=int,
+        default=660,
+        help="Maximum length of input sequences. Default: %(default)s",
+    )
+    # Architecture args -------------------------------------------------------
+    group = parser.add_argument_group("Architecture")
+    group.add_argument(
+        "--model",
+        "--encoder",
+        "--arch",
+        "--architecture",
+        dest="arch",
+        type=str,
+        default="transformer",
+        help="Name of model architecture. Default: %(default)s",
+    )
+
+    group.add_argument(
+        "--n-layers",
+        "--n_layers",
+        type=int,
+        default=6,
+        help="Number of layers in the transformer. Default: %(default)s",
+    )
+
+    group.add_argument(
+        "--n-heads",
+        "--n_heads",
+        type=int,
+        default=6,
+        help="Number of attention heads in the transformer. Default: %(default)s",
+    )
+
+    group.add_argument(
+        "--decoder-n-layers",
+        "--decoder_n_layers",
+        type=int,
+        default=6,
+        help="Number of attention heads in the decoder of MAELM. Default: %(default)s",
+    )
+
+    group.add_argument(
+        "--decoder-n-heads",
+        "--decoder_n_heads",
+        type=int,
+        default=6,
+        help="Number of attention heads in the decoder of MAELM. Default: %(default)s",
+    )
+
+    group.add_argument(
+        "--encoder-embed-dim",
+        "--encoder_embed_dim",
+        type=int,
+        default=768,
+        help="Size of the encoder embedding in the encoder of MAE-LM. Default: %(default)s",
+    )
+
+    group.add_argument(
+        "--decoder-embed-dim",
+        "--decoder_embed_dim",
+        type=int,
+        default=768,
+        help="Size of the decoder embedding in the decoder of MAE-LM. Default: %(default)s",
+    )
+
+    group.add_argument(
+        "--maelm-version",
+        "--maelm_version",
+        type=str,
+        default="maelm_v2",
+        help="which implementation we want to use. Default: %(default)s",
+    )
+
+    # Optimization args -------------------------------------------------------
+    group = parser.add_argument_group("Optimization routine")
+    group.add_argument(
+        "--epochs",
+        type=int,
+        default=45,
+        help="Number of epochs to train for. Default: %(default)s",
+    )
+    group.add_argument(
+        "--lr",
+        dest="lr_relative",
+        type=float,
+        default=0.0001,
+        help=(
+            f"Maximum learning rate, set per {BASE_BATCH_SIZE} batch size."
+            " The actual learning rate used will be scaled up by the total"
+            " batch size (across all GPUs). Default: %(default)s"
+        ),
+    )
+    group.add_argument(
+        "--weight-decay",
+        "--weight_decay",
+        "--wd",
+        dest="weight_decay",
+        type=float,
+        default=0.00001,
+        help="Weight decay. Default: %(default)s",
+    )
+    group.add_argument(
+        "--optimizer",
+        type=str,
+        default="AdamW",
+        help="Name of optimizer (case-sensitive). Default: %(default)s",
+    )
+    group.add_argument(
+        "--scheduler",
+        type=str,
+        default="OneCycle",
+        help="Learning rate scheduler. Default: %(default)s",
+    )
+    group.add_argument(
+        "--max-norm",
+        "--max_norm",
+        dest="max_norm",
+        type=float,
+        default=1.0,
+        help="Maximum gradient norm for gradient clipping. Default: %(default)s",
+    )
+    parser.add_argument(
+        "--tokenize-n-nucleotide",
+        "--tokenize_n_nucleotide",
+        "--tokenize-n",
+        "--tokenize_n",
+        dest="tokenize_n_nucleotide",
+        action="store_true",
+        help="Include N as a valid character in tokenization. If false, all kmers including Ns will be mappend to [UNK]",
+    )
+    parser.add_argument(
+        "--predict-n-nucleotide",
+        "--predict_n_nucleotide",
+        "--predict-n",
+        "--predict_n",
+        dest="predict_n_nucleotide",
+        action="store_true",
+        help="Predict tokens containing Ns. This will increase the size of the output space and will force tokenize_n_nucleotide to True",
+    )
+    parser.add_argument(
+        "--pretrain-levenshtein",
+        "--pretrain_levenshtein",
+        action="store_true",
+        help="Use Levenshtein distance for the pretraining cross-entropy loss.",
+    )
+    parser.add_argument(
+        "--levenshtein-vectorized",
+        "--levenshtein_vectorized",
+        action="store_true",
+        help="Use the vectorized implementation of Levenshtein distance computation.",
+    )
+    parser.add_argument(
+        "--separate-loss",
+        "--separate_loss",
+        type=bool,
+        default=True,
+        help="Set to True to use the weighted loss for masked and non_masked components (default: True).",
+    )
+    parser.add_argument(
+        "--masked-loss-weight",
+        "--masked_loss_weight",
+        type=float,
+        default=1.0,
+        help="masked loss component weight (non_masked_weight = 1 - masked_loss_weight)",
+    )
+    parser.add_argument(
+        "--mask-token-ratio",
+        "--mask_token_ratio",
+        type=float,
+        default=1.0,
+        help="actual masking ratio",
+    )
+    parser.add_argument(
+        "--random-token-ratio",
+        "--random_token_ratio",
+        type=float,
+        default=0,
+        help="random token ratio",
+    )
+
+    group.add_argument(
+        "--mixed-precision",
+        "--mixed_precision",
+        "--amp",
+        dest="mixed_precision",
+        action="store_true",
+        help="Enable Automatic Mixed Precision (AMP) training for faster training and reduced memory usage.",
+    )
+
+    group.add_argument("--jumbo", action="store_true", help="Enable Jumbo CLS training")
+
+    group.add_argument("--share_jumbo_layers", action="store_true", help="Enable sharing of layers in Jumbo CLS model")
+
+    group.add_argument(
+        "--jumbo_multiplier",
+        type=int,
+        default=6,
+        help="Multiplier for the number of CLS tokens in Jumbo CLS model. Default: %(default)s",
+    )
+
+    group.add_argument(
+        "--jumbo-mlp-expansion",
+        "--jumbo_mlp_expansion",
+        dest="jumbo_mlp_expansion",
+        type=int,
+        default=2,
+        help=(
+            "Expansion factor for the hidden layer in the Jumbo MLP "
+            "(jumbo_width * expansion_factor). Default: %(default)s"
+        ),
+    )
+
+    group.add_argument(
+        "--jumbo-source",
+        "--jumbo_source",
+        dest="jumbo_source",
+        type=str,
+        default="encoder",
+        choices=["encoder", "decoder"],
+        help=(
+            "Source of jumbo tokens for taxonomy classification: 'encoder' (direct from encoder) or "
+            "'decoder' (encoder jumbo tokens after being processed through decoder). "
+            "Default: %(default)s. Requires --enable-taxonomy-classification and --jumbo."
+        ),
+    )
+
+    group.add_argument(
+        "--pool-jumbo-for-taxonomy",
+        "--pool_jumbo_for_taxonomy",
+        dest="pool_jumbo_for_taxonomy",
+        action="store_true",
+        help=(
+            "Pool jumbo tokens (via mean or max) before taxonomy classification instead of concatenating. "
+            "This dramatically reduces taxonomy classifier parameters (e.g., 393K vs 2.36M for jumbo=6), "
+            "improving training stability with large datasets. Recommended for jumbo_multiplier >= 4. "
+            "Default: False (concatenate all jumbo tokens)"
+        ),
+    )
+
+    group.add_argument(
+        "--taxonomy-pool-type",
+        "--taxonomy_pool_type",
+        dest="taxonomy_pool_type",
+        type=str,
+        default="mean",
+        choices=["mean", "max"],
+        help=(
+            "Pooling type for jumbo tokens when --pool-jumbo-for-taxonomy is enabled. "
+            "'mean' averages across jumbo tokens, 'max' takes maximum. "
+            "Default: %(default)s"
+        ),
+    )
+
+    group.add_argument(
+        "--taxonomy-classifier-lr",
+        "--taxonomy_classifier_lr",
+        dest="taxonomy_classifier_lr",
+        type=float,
+        default=None,
+        help=(
+            "Separate learning rate for taxonomy classifier. If not specified, uses the same LR as "
+            "the main model. Setting a higher LR (e.g., 10x the main LR) can help when taxonomy "
+            "classifier starts from random initialization. Example: if main LR is 1e-4, try 1e-3. "
+            "Default: None (use same LR as model)"
+        ),
+    )
+
+    group.add_argument(
+        "--taxonomy-use-pos-weight",
+        "--taxonomy_use_pos_weight",
+        dest="taxonomy_use_pos_weight",
+        action="store_true",
+        default=False,
+        help=(
+            "Use pos_weight in BCE loss to normalize for imbalanced positive/negative pair counts. "
+            "When enabled, each positive pair is weighted by num_diff/num_same so that positives and "
+            "negatives contribute equally to the gradient regardless of batch composition. "
+            "Helps reduce loss spikes caused by batches with few positive pairs. Default: False"
+        ),
+    )
+
+    group.add_argument(
+        "--enable-taxonomy-classification",
+        "--enable_taxonomy_classification",
+        dest="enable_genus_classification",
+        action="store_true",
+        help=(
+            "Enable taxonomy classification head for Jumbo CLS tokens during pretraining. "
+            "Requires --jumbo flag. Use --taxonomy-level to specify the taxonomic level and "
+            "--jumbo-source to choose between encoder or decoder-processed jumbo tokens."
+        ),
+    )
+
+    group.add_argument(
+        "--taxonomy-level",
+        "--taxonomy_level",
+        dest="taxonomy_level_for_classification",
+        type=str,
+        default="genus",
+        choices=["phylum", "class", "order", "family", "genus", "species", "bin"],
+        help="Taxonomic level for the auxiliary/binary classification task. "
+             "'bin' (Barcode Index Number) is only supported for BIOSCAN-5M. Default: %(default)s",
+    )
+
+    group.add_argument(
+        "--use-cls-token",
+        "--use_cls_token",
+        dest="use_cls_token",
+        action="store_true",
+        help=(
+            "Add [CLS] token (token_id=2) to the beginning of each sequence. "
+            "The CLS token is processed through standard transformer layers (not jumbo MLP). "
+            "Can be used independently or with --enable-cls-taxonomy for taxonomy classification."
+        ),
+    )
+
+    group.add_argument(
+        "--n-registers",
+        "--n_registers",
+        dest="n_registers",
+        type=int,
+        default=0,
+        help=(
+            "Number of register tokens to prepend to the sequence in the encoder. "
+            "Register tokens are learnable embeddings that flow through standard transformer layers "
+            "with no special MLP or classification task (unlike Jumbo CLS tokens). "
+            "Can be combined with --use-cls-token to get [CLS][reg...][seq...]. "
+            "Only supported for --arch=maelm without --jumbo. Default: %(default)s"
+        ),
+    )
+
+    group.add_argument(
+        "--lambda-save",
+        "--lambda_save",
+        dest="lambda_save",
+        action="store_true",
+        default=False,
+        help=(
+            "When set, skip regular per-epoch checkpointing and only save separate checkpoints "
+            "at epochs 25, 30, and 35 (e.g. checkpoint_epoch25.pt, checkpoint_epoch30.pt, "
+            "checkpoint_epoch35.pt). Useful for ablation studies."
+        ),
+    )
+
+    group.add_argument(
+        "--enable-cls-taxonomy",
+        "--enable_cls_taxonomy",
+        dest="enable_cls_taxonomy",
+        action="store_true",
+        help=(
+            "Enable taxonomy classification using CLS token representation. "
+            "Automatically enables --use-cls-token. The CLS token at position 0 is used "
+            "for binary taxonomy classification. Unlike jumbo tokens, CLS tokens are processed "
+            "through standard FFN layers. Use --taxonomy-level to specify taxonomic level."
+        ),
+    )
+
+    group.add_argument(
+        "--cls-taxonomy-loss-weight",
+        "--cls_taxonomy_loss_weight",
+        dest="cls_taxonomy_loss_weight",
+        type=float,
+        default=0.1,
+        help="Weight for CLS token taxonomy classification loss. Default: %(default)s",
+    )
+
+    group.add_argument(
+        "--taxonomy-loss-weight",
+        "--taxonomy_loss_weight",
+        dest="genus_loss_weight",
+        type=float,
+        default=0.1,
+        help="Weight for taxonomy classification loss. Default: %(default)s",
+    )
+
+    group.add_argument(
+        "--taxonomy-max-pairs",
+        "--taxonomy_max_pairs",
+        type=int,
+        default=64,
+        help=(
+            "Maximum number of pairs to sample for taxonomy classification loss. "
+            "Higher values = more pairs = better gradients but slower. Default: %(default)s"
+        ),
+    )
+
+    # Output checkpoint args --------------------------------------------------
+    group = parser.add_argument_group("Output checkpoint")
+    group.add_argument(
+        "--models-dir",
+        type=str,
+        default="model_checkpoints",
+        metavar="PATH",
+        help="Output directory for all models. Ignored if --checkpoint is set. Default: %(default)s",
+    )
+    group.add_argument(
+        "--checkpoint",
+        dest="checkpoint_path",
+        default="",
+        type=str,
+        metavar="PATH",
+        help=(
+            "Save and resume partially trained model and optimizer state from this checkpoint."
+            " Overrides --models-dir."
+        ),
+    )
+    group.add_argument(
+        "--checkpoint_maelm",
+        dest="checkpoint_path_encoder",
+        default="",
+        type=str,
+        metavar="PATH",
+        help=("Save and resume partially trained MAE-LM encoder and optimizer state from this checkpoint."),
+    )
+
+    group.add_argument(
+        "--checkpoint-resume",
+        "--checkpoint_resume",
+        dest="checkpoint_path_resume",
+        default="",
+        type=str,
+        metavar="PATH",
+        help=(
+            "Resume partially trained model and optimizer state from this checkpoint,"
+            " if CHECKPOINT_PATH does not exist."
+        ),
+    )
+    group.add_argument(
+        "--save-best-model",
+        action="store_true",
+        help="Save a copy of the model with best validation performance.",
+    )
+    # Reproducibility args ----------------------------------------------------
+    group = parser.add_argument_group("Reproducibility")
+    group.add_argument(
+        "--seed",
+        type=int,
+        help="Random number generator (RNG) seed. Default: not controlled",
+    )
+    group.add_argument(
+        "--deterministic",
+        action="store_true",
+        help="Disable non-deterministic features of cuDNN.",
+    )
+    # Hardware configuration args ---------------------------------------------
+    group = parser.add_argument_group("Hardware configuration")
+    group.add_argument(
+        "--batch-size",
+        "--batch_size",
+        dest="batch_size_per_gpu",
+        type=int,
+        default=16,
+        help=(
+            "Batch size per GPU. The total batch size will be this value times"
+            " the total number of GPUs used. Default: %(default)s"
+        ),
+    )
+    group.add_argument(
+        "--cpu-workers",
+        "--cpu_workers",
+        "--workers",
+        dest="cpu_workers",
+        type=int,
+        help="Number of CPU workers per node. Default: number of CPUs available on device.",
+    )
+    group.add_argument(
+        "--no-cuda",
+        action="store_true",
+        help="Use CPU only, no GPUs.",
+    )
+
+    group.add_argument(
+        "--k-classes",
+        "--k_classes",
+        dest="k_classes",
+        type=int,
+        default=None,
+        help=(
+            "Number of distinct taxonomy classes per batch for k×m balanced sampling. "
+            "When set together with --m-per-class, replaces the standard random sampler. "
+            "batch_size_per_gpu must equal k_classes * m_per_class. "
+            "Requires --enable-taxonomy-classification to be active so labels are loaded. "
+            "Default: None (use standard random sampler)."
+        ),
+    )
+    group.add_argument(
+        "--m-per-class",
+        "--m_per_class",
+        dest="m_per_class",
+        type=int,
+        default=None,
+        help=(
+            "Number of samples per class per batch for k×m balanced sampling. "
+            "See --k-classes. Default: None."
+        ),
+    )
+    group.add_argument(
+        "--no-cover-full-dataset",
+        dest="cover_full_dataset",
+        action="store_false",
+        default=True,
+        help=(
+            "By default the k×m sampler sets num_batches = ceil(N / n_random) "
+            "so every sample (including unlabelled ones) appears in the fill "
+            "at least once per epoch. Pass this flag to use the shorter "
+            "ceil(N / batch_size) epoch instead, at the cost of some samples "
+            "never being seen in an epoch."
+        ),
+    )
+    group.add_argument(
+        "--gpu",
+        "--local-rank",
+        dest="local_rank",
+        default=None,
+        type=int,
+        help="Index of GPU to use when training a single process. (Ignored for distributed training.)",
+    )
+    # Logging args ------------------------------------------------------------
+    group = parser.add_argument_group("Debugging and logging")
+    group.add_argument(
+        "--log-interval",
+        type=int,
+        default=100,
+        help="Number of batches between each log to wandb (if enabled). Default: %(default)s",
+    )
+    group.add_argument(
+        "--print-interval",
+        type=int,
+        default=None,
+        help="Number of batches between each print to STDOUT. Default: same as LOG_INTERVAL.",
+    )
+    group.add_argument(
+        "--log-wandb",
+        action="store_true",
+        help="Log results with Weights & Biases https://wandb.ai",
+    )
+    group.add_argument(
+        "--disable-wandb",
+        "--disable_wandb",
+        "--no-wandb",
+        dest="disable_wandb",
+        action="store_true",
+        help="Overrides --log-wandb and ensures wandb is always disabled.",
+    )
+    group.add_argument(
+        "--wandb-entity",
+        type=str,
+        default="uoguelph_mlrg",
+        help="The entity (organization) within which your wandb project is located. Default: %(default)s",
+    )
+    group.add_argument(
+        "--wandb-project",
+        type=str,
+        default="BarcodeBERT",
+        help="Name of project on wandb, where these runs will be saved. Default: %(default)s",
+    )
+    group.add_argument(
+        "--run-name",
+        type=str,
+        help="Human-readable identifier for the model run or job. Used to name the run on wandb.",
+    )
+    group.add_argument(
+        "--run-id",
+        type=str,
+        help="Unique identifier for the model run or job. Used as the run ID on wandb.",
+    )
+
+    # Auxiliary taxonomy losses -----------------------------------------------
+    group = parser.add_argument_group("Auxiliary taxonomy losses")
+    group.add_argument(
+        "--aux-loss-type",
+        "--aux_loss_type",
+        dest="aux_loss_type",
+        default=None,
+        choices=["triplet", "supcon", "ce"],
+        help="Auxiliary loss applied to CLS/jumbo/register embeddings. "
+             "triplet=batch-hard triplet, supcon=supervised contrastive, ce=cross-entropy. "
+             "Default: disabled",
+    )
+    group.add_argument(
+        "--aux-loss-weight",
+        "--aux_loss_weight",
+        dest="aux_loss_weight",
+        default=0.1,
+        type=float,
+        help="Weight for the auxiliary loss term. Default: %(default)s",
+    )
+    group.add_argument(
+        "--triplet-margin",
+        "--triplet_margin",
+        dest="triplet_margin",
+        default=0.3,
+        type=float,
+        help="Margin for triplet loss. Default: %(default)s",
+    )
+    group.add_argument(
+        "--triplet-mining",
+        "--triplet_mining",
+        dest="triplet_mining",
+        default="batch_hard",
+        choices=["batch_hard", "random"],
+        help="Positive/negative mining strategy for triplet loss. "
+             "batch_hard=hardest pos/neg per anchor, random=uniform sampling. "
+             "Default: %(default)s",
+    )
+    group.add_argument(
+        "--supcon-temperature",
+        "--supcon_temperature",
+        dest="supcon_temperature",
+        default=0.07,
+        type=float,
+        help="Temperature for supervised contrastive loss. Default: %(default)s",
+    )
+    group.add_argument(
+        "--aux-loss-warmup-epochs",
+        "--aux_loss_warmup_epochs",
+        dest="aux_loss_warmup_epochs",
+        default=0,
+        type=int,
+        help="Linearly ramp aux loss weight from 0 to --aux-loss-weight over this many epochs. "
+             "0 = no warmup (full weight from epoch 1). Default: %(default)s",
+    )
+
+    # Epoch-wise KNN evaluation (overfitting monitor) --------------------------
+    group = parser.add_argument_group("Epoch-wise KNN evaluation")
+    group.add_argument(
+        "--knn-eval-every-epoch",
+        "--knn_eval_every_epoch",
+        dest="knn_eval_every_epoch",
+        default=0,
+        type=int,
+        help="Run the full KNN evaluation (same script/metrics as a post-hoc knn_probing.py / "
+             "knn_its.py run, over the WHOLE train+test data, not a subsample) after every N "
+             "epochs, using that epoch's freshly-saved checkpoint. Runs as a subprocess and is "
+             "non-fatal on failure. 0 disables it (default). Warning: this reruns a full KNN "
+             "pass every N epochs, which can add substantial wall-clock time — budget SLURM "
+             "--time accordingly. Default: %(default)s",
+    )
+    group.add_argument(
+        "--knn-eval-taxon",
+        "--knn_eval_taxon",
+        dest="knn_eval_taxon",
+        default="genus",
+        type=str,
+        help="Taxonomic level for the epoch-wise KNN probe (BIOSCAN-5M/CANADA-1.5M only; "
+             "ITS-5M is always evaluated at species level by knn_its.py). Default: %(default)s",
+    )
+    group.add_argument(
+        "--knn-eval-representation-type",
+        "--knn_eval_representation_type",
+        dest="knn_eval_representation_type",
+        default="tokens",
+        choices=["tokens", "cls", "tokens_with_cls"],
+        help="Representation type for the epoch-wise KNN probe. Default: %(default)s",
+    )
+    group.add_argument(
+        "--knn-eval-neighbors",
+        "--knn_eval_neighbors",
+        dest="knn_eval_neighbors",
+        default=[1],
+        type=int,
+        nargs="+",
+        help="Neighborhood size(s) for the epoch-wise KNN probe. Default: %(default)s",
+    )
+    group.add_argument(
+        "--knn-eval-metric",
+        "--knn_eval_metric",
+        dest="knn_eval_metric",
+        default="cosine",
+        type=str,
+        help="Distance metric for the epoch-wise KNN probe. Default: %(default)s",
+    )
+    group.add_argument(
+        "--knn-eval-results-file",
+        "--knn_eval_results_file",
+        dest="knn_eval_results_file",
+        default=None,
+        type=str,
+        help="File to append epoch-wise KNN results to. Defaults to "
+             "results_final/KNN_RESULTS_epochwise.txt (BIOSCAN-5M/CANADA-1.5M) or "
+             "results_final/KNN_ITS_RESULTS_epochwise.txt (ITS-5M).",
+    )
+
+    return parser
+
+
+def cli():
+    r"""Command-line interface for model training."""
+    parser = get_parser()
+    config = parser.parse_args()
+    # Handle disable_wandb overriding log_wandb and forcing it to be disabled.
+    if config.disable_wandb:
+        config.log_wandb = False
+    del config.disable_wandb
+    if config.levenshtein_vectorized:
+        # If the vectorized implementation of Levenshtein distances was requested,
+        # we must be using Levenshtein distances with soft labels.
+        config.pretrain_levenshtein = True
+    if config.pretrain_levenshtein:
+        # If we are pretraining with Levenshtein distances, we can't use the <UNK> token.
+        config.tokenize_n_nucleotide = True
+
+    if config.predict_n_nucleotide:
+        # If we ask to predict Ns, then the tokenizer must accept Ns
+        if not config.tokenize_n_nucleotide:
+            print(
+                "Predict_n_nucleotide is set to true, \
+                  setting tokenize_n_nucleotide to True"
+            )
+            config.tokenize_n_nucleotide = True
+    return run(config)
+
+
+if __name__ == "__main__":
+    cli()

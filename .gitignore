@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.DS_Store
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+wandb/
+model_checkpoints/
+main_checkpoints_final/
+data/BIOSCAN-5M/
+data/*.tsv
+data/*.fasta

@@ -1,0 +1,549 @@
+#!/usr/bin/env python
+
+import os
+import resource
+import time
+from itertools import product
+
+import numpy as np
+import pandas as pd
+import sklearn.metrics
+import torch
+import torch.optim
+from sklearn.neighbors import KNeighborsClassifier
+from torch import nn
+
+from barcodebert import utils
+from barcodebert.datasets import BPETokenizer, KmerTokenizer, representations_from_df
+from barcodebert.evaluation import knn_results_path, knn_vote
+from barcodebert.io import load_pretrained_model
+
+
+def run(config):
+    r"""
+    Run kNN job, using a single GPU worker to create the embeddings.
+
+    Parameters
+    ----------
+    config : argparse.Namespace or OmegaConf
+        The configuration for this experiment.
+    """
+    if config.knn_weights == "softmax" and config.metric != "cosine":
+        raise ValueError(
+            "--knn-weights=softmax requires --metric=cosine (it converts distance to "
+            f"similarity via similarity = 1 - distance, which only holds for cosine distance; "
+            f"got --metric={config.metric!r})"
+        )
+    if not config.external_model_id and not config.pretrained_checkpoint_path:
+        raise ValueError("Either --pretrained-checkpoint or --external-model-id must be given.")
+
+    t_start = time.time()
+    timing_stats = {}
+
+    if config.log_wandb:
+        # Lazy import of wandb, since logging to wandb is optional
+        import wandb
+
+    if config.seed is not None:
+        utils.set_rng_seeds_fixed(config.seed)
+
+    if config.deterministic:
+        print("Running in deterministic cuDNN mode. Performance may be slower, but more reproducible.")
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+    print()
+    print("Configuration:")
+    print()
+    print(config)
+    print()
+    print(f"Found {torch.cuda.device_count()} GPUs and {utils.get_num_cpu_available()} CPUs.", flush=True)
+
+    device = torch.device("cuda") if torch.cuda.is_available() else "cpu"
+
+    # LOAD MODEL ===============================================================
+    if config.external_model_id:
+        # Off-the-shelf external HuggingFace baseline, evaluated zero-shot (no
+        # fine-tuning): skip our own checkpoint format and k-mer/BPE tokenizer
+        # entirely. See external_models.py for why no other code below needs
+        # to change -- the wrapper matches our own tokenizer(seq)->(ids,mask) /
+        # model(ids,mask)->output calling convention exactly.
+        from barcodebert.external_models import load_external_model
+
+        model, tokenizer = load_external_model(
+            config.external_model_id,
+            device=device,
+            max_length=config.external_max_length,
+            model_cls=config.external_model_cls,
+        )
+        config.representation_type = "tokens"  # universal mean-pool; see external_models.py docstring
+        config.use_cls_token = False
+        config.pretrained_checkpoint_path = config.external_model_id  # used below to build the results tag
+        config.pretrained_run_name = config.external_model_id
+        config.pretrained_run_id = None
+    else:
+        # Map model parameters to be load to the specified gpu.
+        model, pre_checkpoint = load_pretrained_model(config.pretrained_checkpoint_path, device=device)
+        # Override the classifier with an identity function as we only want the embeddings
+        model.classifier = nn.Identity()
+        model = model.to(device)
+
+        keys_to_reuse = [
+            "k_mer",
+            "stride",
+            "max_len",
+            "tokenizer",
+            "bpe_path",
+            "tokenize_n_nucleotide",
+            "predict_n_nucleotide",
+            "pretrain_levenshtein",
+            "levenshtein_vectorized",
+            "n_layers",
+            "n_heads",
+            "dataset_name",
+            "use_cls_token"
+        ]
+        default_kwargs = vars(get_parser().parse_args(["--pretrained_checkpoint=dummy.pt", "--dataset=foo_bar"]))
+        for key in keys_to_reuse:
+            ckpt_val = getattr(pre_checkpoint["config"], key, None)
+            cur_val = getattr(config, key, None)
+            if cur_val == ckpt_val:
+                pass
+            elif cur_val is None or cur_val == default_kwargs.get(key):
+                print(f"  Overriding default config value {key}={cur_val} with {ckpt_val} from pretrained checkpoint.")
+            elif ckpt_val is not None and cur_val != ckpt_val:
+                raise ValueError(
+                    f"config value for {key} differs from pretrained checkpoint:"
+                    f" {cur_val} (ours) vs {ckpt_val} (pretrained checkpoint)"
+                )
+            setattr(config, key, ckpt_val)
+
+        config.pretrained_run_name = getattr(pre_checkpoint["config"], "run_name", None)
+        config.pretrained_run_id = getattr(pre_checkpoint["config"], "run_id", None)
+
+    # DATASET =================================================================
+
+    if config.external_model_id:
+        pass  # tokenizer already built by load_external_model() above
+    elif config.tokenizer == "kmer":
+        base_pairs = "ACGT"
+        # specials = ["[MASK]", "[CLS]", "[SEP]", "[PAD]", "[UNK]"]
+        if hasattr(config, "use_cls_token") and config.use_cls_token:
+            specials = ["[MASK]", "[UNK]", "[CLS]"]
+        else:
+            specials = ["[MASK]", "[UNK]"]
+
+        UNK_TOKEN = "[UNK]"
+
+        if config.tokenize_n_nucleotide:
+            # Encode kmers which contain N differently depending on where it is
+            base_pairs += "N"
+
+        kmers = ["".join(kmer) for kmer in product(base_pairs, repeat=config.k_mer)]
+
+        if config.tokenize_n_nucleotide:
+            prediction_kmers = []
+            other_kmers = []
+            for kmer in kmers:
+                if "N" in kmer:
+                    other_kmers.append(kmer)
+                else:
+                    prediction_kmers.append(kmer)
+
+            kmers = prediction_kmers + other_kmers
+
+        from torchtext.vocab import vocab as build_vocab_from_dict
+
+        kmer_dict = dict.fromkeys(kmers, 1)
+        vocab = build_vocab_from_dict(kmer_dict, specials=specials)
+        vocab.set_default_index(vocab[UNK_TOKEN])
+        tokenizer = KmerTokenizer(config.k_mer, vocab, stride=config.stride, padding=True, max_len=config.max_len)
+
+    elif config.tokenizer == "bpe":
+        tokenizer = BPETokenizer(padding=True, max_tokenized_len=config.max_len, bpe_path=config.bpe_path)
+
+    df_train = pd.read_csv(os.path.join(config.data_dir, "supervised_train.csv"))
+    df_test = pd.read_csv(os.path.join(config.data_dir, config.query_file))
+
+    if config.taxon.lower() == "bin":
+        config.target_level = "bin_uri"
+    else:
+        if config.dataset_name == "CANADA-1.5M":
+            config.target_level = config.taxon + "_name"
+        elif config.dataset_name == "BIOSCAN-5M":
+            config.target_level = config.taxon + "_index"
+        else:
+            raise NotImplementedError("Dataset format is not supported. Must be one of CANADA-1.5M or BIOSCAN-5M")
+
+    timing_stats["preamble"] = time.time() - t_start
+
+    # Ensure model is in eval mode
+    model.eval()
+    t_start_embed = time.time()
+    # Generate emebddings for the training and test sets
+    print("Generating embeddings for test set", flush=True)
+    X_unseen, y_unseen, orders = representations_from_df(
+        df_test,
+        config.target_level,
+        model,
+        tokenizer,
+        config.dataset_name,
+        config.mode,
+        config.mask_rate,
+        config.representation_type,
+        use_cls_token=getattr(config, "use_cls_token", False),
+    )
+    print("Generating embeddings for train set", flush=True)
+    X, y, train_orders = representations_from_df(
+        df_train,
+        config.target_level,
+        model,
+        tokenizer,
+        config.dataset_name,
+        config.mode,
+        config.mask_rate,
+        config.representation_type,
+        use_cls_token=getattr(config, "use_cls_token", False),
+    )
+    timing_stats["embed"] = time.time() - t_start_embed
+
+    c = 0
+    for label in y_unseen:
+        if label not in y:
+            c += 1
+    print(f"There are {c} genus that are not present during training")
+
+    running_info = resource.getrusage(resource.RUSAGE_SELF)
+    dt = time.time() - t_start_embed
+    hour = dt // 3600
+    minutes = (dt - (3600 * hour)) // 60
+    seconds = dt - (hour * 3600) - (minutes * 60)
+    memory = running_info.ru_maxrss / 1e6
+    print(f"Creating embeddings took: {int(hour)}:{int(minutes):02d}:{seconds:02.0f} (hh:mm:ss)\n")
+    print(f"Max memory usage: {memory} (GB)")
+
+    # kNN =====================================================================
+    print("Computing Nearest Neighbors", flush=True)
+
+    n_neighbors_list = config.n_neighbors  # already a list
+
+    # Fit once with the largest k (reuse for all smaller k via kneighbors())
+    t_start_train = time.time()
+    max_k = max(n_neighbors_list)
+    # Convert to numpy to support 2D indexing
+    y = y.to_numpy() if hasattr(y, "to_numpy") else y
+    y_unseen = y_unseen.to_numpy() if hasattr(y_unseen, "to_numpy") else y_unseen
+    clf = KNeighborsClassifier(n_neighbors=max_k, metric=config.metric)
+    clf.fit(X, y)
+    timing_stats["train"] = time.time() - t_start_train
+
+    # Precompute distances once for both partitions
+    t_start_test = time.time()
+    partitions = [("Train", X, y), ("Unseen", X_unseen, y_unseen)]
+    neigh_dist = {}
+    neigh_ind = {}
+    for partition_name, X_part, _ in partitions:
+        neigh_dist[partition_name], neigh_ind[partition_name] = clf.kneighbors(X_part, n_neighbors=max_k)
+
+    # Evaluate for each k (and, if --temperature-sweep is set with softmax voting,
+    # every temperature too -- all reusing the same neigh_dist/neigh_ind computed
+    # above, so no re-embedding or re-fitting per temperature).
+    sweep_temperatures = (
+        config.temperature_sweep if (config.knn_weights == "softmax" and config.temperature_sweep)
+        else [config.temperature]
+    )
+    best_combo = None  # (accuracy, temperature, k)
+    all_results = {}  # k -> {partition -> metrics}  (last-swept temperature, for backward-compat results file)
+    sweep_results = []  # list of (temperature, k, accuracy) for every combo, only populated if sweeping
+    for k in n_neighbors_list:
+        print(f"\n{'='*50}")
+        print(f"k = {k}")
+        print(f"{'='*50}")
+        for temperature in sweep_temperatures:
+            results = {}
+            for partition_name, X_part, y_part in partitions:
+                # Use the k closest neighbors from precomputed distances
+                ind_k = neigh_ind[partition_name][:, :k]
+                dist_k = neigh_dist[partition_name][:, :k]
+                neighbor_labels = clf._y[ind_k]  # encoded class indices, shape (N, k)
+                majority_idx = knn_vote(neighbor_labels, dist_k, weights=config.knn_weights, temperature=temperature)
+                y_pred = clf.classes_[majority_idx]  # map back to original labels
+                res_part = {}
+                res_part["count"] = len(y_part)
+                res_part["accuracy"] = 100.0 * sklearn.metrics.accuracy_score(y_part, y_pred)
+                res_part["accuracy-balanced"] = 100.0 * sklearn.metrics.balanced_accuracy_score(y_part, y_pred)
+                res_part["f1-micro"] = 100.0 * sklearn.metrics.f1_score(y_part, y_pred, average="micro")
+                res_part["f1-macro"] = 100.0 * sklearn.metrics.f1_score(y_part, y_pred, average="macro")
+                res_part["f1-support"] = 100.0 * sklearn.metrics.f1_score(y_part, y_pred, average="weighted")
+                results[partition_name] = res_part
+                if len(sweep_temperatures) == 1:
+                    print(f"\n{partition_name} evaluation results (k={k}):")
+                    for metric_name, v in res_part.items():
+                        if metric_name == "count":
+                            print(f"  {metric_name + ' ':.<21s}{v:7d}")
+                        else:
+                            print(f"  {metric_name + ' ':.<24s} {v:6.2f} %")
+            all_results[k] = results
+            unseen_acc = results["Unseen"]["accuracy"]
+            if len(sweep_temperatures) > 1:
+                sweep_results.append((temperature, k, unseen_acc))
+                print(f"  T={temperature:<6} k={k:<3} Unseen accuracy={unseen_acc:.4f}%")
+            if best_combo is None or unseen_acc > best_combo[0]:
+                best_combo = (unseen_acc, temperature, k)
+
+    if len(sweep_temperatures) > 1:
+        best_acc, best_t, best_k = best_combo
+        print(f"\n{'='*50}")
+        print(f"BEST: T={best_t}, k={best_k}, Unseen accuracy={best_acc:.4f}%")
+        print(f"{'='*50}")
+
+    timing_stats["test"] = time.time() - t_start_test
+
+    # Save results -------------------------------------------------------------
+    dt = time.time() - t_start
+    hour = dt // 3600
+    minutes = (dt - (3600 * hour)) // 60
+    seconds = dt - (hour * 3600) - (minutes * 60)
+    print(f"\nThe code finished after: {int(hour)}:{int(minutes):02d}:{seconds:02.0f} (hh:mm:ss)\n")
+
+    model_name = os.path.join(*os.path.split(config.pretrained_checkpoint_path)[-2:])
+    results_file = knn_results_path(getattr(config, "results_file", "KNN_RESULTS.txt"), config.knn_weights)
+    with open(results_file, "a") as f:
+        if len(sweep_temperatures) > 1:
+            for temperature, k, acc in sweep_results:
+                f.write(f"\n{config.run_name}_{model_name}_T{temperature}_k{k}\t {acc:.4f}")
+            best_acc, best_t, best_k = best_combo
+            f.write(f"\n{config.run_name}_{model_name}_BEST_T{best_t}_k{best_k}\t {best_acc:.4f}")
+        else:
+            for k, results in all_results.items():
+                acc = results["Unseen"]["accuracy"]
+                f.write(f"\n{config.run_name}_{model_name}_k{k}\t {acc:.4f}")
+
+    timing_stats["overall"] = time.time() - t_start
+
+    # LOGGING =================================================================
+    if config.log_wandb:
+        wandb_run_name = config.run_name
+        if wandb_run_name is not None and config.run_id is not None:
+            wandb_run_name = f"{wandb_run_name}__{config.run_id}"
+        EXCLUDED_WANDB_CONFIG_KEYS = [
+            "log_wandb",
+            "wandb_entity",
+            "wandb_project",
+            "global_rank",
+            "local_rank",
+            "run_name",
+            "run_id",
+            "model_output_dir",
+        ]
+        job_type = "knn"
+        wandb.init(
+            name=wandb_run_name,
+            id=config.run_id,
+            group=config.pretrained_run_id,
+            entity=config.wandb_entity,
+            project=config.wandb_project,
+            config=wandb.helper.parse_config(config, exclude=EXCLUDED_WANDB_CONFIG_KEYS),
+            job_type=job_type,
+            tags=["evaluate", job_type],
+        )
+
+        # Log results for all k values to wandb
+        log_dict = {**{f"knn/duration/{k}": v for k, v in timing_stats.items()}}
+        for k, results in all_results.items():
+            for partition, res in results.items():
+                for metric_name, v in res.items():
+                    log_dict[f"knn_k{k}/{partition}/{metric_name}"] = v
+        wandb.log(log_dict)
+
+
+def get_parser():
+    r"""
+    Build argument parser for the command line interface.
+
+    Returns
+    -------
+    parser : argparse.ArgumentParser
+        CLI argument parser.
+    """
+    import sys
+
+    from barcodebert.pretraining import get_parser as get_pretraining_parser
+
+    parser = get_pretraining_parser()
+
+    # Use the name of the file called to determine the name of the program
+    prog = os.path.split(sys.argv[0])[1]
+    if prog == "__main__.py" or prog == "__main__":
+        # If the file is called __main__.py, go up a level to the module name
+        prog = os.path.split(__file__)[1]
+    parser.prog = prog
+    parser.description = "Evaluate with k-nearest neighbors for BarcodeBERT."
+
+    # Model args --------------------------------------------------------------
+    group = parser.add_argument_group("Input model")
+    group.add_argument(
+        "--pretrained-checkpoint",
+        "--pretrained_checkpoint",
+        dest="pretrained_checkpoint_path",
+        default="",
+        type=str,
+        metavar="PATH",
+        help="Path to pretrained model checkpoint. Required unless --external-model-id is given.",
+    )
+    group.add_argument(
+        "--external-model-id",
+        "--external_model_id",
+        dest="external_model_id",
+        default=None,
+        type=str,
+        metavar="HF_REPO_ID",
+        help="HuggingFace repo id of an off-the-shelf external DNA foundation model to evaluate"
+        " zero-shot (e.g. zhihan1996/DNABERT-2-117M), instead of one of our own pretrained"
+        " checkpoints. When set, --pretrained-checkpoint is ignored.",
+    )
+    group.add_argument(
+        "--external-model-cls",
+        "--external_model_cls",
+        dest="external_model_cls",
+        default="auto",
+        type=str,
+        choices=["auto", "masked-lm", "causal-lm"],
+        help="Which HuggingFace auto-class to load --external-model-id with: 'auto' (bare"
+        " encoder, e.g. DNABERT-2/DNABERT-S/Nucleotide Transformer/BarcodeBERT), 'masked-lm'"
+        " (e.g. GROVER/GENA-LM/Caduceus), or 'causal-lm' (e.g. HyenaDNA/Omni-DNA)."
+        " Default: %(default)s",
+    )
+    group.add_argument(
+        "--external-max-length",
+        "--external_max_length",
+        dest="external_max_length",
+        default=660,
+        type=int,
+        help="Fixed sequence length (in the external model's own tokens) to pad/truncate to when"
+        " --external-model-id is set. Default: %(default)s",
+    )
+    # kNN args ----------------------------------------------------------------
+    group = parser.add_argument_group("kNN parameters")
+    group.add_argument(
+        "--taxon",
+        type=str,
+        default="genus",
+        help="Taxonomic level to evaluate on. Default: %(default)s",
+    )
+    group.add_argument(
+        "--n-neighbors",
+        "--n_neighbors",
+        default=[1],
+        type=int,
+        nargs="+",
+        help="Neighborhood size(s) for kNN. Pass one or more values. Default: %(default)s",
+    )
+    group.add_argument(
+        "--metric",
+        default="cosine",
+        type=str,
+        help="Distance metric to use for kNN. Default: %(default)s",
+    )
+    group.add_argument(
+        "--knn-weights",
+        "--knn_weights",
+        default="uniform",
+        type=str,
+        choices=["uniform", "distance", "softmax"],
+        help="Vote weighting for kNN label assignment. 'uniform': every neighbor gets one vote"
+        " (plain majority vote). 'distance': neighbors are weighted by 1/distance (closer"
+        " neighbors count more; 'soft' kNN). 'softmax': neighbors are weighted by"
+        " softmax(similarity / --temperature), matching DINOv2's kNN eval; requires"
+        " --metric=cosine. Default: %(default)s",
+    )
+    group.add_argument(
+        "--temperature",
+        default=0.07,
+        type=float,
+        help="Temperature for --knn-weights=softmax (ignored otherwise). Lower is more"
+        " winner-take-all, higher is closer to uniform voting. Default: %(default)s",
+    )
+    group.add_argument(
+        "--temperature-sweep",
+        "--temperature_sweep",
+        dest="temperature_sweep",
+        default=None,
+        type=float,
+        nargs="+",
+        help="If set (--knn-weights=softmax only), sweep all these temperatures against"
+        " every --n-neighbors k using the SAME embeddings/kNN fit (no re-embedding per"
+        " temperature) and report the single best (temperature, k) combo by accuracy on"
+        " the query partition, in addition to the full grid. Overrides --temperature.",
+    )
+    group.add_argument(
+        "--query-file",
+        "--query_file",
+        dest="query_file",
+        default="unseen.csv",
+        type=str,
+        help="CSV (within --data-dir) to use as the query set, evaluated against the"
+        " --data-dir/supervised_train.csv gallery. Default (%(default)s) is the real"
+        " open-world test set. Pass supervised_val.csv instead for leakage-free"
+        " hyperparameter tuning without touching the test set.",
+    )
+
+    # Data args ---------------------------------------------------------------
+    group.add_argument(
+        "--mode",
+        default="nonmask",
+        type=str,
+        help="Mode for generating representations. Default: %(default)s",
+    )
+
+    group.add_argument(
+        "--mask-rate",
+        default=0.5,
+        type=float,
+        help="Mask rate for masked language model. Default: %(default)s",
+    )
+
+    group.add_argument(
+        "--representation_type",
+        default="tokens",
+        type=str,
+        choices=["tokens", "tokens_with_cls", "jumbo", "jumbo_avg", "all_tokens", "cls",
+                 "tokens_with_registers", "all_with_registers"],
+        help=(
+            "Type of representation to extract. Options: "
+            "'tokens' (mean of sequence tokens, excluding CLS and registers), "
+            "'tokens_with_cls' (mean of sequence tokens including CLS, no registers), "
+            "'tokens_with_registers' (mean of sequence tokens + registers, excluding CLS), "
+            "'all_with_registers' (mean of all tokens: sequence + registers + CLS), "
+            "'cls' (CLS token at position 0), "
+            "'jumbo' (flattened jumbo tokens, J*D dim), "
+            "'jumbo_avg' (average of jumbo tokens), "
+            "'all_tokens' (average of jumbo + sequence tokens). "
+            "Default: %(default)s"
+        ),
+    )
+    group.add_argument(
+        "--results-file",
+        "--results_file",
+        dest="results_file",
+        default="KNN_RESULTS.txt",
+        type=str,
+        help="File to append KNN accuracy results to. Default: %(default)s",
+    )
+
+    return parser
+
+
+def cli():
+    r"""Command-line interface for model training."""
+    parser = get_parser()
+    config = parser.parse_args()
+    # Handle disable_wandb overriding log_wandb and forcing it to be disabled.
+    if config.disable_wandb:
+        config.log_wandb = False
+    del config.disable_wandb
+    return run(config)
+
+
+if __name__ == "__main__":
+    cli()
