@@ -3,16 +3,57 @@
 A PyTorch implementation of BarcodeMAE+, a model for enhancing DNA foundation models to address masking inefficiencies.
 
 <p align="center">
-  <img src="Figures/Arch_mae.png" alt="drawing" width="800"/>
+  <img src="Figures/Arch_updated.png" alt="BarcodeMAE+ architecture" width="800"/>
 </p>
 
 #### Check out our paper (link coming soon)
 
-#### Model checkpoint is available here: (link coming soon)
+#### Model checkpoints are available here: (link coming soon)
 
 ## Quick start
 
-Use this jupyter notebook for quick start: (link coming soon)
+Load a pretrained checkpoint and run evaluation directly.
+
+### Load a checkpoint
+
+```python
+import torch
+from barcodebert.io import load_pretrained_model
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+model, ckpt = load_pretrained_model("model_checkpoints/bioscan5m_best.pt", device=device)
+```
+
+This prints the checkpoint's architecture and training diagnostics (encoder-decoder vs. encoder-only, CLS/Jumbo config, epochs trained) and returns the ready-to-use encoder plus the raw checkpoint dict.
+
+### Run evaluation
+
+Best BIOSCAN-5M configuration (encoder-decoder MAE-LM + CLS + cross-entropy genus classification, `cls` representation, similarity-weighted softmax KNN voting):
+
+```shell
+python barcodebert/knn_probing.py \
+  --pretrained-checkpoint model_checkpoints/bioscan5m_best.pt \
+  --data-dir ./data/ \
+  --dataset BIOSCAN-5M \
+  --representation_type cls \
+  --knn-weights softmax \
+  --temperature 0.02 \
+  --n-neighbors 1 3 5 7 10 15 20 25 50
+```
+
+Best fungal ITS / UNITE+INSD configuration (encoder-decoder MAE-LM + CLS + binary same-genus objective, `cls` representation, leakage-free genus-level evaluation on the Yeast and Filamentous test sets):
+
+```shell
+python barcodebert/knn_its_clean.py \
+  --pretrained-checkpoint model_checkpoints/its_best.pt \
+  --data-dir ./data/ITS-5M/ \
+  --tasks-dir ./data/ITS-5M/tasks/ \
+  --representation-type cls \
+  --knn-weights softmax \
+  --temperature 0.02 \
+  --n-neighbors 1 3 5 7 10 15 20 25 50 \
+  --tasks genus_level
+```
 
 ## Setup
 
