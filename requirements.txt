@@ -19,3 +19,10 @@ torchtext==0.16.1
 transformers==4.29.2
 umap-learn==0.5.6
 wandb
+# wandb depends on pydantic>=2.6,<3 with no further pin, so an unconstrained
+# install resolves to the newest pydantic -> pydantic-core, which may not ship
+# a prebuilt wheel for your platform and needs a Rust toolchain newer than
+# most clusters have (e.g. Compute Canada's rustc is older than pydantic-core
+# 2.46+ requires) to build from source. Pin to an older pydantic that has
+# prebuilt wheels everywhere, so it's never compiled locally.
+pydantic<2.10
