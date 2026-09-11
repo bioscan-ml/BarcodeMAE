@@ -8,8 +8,6 @@ from itertools import product
 import numpy as np
 import pandas as pd
 import torch
-from mycoai.data import Data
-from mycoai.data.encoders import TaxonEncoder
 from torch.utils.data import Dataset
 from tqdm import tqdm
 from transformers import AutoTokenizer
@@ -176,6 +174,9 @@ class DNADataset(Dataset):
             raise ValueError(f'Tokenizer "{tokenizer}" not recognized.')
         df = pd.read_csv(file_path, sep="\t" if file_path.endswith(".tsv") else ",", keep_default_na=False)
         if dataset_format == "ITS-5M":
+            from mycoai.data import Data
+            from mycoai.data.encoders import TaxonEncoder
+
             if "train" in file_path:
                 fungi_data = Data(file_path, allow_duplicates=True)
             elif "test" in file_path:
