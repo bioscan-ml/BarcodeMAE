@@ -186,9 +186,9 @@ The exact SLURM job arrays that generated the paper's checkpoints — including 
 
 Table 3 (BIOSCAN-5M) and Table 4 (UNITE+INSD) compare BarcodeMAE+ against published DNA foundation models and fungal-ITS-specific baselines. None of these are retrained from scratch — each is evaluated zero-shot from its own published checkpoint.
 
-### HuggingFace-hosted baselines (DNABERT-2, DNABERT-S, Nucleotide Transformer, GROVER, GENA-LM, HyenaDNA, Omni-DNA, Caduceus)
+### HuggingFace-hosted baselines (DNABERT-2, DNABERT-S, Nucleotide Transformer, GENA-LM, HyenaDNA-tiny, Caduceus-PS-1k)
 
-These need a separate environment with a newer `transformers` than the main training venv (see the header of `requirements-external-baselines.txt` for why — bumping the shared venv risks breaking Jumbo BERT pretraining):
+These are exactly the encoder-only and state-space baselines reported in Tables 3 and 4 of the paper (BarcodeBERT, MycoAI, and BarcodeMamba+ are covered separately below since they aren't HuggingFace `AutoModel` checkpoints). They need a separate environment with a newer `transformers` than the main training venv (see the header of `requirements-external-baselines.txt` for why — bumping the shared venv risks breaking Jumbo BERT pretraining):
 
 ```shell
 python3.11 -m venv --system-site-packages .venv-external
@@ -203,11 +203,8 @@ pip install -r requirements-external-baselines.txt
 | DNABERT-2 | `zhihan1996/DNABERT-2-117M` | `auto` | 660 |
 | DNABERT-S | `zhihan1996/DNABERT-S` | `auto` | 660 |
 | Nucleotide Transformer | `InstaDeepAI/nucleotide-transformer-500m-human-ref` | `auto` | 660 |
-| GROVER | `PoetschLab/GROVER` | `masked-lm` | 660 |
-| GENA-LM | `AIRI-Institute/gena-lm-bert-base-t2t` | `masked-lm` | 660 |
-| GENA-LM (ModernGENA variant) | `AIRI-Institute/moderngena-base` | `auto` | 660 |
+| GENA-LM | `AIRI-Institute/moderngena-base` | `auto` | 660 |
 | HyenaDNA-tiny | `LongSafari/hyenadna-tiny-1k-seqlen-hf` | `causal-lm` | 1000 |
-| Omni-DNA | `zehui127/Omni-DNA-116M` | `causal-lm` | 660 |
 | Caduceus-PS-1k | `kuleshov-group/caduceus-ps_seqlen-1k_d_model-256_n_layer-4_lr-8e-3` | `masked-lm` | 1000 |
 
 ```shell
