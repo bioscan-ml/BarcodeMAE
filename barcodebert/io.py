@@ -222,11 +222,17 @@ def load_pretrained_model(checkpoint_path, device=None):
     print(f"  Epoch (last saved):        {ckpt.get('epoch', 'N/A')}")
     print(f"  Epochs trained:            {epochs_trained}")
     print(f"  use_cls_token:             {getattr(cfg, 'use_cls_token', False)}")
-    print(f"  enable_genus_classification:      {getattr(cfg, 'enable_genus_classification', False)}")
-    print(f"  enable_taxonomy_classification:   {getattr(cfg, 'enable_taxonomy_classification', False)}")
-    print(f"  enable_cls_taxonomy:              {getattr(cfg, 'enable_cls_taxonomy', False)}")
-    print(f"  aux_loss_type:             {getattr(cfg, 'aux_loss_type', None)}")
-    print(f"  taxonomy_level_for_classification: {getattr(cfg, 'taxonomy_level_for_classification', 'N/A')}")
+    enable_genus_classification = getattr(cfg, "enable_genus_classification", False)
+    enable_cls_taxonomy = getattr(cfg, "enable_cls_taxonomy", False)
+    aux_loss_type = getattr(cfg, "aux_loss_type", None)
+    if enable_genus_classification:
+        print(f"  enable_genus_classification:      {enable_genus_classification}")
+    if enable_cls_taxonomy:
+        print(f"  enable_cls_taxonomy:              {enable_cls_taxonomy}")
+    if aux_loss_type:
+        print(f"  aux_loss_type:             {aux_loss_type}")
+    if enable_cls_taxonomy or aux_loss_type:
+        print(f"  taxonomy_level_for_classification: {getattr(cfg, 'taxonomy_level_for_classification', 'N/A')}")
     jumbo = getattr(cfg, "jumbo", False)
     jumbo_multiplier = getattr(cfg, "jumbo_multiplier", 0) if jumbo else 0
     n_registers = getattr(cfg, "n_registers", 0) if not jumbo else 0
