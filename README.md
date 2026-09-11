@@ -77,13 +77,27 @@ python barcodebert/knn_its_clean.py \
 
 ### BIOSCAN-5M
 
-BIOSCAN-5M is distributed by its own [repo](https://github.com/bioscan-ml/BIOSCAN-5M) via Google Drive, Zenodo, HuggingFace, and Kaggle. For this pipeline you only need the metadata (not the image packages):
+BIOSCAN-5M is distributed by its own [repo](https://github.com/bioscan-ml/BIOSCAN-5M) via Google Drive, Zenodo, HuggingFace, and Kaggle. The repo itself only documents manual Google Drive access, but the Zenodo and HuggingFace copies have stable, scriptable download URLs that work well on a headless server. For this pipeline you only need the metadata (not the image packages):
 
-1. Download the metadata archive — e.g. [`BIOSCAN_5M_Insect_Dataset_metadata_MultiTypes.zip`](https://zenodo.org/records/11973457) from Zenodo — and extract the **TSV** variant into `data/` as `BIOSCAN-5M_Dataset_metadata.tsv` (`data_split.py` reads it tab-separated, with `processid`, `dna_barcode`, `chunk`, `split`, and the taxonomic label columns).
-2. Split it into the train/val/test partitions as presented in the [BIOSCAN-5M paper](https://arxiv.org/abs/2406.12723):
+1. Download the metadata archive and extract the **TSV** variant into `data/` as `BIOSCAN-5M_Dataset_metadata.tsv` (`data_split.py` reads it tab-separated, with `processid`, `dna_barcode`, `chunk`, `split`, and the taxonomic label columns):
 
 ```shell
 cd data/
+wget -O BIOSCAN_5M_Insect_Dataset_metadata_MultiTypes.zip \
+  "https://zenodo.org/api/records/11973457/files/BIOSCAN_5M_Insect_Dataset_metadata_MultiTypes.zip/content"
+unzip BIOSCAN_5M_Insect_Dataset_metadata_MultiTypes.zip
+# then move/rename the TSV variant inside to BIOSCAN-5M_Dataset_metadata.tsv
+```
+
+Or via HuggingFace instead:
+
+```shell
+hf download Gharaee/BIOSCAN-5M --repo-type dataset --local-dir data/BIOSCAN-5M
+```
+
+2. Split it into the train/val/test partitions as presented in the [BIOSCAN-5M paper](https://arxiv.org/abs/2406.12723):
+
+```shell
 python data_split.py BIOSCAN-5M_Dataset_metadata.tsv
 ```
 
