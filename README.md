@@ -77,9 +77,10 @@ Download the training + test data (5,230,185 sequences, ~920 MB) directly from Z
 mkdir -p data/ITS-5M && cd data/ITS-5M
 wget -O data.zip "https://zenodo.org/api/records/10946477/files/data.zip/content"
 unzip data.zip
+mv data/* . && rmdir data
 ```
 
-This should give you `trainset.fasta` / `trainset_labels.csv` and the held-out test sets `knn_its_clean.py` expects (`test1.fasta` = Yeast, `test2.fasta` = Filamentous, `test3.fasta` = MycoAI's own test set — check the archive's contents against [MycoAI's `data/` folder](https://github.com/MycoAI/MycoAI/tree/master/data) if any are missing).
+The zip extracts into a nested `data/` subfolder, so the `mv`/`rmdir` above flattens it back into `data/ITS-5M/` directly (matching every `--data-dir ./data/ITS-5M` used throughout this README). This should give you `trainset.fasta` / `trainset_labels.csv` and the held-out test sets `knn_its_clean.py` expects (`test1.fasta` = Yeast, `test2.fasta` = Filamentous, `test3.fasta` = MycoAI's own test set — check the archive's contents against [MycoAI's `data/` folder](https://github.com/MycoAI/MycoAI/tree/master/data) if any are missing).
 
 Optionally, run `data/preprocess_its.py` to apply the BarcodeMamba+-style filtering (drop duplicate sequence-label pairs, outlier-length sequences, sequences with >5% ambiguous bases, and rare labels — see the script's docstring for the full recipe).
 
