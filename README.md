@@ -28,51 +28,6 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
-## Quick start
-
-Load a pretrained checkpoint and run evaluation directly.
-
-### Load a checkpoint
-
-```python
-import torch
-from barcodebert.io import load_pretrained_model
-
-device = "cuda" if torch.cuda.is_available() else "cpu"
-model, ckpt = load_pretrained_model("model_checkpoints/bioscan5m_best.pt", device=device)
-```
-
-This prints the checkpoint's architecture and training diagnostics (encoder-decoder vs. encoder-only, CLS/Jumbo config, epochs trained) and returns the ready-to-use encoder plus the raw checkpoint dict.
-
-### Run evaluation
-
-Best BIOSCAN-5M configuration (encoder-decoder MAE-LM + CLS + cross-entropy genus classification, `cls` representation, similarity-weighted softmax KNN voting):
-
-```shell
-python barcodebert/knn_probing.py \
-  --pretrained-checkpoint model_checkpoints/bioscan5m_best.pt \
-  --data-dir ./data/ \
-  --dataset BIOSCAN-5M \
-  --representation_type cls \
-  --knn-weights softmax \
-  --temperature 0.02 \
-  --n-neighbors 1 3 5 7 10 15 20 25 50
-```
-
-Best fungal ITS / UNITE+INSD configuration (encoder-decoder MAE-LM + CLS + binary same-genus objective, `cls` representation, deduplicated genus-level evaluation — this evaluates the Yeast, Filamentous, and MycoAI test sets in one pass):
-
-```shell
-python barcodebert/knn_its_clean.py \
-  --pretrained-checkpoint model_checkpoints/its_best.pt \
-  --data-dir ./data/ITS-5M/ \
-  --tasks-dir ./data/ITS-5M/tasks/ \
-  --representation-type cls \
-  --knn-weights softmax \
-  --temperature 0.02 \
-  --n-neighbors 1 3 5 7 10 15 20 25 50 \
-  --tasks genus_level
-```
-
 ## Preparing the data
 
 ### BIOSCAN-5M
@@ -132,6 +87,51 @@ python barcodebert/analyze_its_overlap.py \
 ```
 
 This also prints the train/test overlap breakdown per test set (species/genus/barcode overlap, exact vs. substring duplicates) used for the paper's overlap audit. Pass `--include-leaked` to export the *non*-deduplicated counterpart of the same task files instead (same task definitions, but without excluding duplicate specimens), if you want to compare against the deduplicated numbers.
+
+## Quick start
+
+Load a pretrained checkpoint and run evaluation directly.
+
+### Load a checkpoint
+
+```python
+import torch
+from barcodebert.io import load_pretrained_model
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+model, ckpt = load_pretrained_model("model_checkpoints/bioscan5m_best.pt", device=device)
+```
+
+This prints the checkpoint's architecture and training diagnostics (encoder-decoder vs. encoder-only, CLS/Jumbo config, epochs trained) and returns the ready-to-use encoder plus the raw checkpoint dict.
+
+### Run evaluation
+
+Best BIOSCAN-5M configuration (encoder-decoder MAE-LM + CLS + cross-entropy genus classification, `cls` representation, similarity-weighted softmax KNN voting):
+
+```shell
+python barcodebert/knn_probing.py \
+  --pretrained-checkpoint model_checkpoints/bioscan5m_best.pt \
+  --data-dir ./data/ \
+  --dataset BIOSCAN-5M \
+  --representation_type cls \
+  --knn-weights softmax \
+  --temperature 0.02 \
+  --n-neighbors 1 3 5 7 10 15 20 25 50
+```
+
+Best fungal ITS / UNITE+INSD configuration (encoder-decoder MAE-LM + CLS + binary same-genus objective, `cls` representation, deduplicated genus-level evaluation — this evaluates the Yeast, Filamentous, and MycoAI test sets in one pass):
+
+```shell
+python barcodebert/knn_its_clean.py \
+  --pretrained-checkpoint model_checkpoints/its_best.pt \
+  --data-dir ./data/ITS-5M/ \
+  --tasks-dir ./data/ITS-5M/tasks/ \
+  --representation-type cls \
+  --knn-weights softmax \
+  --temperature 0.02 \
+  --n-neighbors 1 3 5 7 10 15 20 25 50 \
+  --tasks genus_level
+```
 
 ## Pretraining
 
