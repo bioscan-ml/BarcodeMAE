@@ -59,7 +59,7 @@ python barcodebert/knn_probing.py \
   --n-neighbors 1 3 5 7 10 15 20 25 50
 ```
 
-Best fungal ITS / UNITE+INSD configuration (encoder-decoder MAE-LM + CLS + binary same-genus objective, `cls` representation, leakage-free genus-level evaluation — this evaluates the Yeast, Filamentous, and MycoAI test sets in one pass):
+Best fungal ITS / UNITE+INSD configuration (encoder-decoder MAE-LM + CLS + binary same-genus objective, `cls` representation, deduplicated genus-level evaluation — this evaluates the Yeast, Filamentous, and MycoAI test sets in one pass):
 
 ```shell
 python barcodebert/knn_its_clean.py \
@@ -75,13 +75,41 @@ python barcodebert/knn_its_clean.py \
 
 ## Preparing the data
 
-1. Download the metadata file and copy it into the data folder
-2. Split the metadata file into smaller files according to the different partitions as presented in the [BIOSCAN-5M paper](https://arxiv.org/abs/2406.12723)
+### BIOSCAN-5M
+
+BIOSCAN-5M is distributed by its own [repo](https://github.com/bioscan-ml/BIOSCAN-5M) via Google Drive, Zenodo, HuggingFace, and Kaggle. For this pipeline you only need the metadata (not the image packages):
+
+1. Download the metadata archive — e.g. [`BIOSCAN_5M_Insect_Dataset_metadata_MultiTypes.zip`](https://zenodo.org/records/11973457) from Zenodo — and extract the **TSV** variant into `data/` as `BIOSCAN-5M_Dataset_metadata.tsv` (`data_split.py` reads it tab-separated, with `processid`, `dna_barcode`, `chunk`, `split`, and the taxonomic label columns).
+2. Split it into the train/val/test partitions as presented in the [BIOSCAN-5M paper](https://arxiv.org/abs/2406.12723):
 
 ```shell
 cd data/
 python data_split.py BIOSCAN-5M_Dataset_metadata.tsv
 ```
+
+### Fungal ITS / UNITE+INSD
+
+The ITS data and its preprocessing come from MycoAI ([Romeijn et al., 2024](https://onlinelibrary.wiley.com/doi/10.1111/1755-0998.14006); [repo](https://github.com/MycoAI/MycoAI)). `knn_its_clean.py`, `knn_its_mycoai.py`, and `analyze_its_overlap.py` (below) all depend on the `mycoai-its` package for its UNITE-header FASTA parser:
+
+```shell
+pip install mycoai-its==0.0.5
+```
+
+Download the training + test data (5,230,185 sequences) from [Zenodo](https://zenodo.org/doi/10.5281/zenodo.10946476) (`data.zip`, ~920 MB) and extract into `data/ITS-5M/`. This should give you `trainset.fasta` / `trainset_labels.csv` and the held-out test sets `knn_its_clean.py` expects (`test1.fasta` = Yeast, `test2.fasta` = Filamentous, `test3.fasta` = MycoAI's own test set — check the archive's contents against [MycoAI's `data/` folder](https://github.com/MycoAI/MycoAI/tree/master/data) if any are missing).
+
+Optionally, run `data/preprocess_its.py` to apply the BarcodeMamba+-style filtering (drop duplicate sequence-label pairs, outlier-length sequences, sequences with >5% ambiguous bases, and rare labels — see the script's docstring for the full recipe).
+
+### Deduplicated evaluation task files (`--tasks-dir`)
+
+`knn_its_clean.py`, `knn_its_mycoai.py`, and `knn_its_barcodemamba.py` all take a `--tasks-dir` pointing at CSVs produced by `analyze_its_overlap.py`. That script re-parses each test set's raw UNITE FASTA headers directly (not the pre-factorized `*_labels.csv`, whose `species` column collapses any species outside the training vocabulary into one shared "unknown" bucket), removes query specimens that are exact-duplicate or same-read/different-trim ("substring") duplicates of training sequences, and labels each remaining query `species_level` or `genus_level` depending on whether its species or only its genus was seen during training:
+
+```shell
+python barcodebert/analyze_its_overlap.py \
+  --data-dir ./data/ITS-5M \
+  --export-dir ./data/ITS-5M/tasks
+```
+
+This also prints the train/test overlap breakdown per test set (species/genus/barcode overlap, exact vs. substring duplicates) used for the paper's overlap audit. Pass `--include-leaked` to export the *non*-deduplicated counterpart of the same task files instead (same task definitions, but without excluding duplicate specimens), if you want to compare against the deduplicated numbers.
 
 ## Pretraining
 

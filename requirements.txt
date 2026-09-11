@@ -18,6 +18,12 @@ torchdata==0.7.1
 torchtext==0.16.1
 transformers==4.29.2
 umap-learn==0.5.6
+# Fungal ITS / UNITE+INSD support (knn_its_clean.py, knn_its_mycoai.py,
+# analyze_its_overlap.py) -- provides the UNITE-header FASTA parser. On
+# clusters whose default pip index is a custom wheelhouse without this
+# package (e.g. Compute Canada), install with:
+#   pip install mycoai-its==0.0.5 --index-url https://pypi.org/simple/
+mycoai-its==0.0.5
 wandb
 # wandb depends on pydantic>=2.6,<3 with no further pin, so an unconstrained
 # install resolves to the newest pydantic -> pydantic-core, which may not ship
