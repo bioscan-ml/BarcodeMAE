@@ -228,11 +228,22 @@ def load_pretrained_model(checkpoint_path, device=None):
     if enable_genus_classification:
         print(f"  enable_genus_classification:      {enable_genus_classification}")
     if enable_cls_taxonomy:
-        print(f"  enable_cls_taxonomy:              {enable_cls_taxonomy}")
+        print(f"  enable_cls_taxonomy (binary):      {enable_cls_taxonomy}")
+        print(f"  cls_taxonomy_loss_weight: {getattr(cfg, 'cls_taxonomy_loss_weight', 'N/A')}")
     if aux_loss_type:
         print(f"  aux_loss_type:             {aux_loss_type}")
+        print(f"  aux_loss_weight:           {getattr(cfg, 'aux_loss_weight', 'N/A')}")
+        print(f"  aux_loss_warmup_epochs:    {getattr(cfg, 'aux_loss_warmup_epochs', 'N/A')}")
+        if aux_loss_type == "triplet":
+            print(f"  triplet_margin:            {getattr(cfg, 'triplet_margin', 'N/A')}")
+            print(f"  triplet_mining:            {getattr(cfg, 'triplet_mining', 'N/A')}")
+        elif aux_loss_type == "supcon":
+            print(f"  supcon_temperature:        {getattr(cfg, 'supcon_temperature', 'N/A')}")
     if enable_cls_taxonomy or aux_loss_type:
         print(f"  taxonomy_level_for_classification: {getattr(cfg, 'taxonomy_level_for_classification', 'N/A')}")
+        print(f"  taxonomy_max_pairs:        {getattr(cfg, 'taxonomy_max_pairs', 'N/A')}")
+        print(f"  k_classes:                 {getattr(cfg, 'k_classes', 'N/A')}")
+        print(f"  m_per_class:               {getattr(cfg, 'm_per_class', 'N/A')}")
     jumbo = getattr(cfg, "jumbo", False)
     jumbo_multiplier = getattr(cfg, "jumbo_multiplier", 0) if jumbo else 0
     n_registers = getattr(cfg, "n_registers", 0) if not jumbo else 0
