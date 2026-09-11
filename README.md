@@ -65,6 +65,12 @@ The ITS data and its preprocessing come from MycoAI ([Romeijn et al., 2024](http
 pip install mycoai-its==0.0.5
 ```
 
+`mycoai`'s own `__init__.py` calls `wandb.login('allow')` as an import-time side effect, which can hang or crash with a `ServiceStartTimeoutError` on compute nodes with a restricted/no-network `/tmp` (nothing to do with our own wandb usage — this happens just from `import mycoai`, before any of our code runs). If you hit that, disable wandb before running anything that touches ITS-5M data (`analyze_its_overlap.py`, `knn_its_clean.py`, `knn_its_mycoai.py`):
+
+```shell
+export WANDB_MODE=disabled
+```
+
 Download the training + test data (5,230,185 sequences, ~920 MB) directly from Zenodo and extract into `data/ITS-5M/`:
 
 ```shell
