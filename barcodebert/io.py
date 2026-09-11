@@ -202,6 +202,21 @@ def load_pretrained_model(checkpoint_path, device=None):
         epochs_trained = total_step / steps_per_epoch
     else:
         epochs_trained = "N/A"
+
+    n_params = sum(p.numel() for p in model.parameters())
+    pretraining_arch = "encoder-decoder (MAE-LM)" if getattr(cfg, "arch", None) == "maelm" else "encoder-only (Transformer)"
+
+    print("\n--- Model Architecture (loaded encoder only -- the decoder, if any, is pretraining-only and discarded here) ---")
+    print(f"  Pretraining architecture:  {pretraining_arch}")
+    print(f"  Encoder layers:            {bert_config.num_hidden_layers}")
+    print(f"  Encoder attention heads:   {bert_config.num_attention_heads}")
+    print(f"  Encoder hidden size:       {bert_config.hidden_size}")
+    print(f"  Max position embeddings:   {bert_config.max_position_embeddings}")
+    print(f"  Vocab size:                {bert_config.vocab_size}")
+    print(f"  k-mer size:                {getattr(cfg, 'k_mer', 'N/A')}")
+    print(f"  Max sequence length:       {getattr(cfg, 'max_len', 'N/A')}")
+    print(f"  Total encoder parameters:  {n_params:,}")
+
     print("\n--- Checkpoint Diagnostics ---")
     print(f"  Total steps trained:       {total_step}")
     print(f"  Epoch (last saved):        {ckpt.get('epoch', 'N/A')}")
@@ -210,6 +225,8 @@ def load_pretrained_model(checkpoint_path, device=None):
     print(f"  enable_genus_classification:      {getattr(cfg, 'enable_genus_classification', False)}")
     print(f"  enable_taxonomy_classification:   {getattr(cfg, 'enable_taxonomy_classification', False)}")
     print(f"  enable_cls_taxonomy:              {getattr(cfg, 'enable_cls_taxonomy', False)}")
+    print(f"  aux_loss_type:             {getattr(cfg, 'aux_loss_type', None)}")
+    print(f"  taxonomy_level_for_classification: {getattr(cfg, 'taxonomy_level_for_classification', 'N/A')}")
     jumbo = getattr(cfg, "jumbo", False)
     jumbo_multiplier = getattr(cfg, "jumbo_multiplier", 0) if jumbo else 0
     n_registers = getattr(cfg, "n_registers", 0) if not jumbo else 0

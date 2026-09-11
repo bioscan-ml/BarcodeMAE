@@ -272,12 +272,6 @@ python barcodebert/knn_its_barcodemamba.py \
 
 BarcodeBERT is the same architecture family as BarcodeMAE+ (this repo, prior work), so its checkpoint is evaluated the same way as any of our own checkpoints — just point `--pretrained-checkpoint` at the BarcodeBERT checkpoint in `knn_probing.py` / `knn_its_clean.py` (Quick start above).
 
-### Original CNN / DNABERT baselines
-
-The CNN and DNABERT baseline reproductions from the earlier BarcodeMAE arXiv paper are kept under `scripts/CNN/` and `scripts/DNABERT/`, unrelated to the HuggingFace-adapter path above.
-
-The exact SLURM scripts that generated the paper's baseline numbers are in [`slurm/final_scripts/`](slurm/final_scripts/): `external_baseline_knn.sh`, `bioscan5m_external_baselines_modern.sh`, `its5m_external_baselines_modern.sh`, `its5m_mycoai_baselines.sh`, `bioscan5m_barcodemamba_sweep.sh`, and `its5m_barcodemamba_sweep.sh`.
-
 ## Citation
 
 If you find BarcodeMAE+ useful in your research please consider citing:
