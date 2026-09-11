@@ -35,7 +35,11 @@ def split_df(filename):
     label_cols = ["phylum", "class", "order", "family", "subfamily", "genus", "species", "dna_bin"]
     df_usecols = ["chunk", "dna_barcode", "split"] + label_cols
 
-    bioscan_5M = pd.read_csv(filename, dtype=df_dtypes, usecols=df_usecols, sep="\t")
+    # Official BIOSCAN-5M releases ship both TSV and CSV variants of the metadata
+    # (e.g. the Zenodo "MultiTypes" archive's metadata/csv/ vs metadata/tsv/ folders);
+    # pick the separator to match whichever one was actually downloaded.
+    sep = "," if filename.lower().endswith(".csv") else "\t"
+    bioscan_5M = pd.read_csv(filename, dtype=df_dtypes, usecols=df_usecols, sep=sep)
 
     # Convert categorical columns to int codes which we can use as training targets
     for c in label_cols:

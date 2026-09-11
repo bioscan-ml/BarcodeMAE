@@ -34,15 +34,16 @@ pip install -e .
 
 BIOSCAN-5M is distributed by its own [repo](https://github.com/bioscan-ml/BIOSCAN-5M) via Google Drive, Zenodo, HuggingFace, and Kaggle. The repo itself only documents manual Google Drive access, but the Zenodo and HuggingFace copies have stable, scriptable download URLs that work well on a headless server. For this pipeline you only need the metadata (not the image packages):
 
-1. Download the metadata archive and extract the **TSV** variant into `data/` as `BIOSCAN-5M_Dataset_metadata.tsv` (`data_split.py` reads it tab-separated, with `processid`, `dna_barcode`, `chunk`, `split`, and the taxonomic label columns):
+1. Download the metadata archive and extract it into `data/` (`data_split.py` reads `processid`, `dna_barcode`, `chunk`, `split`, and the taxonomic label columns, and works with either the CSV or TSV variant):
 
 ```shell
 cd data/
 wget -O BIOSCAN_5M_Insect_Dataset_metadata_MultiTypes.zip \
   "https://zenodo.org/api/records/11973457/files/BIOSCAN_5M_Insect_Dataset_metadata_MultiTypes.zip/content"
 unzip BIOSCAN_5M_Insect_Dataset_metadata_MultiTypes.zip
-# then move/rename the TSV variant inside to BIOSCAN-5M_Dataset_metadata.tsv
 ```
+
+This extracts into a `bioscan5m/metadata/` directory with separate `csv/` and `jsonld/` subfolders (no `tsv/` in the current release) — the file you want is `bioscan5m/metadata/csv/BIOSCAN_5M_Insect_Dataset_metadata.csv`.
 
 Or via HuggingFace instead:
 
@@ -53,7 +54,7 @@ hf download Gharaee/BIOSCAN-5M --repo-type dataset --local-dir data/BIOSCAN-5M
 2. Split it into the train/val/test partitions as presented in the [BIOSCAN-5M paper](https://arxiv.org/abs/2406.12723):
 
 ```shell
-python data_split.py BIOSCAN-5M_Dataset_metadata.tsv
+python data_split.py bioscan5m/metadata/csv/BIOSCAN_5M_Insect_Dataset_metadata.csv
 ```
 
 ### Fungal ITS / UNITE+INSD
