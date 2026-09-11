@@ -109,7 +109,15 @@ The ITS data and its preprocessing come from MycoAI ([Romeijn et al., 2024](http
 pip install mycoai-its==0.0.5
 ```
 
-Download the training + test data (5,230,185 sequences) from [Zenodo](https://zenodo.org/doi/10.5281/zenodo.10946476) (`data.zip`, ~920 MB) and extract into `data/ITS-5M/`. This should give you `trainset.fasta` / `trainset_labels.csv` and the held-out test sets `knn_its_clean.py` expects (`test1.fasta` = Yeast, `test2.fasta` = Filamentous, `test3.fasta` = MycoAI's own test set — check the archive's contents against [MycoAI's `data/` folder](https://github.com/MycoAI/MycoAI/tree/master/data) if any are missing).
+Download the training + test data (5,230,185 sequences, ~920 MB) directly from Zenodo and extract into `data/ITS-5M/`:
+
+```shell
+mkdir -p data/ITS-5M && cd data/ITS-5M
+wget -O data.zip "https://zenodo.org/api/records/10946477/files/data.zip/content"
+unzip data.zip
+```
+
+This should give you `trainset.fasta` / `trainset_labels.csv` and the held-out test sets `knn_its_clean.py` expects (`test1.fasta` = Yeast, `test2.fasta` = Filamentous, `test3.fasta` = MycoAI's own test set — check the archive's contents against [MycoAI's `data/` folder](https://github.com/MycoAI/MycoAI/tree/master/data) if any are missing).
 
 Optionally, run `data/preprocess_its.py` to apply the BarcodeMamba+-style filtering (drop duplicate sequence-label pairs, outlier-length sequences, sequences with >5% ambiguous bases, and rare labels — see the script's docstring for the full recipe).
 
@@ -234,7 +242,12 @@ Caduceus needs `mamba-ssm`/`causal-conv1d` (CUDA kernels) on top of `requirement
 
 ### MycoAI-BERT / MycoAI-CNN (fungal ITS only)
 
-These ship as `mycoai.modules.seq_class_network.SeqClassNetwork` checkpoints (not HuggingFace), downloadable from [Zenodo](https://zenodo.org/records/10904344). Evaluated in the main venv — `mycoai` is already a dependency for ITS-5M data loading.
+These ship as `mycoai.modules.seq_class_network.SeqClassNetwork` checkpoints (not HuggingFace). Evaluated in the main venv — `mycoai` is already a dependency for ITS-5M data loading.
+
+```shell
+wget -O MycoAI-BERT.pt "https://zenodo.org/api/records/10904344/files/MycoAI-BERT.pt/content"
+wget -O MycoAI-CNN.pt "https://zenodo.org/api/records/10904344/files/MycoAI-CNN.pt/content"
+```
 
 ```shell
 python barcodebert/knn_its_mycoai.py \
