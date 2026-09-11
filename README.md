@@ -290,7 +290,27 @@ python barcodebert/knn_its_barcodemamba.py \
 
 ### BarcodeBERT
 
-BarcodeBERT is the same architecture family as BarcodeMAE+ (this repo, prior work), so its checkpoint is evaluated the same way as any of our own checkpoints — just point `--pretrained-checkpoint` at the BarcodeBERT checkpoint in `knn_probing.py` / `knn_its_clean.py` (Quick start above).
+BarcodeBERT is the same architecture family as BarcodeMAE+ (this repo, prior work) — an encoder-only model with no CLS token, so it uses the `tokens` representation type rather than `cls`. Its checkpoint is evaluated the same way as any of our own checkpoints, just with `--pretrained-checkpoint` pointed at the BarcodeBERT checkpoint. Table 3 reports two BarcodeBERT variants (pretrained on CANADA-1.5M vs. BIOSCAN-5M); Table 4 evaluates the CANADA-1.5M variant zero-shot on ITS:
+
+```shell
+# BIOSCAN-5M
+python barcodebert/knn_probing.py \
+  --pretrained-checkpoint path/to/barcodebert_checkpoint.pt \
+  --data-dir ./data/BIOSCAN-5M \
+  --dataset BIOSCAN-5M \
+  --representation_type tokens \
+  --knn-weights softmax --temperature 0.02 \
+  --n-neighbors 1 3 5 7 10 15 20 25 50
+
+# Fungal ITS / UNITE+INSD
+python barcodebert/knn_its_clean.py \
+  --pretrained-checkpoint path/to/barcodebert_checkpoint.pt \
+  --data-dir ./data/ITS-5M \
+  --tasks-dir ./data/ITS-5M/tasks \
+  --representation-type tokens \
+  --knn-weights softmax --temperature 0.02 \
+  --n-neighbors 1 3 5 7 10 15 20 25 50
+```
 
 ## Citation
 
