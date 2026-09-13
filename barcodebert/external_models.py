@@ -22,7 +22,12 @@ import inspect
 
 import torch
 import torch.nn as nn
-from transformers import AutoModel, AutoModelForCausalLM, AutoModelForMaskedLM, AutoTokenizer
+from transformers import (
+    AutoModel,
+    AutoModelForCausalLM,
+    AutoModelForMaskedLM,
+    AutoTokenizer,
+)
 
 _MODEL_CLASSES = {
     "auto": AutoModel,

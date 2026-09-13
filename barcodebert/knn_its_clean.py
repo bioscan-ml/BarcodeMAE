@@ -99,8 +99,9 @@ ALL_TASKS = ["species_level", "genus_level"]
 UNKNOWN_STR = "?"
 
 
-def extract_representations(sequences, model, tokenizer, representation_type, use_cls_token, device,
-                             embed_batch_size=32):
+def extract_representations(
+    sequences, model, tokenizer, representation_type, use_cls_token, device, embed_batch_size=32
+):
     """Batched embedding extraction — mirrors knn_its.py's extract_representations'
     pooling logic exactly, but forwards `embed_batch_size` sequences per model
     call instead of one. One-at-a-time forward passes badly under-utilize the
@@ -112,9 +113,10 @@ def extract_representations(sequences, model, tokenizer, representation_type, us
     embeddings = []
 
     with torch.no_grad():
-        for start in tqdm(range(0, len(sequences), embed_batch_size),
-                           desc=f"  embedding ({representation_type})", mininterval=10.0):
-            batch_seqs = sequences[start:start + embed_batch_size]
+        for start in tqdm(
+            range(0, len(sequences), embed_batch_size), desc=f"  embedding ({representation_type})", mininterval=10.0
+        ):
+            batch_seqs = sequences[start : start + embed_batch_size]
 
             ids_list, mask_list = [], []
             for seq in batch_seqs:
@@ -214,8 +216,9 @@ def fit_knn(X_all, labels_col, max_k, metric):
     return clf
 
 
-def evaluate_task(clf, X_all, labels_col, task_mask, n_neighbors_list, weights="uniform", temperature=0.07,
-                   temperature_sweep=None):
+def evaluate_task(
+    clf, X_all, labels_col, task_mask, n_neighbors_list, weights="uniform", temperature=0.07, temperature_sweep=None
+):
     """Evaluate one (test set, task) combo: rows selected by task_mask,
     labelled by labels_col, against a KNN classifier already fit on the
     appropriate gallery.
@@ -237,13 +240,17 @@ def evaluate_task(clf, X_all, labels_col, task_mask, n_neighbors_list, weights="
     test_labels = set(np.unique(y_query).tolist())
     label_overlap = test_labels & gallery_labels
     overlap_pct = 100.0 * len(label_overlap) / len(test_labels) if test_labels else float("nan")
-    print(f"    gallery: {gallery_n} samples, {len(gallery_labels)} unique labels | "
-          f"query: {len(y_query)} samples, {len(test_labels)} unique labels | "
-          f"label overlap: {len(label_overlap)}/{len(test_labels)} ({overlap_pct:.1f}%)")
+    print(
+        f"    gallery: {gallery_n} samples, {len(gallery_labels)} unique labels | "
+        f"query: {len(y_query)} samples, {len(test_labels)} unique labels | "
+        f"label overlap: {len(label_overlap)}/{len(test_labels)} ({overlap_pct:.1f}%)"
+    )
     if overlap_pct < 100.0:
         missing = test_labels - gallery_labels
-        print(f"    WARNING: {len(missing)} query label(s) not in gallery (query can never be correct "
-              f"for these) — task construction should guarantee 100%, this indicates a bug: {sorted(missing)[:10]}")
+        print(
+            f"    WARNING: {len(missing)} query label(s) not in gallery (query can never be correct "
+            f"for these) — task construction should guarantee 100%, this indicates a bug: {sorted(missing)[:10]}"
+        )
 
     max_k = max(n_neighbors_list)
     neigh_dist, neigh_ind = clf.kneighbors(X_query, n_neighbors=max_k)
@@ -353,33 +360,48 @@ def run(config):
         tokenizer = KmerTokenizer(k_mer, vocab, stride=stride, padding=True, max_len=max_len)
 
         model = build_random_encoder(
-            vocab_size=len(vocab), n_layers=config.n_layers, n_heads=config.n_heads,
-            hidden_size=config.encoder_embed_dim, max_position_embeddings=max_len + 2, arch=config.arch,
+            vocab_size=len(vocab),
+            n_layers=config.n_layers,
+            n_heads=config.n_heads,
+            hidden_size=config.encoder_embed_dim,
+            max_position_embeddings=max_len + 2,
+            arch=config.arch,
         ).to(device)
         model.eval()
 
     # ── Gallery: embed once, fit only the classifier(s) --tasks asks for ──────
-    print(f"\nLoading gallery (trainset)...")
+    print("\nLoading gallery (trainset)...")
     gallery_df_raw = Data(os.path.join(config.data_dir, "trainset.fasta"), allow_duplicates=True).data
     # Drop rows useless for every requested classifier up front — no point
     # embedding a specimen whose only resolved label is one we're not asked to
     # evaluate (fit_knn would filter it out downstream anyway, but only after
     # paying for the embedding — the dominant cost of this whole script).
-    needed_label_cols = [c for task, c in (("species_level", "species"), ("genus_level", "genus")) if task in config.tasks]
+    needed_label_cols = [
+        c for task, c in (("species_level", "species"), ("genus_level", "genus")) if task in config.tasks
+    ]
     is_usable = pd.concat([gallery_df_raw[c] != UNKNOWN_STR for c in needed_label_cols], axis=1).any(axis=1)
     gallery_df = gallery_df_raw[is_usable].reset_index(drop=True)
-    print(f"  {len(gallery_df_raw)} raw specimens -> {len(gallery_df)} with a resolved label for "
-          f"{'/'.join(needed_label_cols)} ({len(gallery_df_raw) - len(gallery_df)} dropped, useless for --tasks {config.tasks})")
+    print(
+        f"  {len(gallery_df_raw)} raw specimens -> {len(gallery_df)} with a resolved label for "
+        f"{'/'.join(needed_label_cols)} ({len(gallery_df_raw) - len(gallery_df)} dropped, useless for --tasks {config.tasks})"
+    )
 
     print(f"Extracting gallery embeddings (once, reused for {'/'.join(config.tasks)})...")
     X_gallery = extract_representations(
-        gallery_df["sequence"].tolist(), model, tokenizer, config.representation_type, use_cls, device,
+        gallery_df["sequence"].tolist(),
+        model,
+        tokenizer,
+        config.representation_type,
+        use_cls,
+        device,
         embed_batch_size=config.embed_batch_size,
     )
 
     print(f"Fitting KNN classifier(s) for {config.tasks}...", flush=True)
     max_k = max(config.n_neighbors)
-    clf_species = fit_knn(X_gallery, gallery_df["species"], max_k, config.metric) if "species_level" in config.tasks else None
+    clf_species = (
+        fit_knn(X_gallery, gallery_df["species"], max_k, config.metric) if "species_level" in config.tasks else None
+    )
     clf_genus = fit_knn(X_gallery, gallery_df["genus"], max_k, config.metric) if "genus_level" in config.tasks else None
     if clf_species is not None:
         print(f"  species gallery: {len(clf_species._y)} specimens, {len(clf_species.classes_)} classes")
@@ -429,14 +451,21 @@ def run(config):
         if "genus_level" in config.tasks:
             relevant_mask |= test_df["is_genus_level"]
         relevant = test_df[relevant_mask].reset_index(drop=True)
-        print(f"\n{name}: {len(relevant)} query specimens across {config.tasks} "
-              f"({relevant['is_species_level'].sum()} species_level, "
-              f"{relevant['is_genus_level'].sum()} genus_level)")
+        print(
+            f"\n{name}: {len(relevant)} query specimens across {config.tasks} "
+            f"({relevant['is_species_level'].sum()} species_level, "
+            f"{relevant['is_genus_level'].sum()} genus_level)"
+        )
         if len(relevant) == 0:
             continue
 
         X_query = extract_representations(
-            relevant["sequence"].tolist(), model, tokenizer, config.representation_type, use_cls, device,
+            relevant["sequence"].tolist(),
+            model,
+            tokenizer,
+            config.representation_type,
+            use_cls,
+            device,
             embed_batch_size=config.embed_batch_size,
         )
 
@@ -446,9 +475,16 @@ def run(config):
             clf = clf_species if task == "species_level" else clf_genus
             label_col = relevant["species"] if task == "species_level" else relevant["genus"]
             task_mask = relevant["is_species_level"] if task == "species_level" else relevant["is_genus_level"]
-            eval_out = evaluate_task(clf, X_query, label_col, task_mask, config.n_neighbors,
-                                      weights=config.knn_weights, temperature=config.temperature,
-                                      temperature_sweep=getattr(config, "temperature_sweep", None))
+            eval_out = evaluate_task(
+                clf,
+                X_query,
+                label_col,
+                task_mask,
+                config.n_neighbors,
+                weights=config.knn_weights,
+                temperature=config.temperature,
+                temperature_sweep=getattr(config, "temperature_sweep", None),
+            )
             sweeping = config.knn_weights == "softmax" and getattr(config, "temperature_sweep", None)
             res_by_k, best_combo = eval_out if sweeping else (eval_out, None)
 
@@ -459,17 +495,23 @@ def run(config):
                     if sweeping:
                         for t, m in res.items():
                             all_results.setdefault(task, {}).setdefault(k, {}).setdefault(name, {})[t] = m
-                            f.write(f"\n{config.run_name}_{task}_{model_name}_{tag_lower}_T{t}_k{k}\t{m['accuracy']:.4f}")
+                            f.write(
+                                f"\n{config.run_name}_{task}_{model_name}_{tag_lower}_T{t}_k{k}\t{m['accuracy']:.4f}"
+                            )
                     else:
                         all_results.setdefault(task, {}).setdefault(k, {})[name] = res
-                        print(f"  [{task}] k={k}: accuracy={res['accuracy']:.2f}% "
-                              f"balanced={res['accuracy-balanced']:.2f}% f1-macro={res['f1-macro']:.2f}% "
-                              f"(n={res['count']})")
+                        print(
+                            f"  [{task}] k={k}: accuracy={res['accuracy']:.2f}% "
+                            f"balanced={res['accuracy-balanced']:.2f}% f1-macro={res['f1-macro']:.2f}% "
+                            f"(n={res['count']})"
+                        )
                         f.write(f"\n{config.run_name}_{task}_{model_name}_{tag_lower}_k{k}\t{res['accuracy']:.4f}")
                 if sweeping:
                     best_acc, best_t, best_k = best_combo
                     print(f"  [{task}] BEST: T={best_t}, k={best_k}, accuracy={best_acc:.4f}%")
-                    f.write(f"\n{config.run_name}_{task}_{model_name}_{tag_lower}_BEST_T{best_t}_k{best_k}\t{best_acc:.4f}")
+                    f.write(
+                        f"\n{config.run_name}_{task}_{model_name}_{tag_lower}_BEST_T{best_t}_k{best_k}\t{best_acc:.4f}"
+                    )
         print(f"  -> saved {name} results to {results_file}")
 
     dt_total = time.time() - t_start
@@ -495,27 +537,56 @@ def run(config):
 
 def get_parser():
     p = argparse.ArgumentParser(description="Leakage-free, level-aware KNN evaluation for ITS-5M.")
-    p.add_argument("--data-dir", "--data_dir", dest="data_dir", required=True,
-                    help="ITS-5M data directory (trainset.fasta, test1-3.fasta).")
-    p.add_argument("--tasks-dir", "--tasks_dir", dest="tasks_dir", required=True,
-                    help="Directory containing test{1,2,3}_tasks.csv from analyze_its_overlap.py --export-dir.")
+    p.add_argument(
+        "--data-dir",
+        "--data_dir",
+        dest="data_dir",
+        required=True,
+        help="ITS-5M data directory (trainset.fasta, test1-3.fasta).",
+    )
+    p.add_argument(
+        "--tasks-dir",
+        "--tasks_dir",
+        dest="tasks_dir",
+        required=True,
+        help="Directory containing test{1,2,3}_tasks.csv from analyze_its_overlap.py --export-dir.",
+    )
 
     group = p.add_argument_group("Model (pretrained checkpoint)")
-    group.add_argument("--pretrained-checkpoint", "--pretrained_checkpoint", dest="pretrained_checkpoint_path",
-                        default=None, help="Path to pretrained encoder checkpoint. Omit for random-init baseline.")
+    group.add_argument(
+        "--pretrained-checkpoint",
+        "--pretrained_checkpoint",
+        dest="pretrained_checkpoint_path",
+        default=None,
+        help="Path to pretrained encoder checkpoint. Omit for random-init baseline.",
+    )
 
     group = p.add_argument_group("Model (external HuggingFace baseline)")
-    group.add_argument("--external-model-id", "--external_model_id", dest="external_model_id", default=None,
-                        metavar="HF_REPO_ID",
-                        help="HuggingFace repo id of an off-the-shelf external DNA foundation model to evaluate"
-                        " zero-shot (e.g. zhihan1996/DNABERT-2-117M). Overrides --pretrained-checkpoint when set.")
-    group.add_argument("--external-model-cls", "--external_model_cls", dest="external_model_cls", default="auto",
-                        choices=["auto", "masked-lm", "causal-lm"],
-                        help="Which HuggingFace auto-class to load --external-model-id with. Default: %(default)s")
-    group.add_argument("--external-max-length", "--external_max_length", dest="external_max_length",
-                        type=int, default=660,
-                        help="Fixed sequence length to pad/truncate to when --external-model-id is set."
-                        " Default: %(default)s")
+    group.add_argument(
+        "--external-model-id",
+        "--external_model_id",
+        dest="external_model_id",
+        default=None,
+        metavar="HF_REPO_ID",
+        help="HuggingFace repo id of an off-the-shelf external DNA foundation model to evaluate"
+        " zero-shot (e.g. zhihan1996/DNABERT-2-117M). Overrides --pretrained-checkpoint when set.",
+    )
+    group.add_argument(
+        "--external-model-cls",
+        "--external_model_cls",
+        dest="external_model_cls",
+        default="auto",
+        choices=["auto", "masked-lm", "causal-lm"],
+        help="Which HuggingFace auto-class to load --external-model-id with. Default: %(default)s",
+    )
+    group.add_argument(
+        "--external-max-length",
+        "--external_max_length",
+        dest="external_max_length",
+        type=int,
+        default=660,
+        help="Fixed sequence length to pad/truncate to when --external-model-id is set. Default: %(default)s",
+    )
 
     group = p.add_argument_group("Model (random-init baseline — used when --pretrained-checkpoint is omitted)")
     group.add_argument("--arch", default="transformer", choices=["maelm", "transformer"])
@@ -528,41 +599,71 @@ def get_parser():
     group.add_argument("--use-cls-token", "--use_cls_token", dest="use_cls_token", action="store_true")
 
     group = p.add_argument_group("KNN")
-    group.add_argument("--n-neighbors", "--n_neighbors", dest="n_neighbors", default=[1, 3, 5, 7],
-                        type=int, nargs="+")
+    group.add_argument("--n-neighbors", "--n_neighbors", dest="n_neighbors", default=[1, 3, 5, 7], type=int, nargs="+")
     group.add_argument("--metric", default="cosine")
-    group.add_argument("--knn-weights", "--knn_weights", dest="knn_weights",
-                        default="uniform", choices=["uniform", "distance", "softmax"],
-                        help="Vote weighting for kNN label assignment. 'uniform': every neighbor"
-                        " gets one vote. 'distance': neighbors weighted by 1/distance ('soft' kNN)."
-                        " 'softmax': neighbors weighted by softmax(similarity / --temperature),"
-                        " matching DINOv2's kNN eval; requires --metric=cosine.")
-    group.add_argument("--temperature", dest="temperature", type=float, default=0.07,
-                        help="Temperature for --knn-weights=softmax (ignored otherwise). Lower is"
-                        " more winner-take-all, higher is closer to uniform voting.")
-    group.add_argument("--temperature-sweep", "--temperature_sweep", dest="temperature_sweep",
-                        default=None, type=float, nargs="+",
-                        help="If set (--knn-weights=softmax only), sweep all these temperatures"
-                        " against every k using the SAME embeddings/kNN fit and report the best"
-                        " (temperature, k) combo per (test set, task), in addition to the full"
-                        " grid. Overrides --temperature.")
-    group.add_argument("--representation-type", "--representation_type", dest="representation_type",
-                        default="tokens",
-                        choices=["tokens", "cls", "tokens_with_cls", "jumbo", "jumbo_avg", "all_tokens"])
-    group.add_argument("--embed-batch-size", "--embed_batch_size", dest="embed_batch_size", type=int, default=32,
-                        help="Sequences per forward pass during embedding extraction. Critical for ITS-5M's"
-                        " ~4.2M-specimen gallery -- batch_size=1 badly under-utilizes the GPU and can blow"
-                        " past SLURM time limits. Default: %(default)s")
+    group.add_argument(
+        "--knn-weights",
+        "--knn_weights",
+        dest="knn_weights",
+        default="uniform",
+        choices=["uniform", "distance", "softmax"],
+        help="Vote weighting for kNN label assignment. 'uniform': every neighbor"
+        " gets one vote. 'distance': neighbors weighted by 1/distance ('soft' kNN)."
+        " 'softmax': neighbors weighted by softmax(similarity / --temperature),"
+        " matching DINOv2's kNN eval; requires --metric=cosine.",
+    )
+    group.add_argument(
+        "--temperature",
+        dest="temperature",
+        type=float,
+        default=0.07,
+        help="Temperature for --knn-weights=softmax (ignored otherwise). Lower is"
+        " more winner-take-all, higher is closer to uniform voting.",
+    )
+    group.add_argument(
+        "--temperature-sweep",
+        "--temperature_sweep",
+        dest="temperature_sweep",
+        default=None,
+        type=float,
+        nargs="+",
+        help="If set (--knn-weights=softmax only), sweep all these temperatures"
+        " against every k using the SAME embeddings/kNN fit and report the best"
+        " (temperature, k) combo per (test set, task), in addition to the full"
+        " grid. Overrides --temperature.",
+    )
+    group.add_argument(
+        "--representation-type",
+        "--representation_type",
+        dest="representation_type",
+        default="tokens",
+        choices=["tokens", "cls", "tokens_with_cls", "jumbo", "jumbo_avg", "all_tokens"],
+    )
+    group.add_argument(
+        "--embed-batch-size",
+        "--embed_batch_size",
+        dest="embed_batch_size",
+        type=int,
+        default=32,
+        help="Sequences per forward pass during embedding extraction. Critical for ITS-5M's"
+        " ~4.2M-specimen gallery -- batch_size=1 badly under-utilizes the GPU and can blow"
+        " past SLURM time limits. Default: %(default)s",
+    )
 
-    group.add_argument("--tasks", dest="tasks", default=list(ALL_TASKS), nargs="+", choices=ALL_TASKS,
-                        help="Which label level(s) to evaluate. Restricting to genus_level skips embedding"
-                        " species_level-only gallery/query specimens entirely (the dominant cost of this"
-                        " script), not just the species_level KNN query. Default: %(default)s")
+    group.add_argument(
+        "--tasks",
+        dest="tasks",
+        default=list(ALL_TASKS),
+        nargs="+",
+        choices=ALL_TASKS,
+        help="Which label level(s) to evaluate. Restricting to genus_level skips embedding"
+        " species_level-only gallery/query specimens entirely (the dominant cost of this"
+        " script), not just the species_level KNN query. Default: %(default)s",
+    )
 
     group = p.add_argument_group("Run / logging")
     group.add_argument("--run-name", "--run_name", dest="run_name", default="knn_its_clean")
-    group.add_argument("--results-file", "--results_file", dest="results_file",
-                        default="KNN_ITS_CLEAN_RESULTS.txt")
+    group.add_argument("--results-file", "--results_file", dest="results_file", default="KNN_ITS_CLEAN_RESULTS.txt")
     group.add_argument("--log-wandb", "--log_wandb", dest="log_wandb", action="store_true", default=False)
     group.add_argument("--wandb-project", "--wandb_project", dest="wandb_project", default="barcodemae_cls")
     group.add_argument("--seed", default=None, type=int)

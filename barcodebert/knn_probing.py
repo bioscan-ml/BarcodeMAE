@@ -5,7 +5,6 @@ import resource
 import time
 from itertools import product
 
-import numpy as np
 import pandas as pd
 import sklearn.metrics
 import torch
@@ -101,7 +100,7 @@ def run(config):
             "n_layers",
             "n_heads",
             "dataset_name",
-            "use_cls_token"
+            "use_cls_token",
         ]
         default_kwargs = vars(get_parser().parse_args(["--pretrained_checkpoint=dummy.pt", "--dataset=foo_bar"]))
         for key in keys_to_reuse:
@@ -249,7 +248,8 @@ def run(config):
     # every temperature too -- all reusing the same neigh_dist/neigh_ind computed
     # above, so no re-embedding or re-fitting per temperature).
     sweep_temperatures = (
-        config.temperature_sweep if (config.knn_weights == "softmax" and config.temperature_sweep)
+        config.temperature_sweep
+        if (config.knn_weights == "softmax" and config.temperature_sweep)
         else [config.temperature]
     )
     best_combo = None  # (accuracy, temperature, k)
@@ -261,7 +261,7 @@ def run(config):
         print(f"{'='*50}")
         for temperature in sweep_temperatures:
             results = {}
-            for partition_name, X_part, y_part in partitions:
+            for partition_name, _X_part, y_part in partitions:
                 # Use the k closest neighbors from precomputed distances
                 ind_k = neigh_ind[partition_name][:, :k]
                 dist_k = neigh_dist[partition_name][:, :k]
@@ -507,8 +507,16 @@ def get_parser():
         "--representation_type",
         default="tokens",
         type=str,
-        choices=["tokens", "tokens_with_cls", "jumbo", "jumbo_avg", "all_tokens", "cls",
-                 "tokens_with_registers", "all_with_registers"],
+        choices=[
+            "tokens",
+            "tokens_with_cls",
+            "jumbo",
+            "jumbo_avg",
+            "all_tokens",
+            "cls",
+            "tokens_with_registers",
+            "all_with_registers",
+        ],
         help=(
             "Type of representation to extract. Options: "
             "'tokens' (mean of sequence tokens, excluding CLS and registers), "

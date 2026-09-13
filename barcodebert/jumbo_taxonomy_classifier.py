@@ -20,7 +20,7 @@ class JumboTaxonomyClassifier(nn.Module):
     2. Pooling mode: Takes un-flattened jumbo tokens (B, J, D) and pools them
     """
 
-    def __init__(self, jumbo_dim, hidden_dim=256, dropout=0.1, pool_jumbo=False, pool_type='mean'):
+    def __init__(self, jumbo_dim, hidden_dim=256, dropout=0.1, pool_jumbo=False, pool_type="mean"):
         """
         Args:
             jumbo_dim: Dimension of flattened jumbo representation (J * D)
@@ -65,10 +65,10 @@ class JumboTaxonomyClassifier(nn.Module):
         # Pool if needed
         if self.pool_jumbo:
             # Input: (B, J, D) -> Pool across J dimension -> (B, D)
-            if self.pool_type == 'mean':
+            if self.pool_type == "mean":
                 rep1 = jumbo_rep1.mean(dim=1)
                 rep2 = jumbo_rep2.mean(dim=1)
-            elif self.pool_type == 'max':
+            elif self.pool_type == "max":
                 rep1 = jumbo_rep1.max(dim=1)[0]
                 rep2 = jumbo_rep2.max(dim=1)[0]
             else:

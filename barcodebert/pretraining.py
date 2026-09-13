@@ -16,8 +16,6 @@ import torch.distributed as dist
 import torch.optim
 from torch import nn
 from torch.utils.data.distributed import DistributedSampler
-
-from barcodebert.Sampler_balanced import DistributedKClassMSampleSampler, KClassMSampleSampler
 from transformers import BertConfig, BertForTokenClassification
 
 from barcodebert import levenshtein, utils
@@ -28,6 +26,10 @@ from barcodebert.cls_taxonomy_classifier import (
 from barcodebert.datasets import DNADataset
 from barcodebert.io import safe_save_model
 from barcodebert.jumbo_taxonomy_classifier import compute_taxonomy_classification_loss
+from barcodebert.Sampler_balanced import (
+    DistributedKClassMSampleSampler,
+    KClassMSampleSampler,
+)
 from barcodebert.taxonomy_aux_losses import (
     TaxonomyClassificationHead,
     crossentropy_taxonomy_loss,
@@ -73,28 +75,45 @@ def run_epoch_knn_eval(config, epoch, eval_ckpt_path):
         script = os.path.join(script_dir, "knn_its.py")
         results_file = getattr(config, "knn_eval_results_file", None) or "results_final/KNN_ITS_RESULTS_epochwise.txt"
         cmd = [
-            sys.executable, script,
-            "--pretrained-checkpoint", eval_ckpt_path,
-            "--data-dir", config.data_dir,
-            "--run-name", f"knn_its_{run_tag}",
-            "--n-neighbors", *neighbors,
-            "--metric", metric,
-            "--representation-type", representation_type,
-            "--results-file", results_file,
+            sys.executable,
+            script,
+            "--pretrained-checkpoint",
+            eval_ckpt_path,
+            "--data-dir",
+            config.data_dir,
+            "--run-name",
+            f"knn_its_{run_tag}",
+            "--n-neighbors",
+            *neighbors,
+            "--metric",
+            metric,
+            "--representation-type",
+            representation_type,
+            "--results-file",
+            results_file,
         ]
     else:
         script = os.path.join(script_dir, "knn_probing.py")
         results_file = getattr(config, "knn_eval_results_file", None) or "results_final/KNN_RESULTS_epochwise.txt"
         cmd = [
-            sys.executable, script,
-            "--pretrained-checkpoint", eval_ckpt_path,
-            "--dataset", config.dataset_name,
-            "--data-dir", config.data_dir,
-            "--representation_type", representation_type,
-            "--taxon", getattr(config, "knn_eval_taxon", "genus"),
-            "--n-neighbors", *neighbors,
-            "--run-name", f"knn_{run_tag}",
-            "--results-file", results_file,
+            sys.executable,
+            script,
+            "--pretrained-checkpoint",
+            eval_ckpt_path,
+            "--dataset",
+            config.dataset_name,
+            "--data-dir",
+            config.data_dir,
+            "--representation_type",
+            representation_type,
+            "--taxon",
+            getattr(config, "knn_eval_taxon", "genus"),
+            "--n-neighbors",
+            *neighbors,
+            "--run-name",
+            f"knn_{run_tag}",
+            "--results-file",
+            results_file,
         ]
 
     if getattr(config, "log_wandb", False):
@@ -109,8 +128,11 @@ def run_epoch_knn_eval(config, epoch, eval_ckpt_path):
     result = subprocess.run(cmd)
     dt = time.time() - t_start
     if result.returncode != 0:
-        print(f"WARNING: epoch-{epoch} KNN eval failed (exit code {result.returncode}) after {dt:.1f}s "
-              "— continuing pretraining.", flush=True)
+        print(
+            f"WARNING: epoch-{epoch} KNN eval failed (exit code {result.returncode}) after {dt:.1f}s "
+            "— continuing pretraining.",
+            flush=True,
+        )
     else:
         print(f"Epoch {epoch} KNN eval done in {dt:.1f}s -> {results_file}", flush=True)
 
@@ -245,9 +267,7 @@ def run(config):
         use_cls_token = True
 
     # Labels are needed for the k×m balanced sampler even without any classification task
-    use_km_sampler = (
-        getattr(config, "k_classes", None) is not None and getattr(config, "m_per_class", None) is not None
-    )
+    use_km_sampler = getattr(config, "k_classes", None) is not None and getattr(config, "m_per_class", None) is not None
     need_taxonomy_labels = enable_genus_classification or enable_cls_taxonomy or use_km_sampler
 
     dataset_args = {
@@ -484,7 +504,9 @@ def run(config):
             config.enable_genus_classification if hasattr(config, "enable_genus_classification") else False
         )
         jumbo_source = config.jumbo_source if hasattr(config, "jumbo_source") else "decoder"
-        pool_jumbo_for_taxonomy = config.pool_jumbo_for_taxonomy if hasattr(config, "pool_jumbo_for_taxonomy") else False
+        pool_jumbo_for_taxonomy = (
+            config.pool_jumbo_for_taxonomy if hasattr(config, "pool_jumbo_for_taxonomy") else False
+        )
         taxonomy_pool_type = config.taxonomy_pool_type if hasattr(config, "taxonomy_pool_type") else "mean"
 
         n_registers = getattr(config, "n_registers", 0)
@@ -732,7 +754,12 @@ def run(config):
         if ckpt_config is not None and hasattr(ckpt_config, "run_id") and ckpt_config.run_id is not None:
             config.run_id = ckpt_config.run_id
             print(f"Restored run_id from checkpoint: {config.run_id}")
-        if config.run_name is None and ckpt_config is not None and hasattr(ckpt_config, "run_name") and ckpt_config.run_name is not None:
+        if (
+            config.run_name is None
+            and ckpt_config is not None
+            and hasattr(ckpt_config, "run_name")
+            and ckpt_config.run_name is not None
+        ):
             config.run_name = ckpt_config.run_name
             print(f"Restored run_name from checkpoint: {config.run_name}")
 
@@ -1310,8 +1337,10 @@ def train_one_epoch(
         config.enable_genus_classification if hasattr(config, "enable_genus_classification") else False
     )
     enable_cls_taxonomy = getattr(config, "enable_cls_taxonomy", False)
-    use_taxonomy_labels = enable_genus_classification or enable_cls_taxonomy or (
-        getattr(config, "k_classes", None) is not None and getattr(config, "m_per_class", None) is not None
+    use_taxonomy_labels = (
+        enable_genus_classification
+        or enable_cls_taxonomy
+        or (getattr(config, "k_classes", None) is not None and getattr(config, "m_per_class", None) is not None)
     )
     taxonomy_level = (
         config.taxonomy_level_for_classification if hasattr(config, "taxonomy_level_for_classification") else "genus"
@@ -1444,8 +1473,7 @@ def train_one_epoch(
                     out = model(masked_input, att_mask, masked_unseen_tokens, config.maelm_version)
                 elif config.arch == "transformer":
                     need_hidden = enable_cls_taxonomy or (
-                        getattr(config, "aux_loss_type", None) is not None
-                        and getattr(config, "use_cls_token", False)
+                        getattr(config, "aux_loss_type", None) is not None and getattr(config, "use_cls_token", False)
                     )
                     out = model(masked_input, attention_mask=att_mask, output_hidden_states=need_hidden)
 
@@ -1505,8 +1533,7 @@ def train_one_epoch(
                 out = model(masked_input, att_mask, masked_unseen_tokens, config.maelm_version)
             elif config.arch == "transformer":
                 need_hidden = enable_cls_taxonomy or (
-                    getattr(config, "aux_loss_type", None) is not None
-                    and getattr(config, "use_cls_token", False)
+                    getattr(config, "aux_loss_type", None) is not None and getattr(config, "use_cls_token", False)
                 )
                 out = model(masked_input, attention_mask=att_mask, output_hidden_states=need_hidden)
 
@@ -1616,18 +1643,22 @@ def train_one_epoch(
 
                 max_pairs = getattr(config, "taxonomy_max_pairs", 32)
                 with autocast() if scaler is not None else contextlib.nullcontext():
-                    cls_taxonomy_loss, cls_taxonomy_acc, num_cls_taxonomy_pairs, num_cls_same_pairs, num_cls_diff_pairs = (
-                        compute_cls_taxonomy_classification_loss(
-                            cls_hidden,
-                            genus_labels,
-                            cls_classifier_deref,
-                            same_ratio=0.5,
-                            max_pairs=max_pairs,
-                            debug_print=debug_print,
-                            bin_labels=bin_labels,
-                            family_labels=family_labels,
-                            use_pos_weight=getattr(config, "taxonomy_use_pos_weight", False),
-                        )
+                    (
+                        cls_taxonomy_loss,
+                        cls_taxonomy_acc,
+                        num_cls_taxonomy_pairs,
+                        num_cls_same_pairs,
+                        num_cls_diff_pairs,
+                    ) = compute_cls_taxonomy_classification_loss(
+                        cls_hidden,
+                        genus_labels,
+                        cls_classifier_deref,
+                        same_ratio=0.5,
+                        max_pairs=max_pairs,
+                        debug_print=debug_print,
+                        bin_labels=bin_labels,
+                        family_labels=family_labels,
+                        use_pos_weight=getattr(config, "taxonomy_use_pos_weight", False),
                     )
 
                 # Add CLS taxonomy loss to total loss if valid
@@ -1645,35 +1676,37 @@ def train_one_epoch(
             aux_emb = None
             if getattr(config, "jumbo", False):
                 if hasattr(out, "jumbo_tokens") and out.jumbo_tokens is not None:
-                    aux_emb = out.jumbo_tokens.mean(dim=1)                      # jumbo_avg
+                    aux_emb = out.jumbo_tokens.mean(dim=1)  # jumbo_avg
             elif config.arch == "maelm" and getattr(config, "use_cls_token", False):
-                cls = getattr(out, "cls_token", None)                           # (B, 1, D)
+                cls = getattr(out, "cls_token", None)  # (B, 1, D)
                 if cls is not None:
                     n_reg = getattr(config, "n_registers", 0)
                     if n_reg > 0 and getattr(out, "register_tokens", None) is not None:
-                        combined = torch.cat([cls, out.register_tokens], dim=1) # (B, 1+R, D)
-                        aux_emb = combined.mean(dim=1)                          # tokens_with_registers
+                        combined = torch.cat([cls, out.register_tokens], dim=1)  # (B, 1+R, D)
+                        aux_emb = combined.mean(dim=1)  # tokens_with_registers
                     else:
-                        aux_emb = cls.squeeze(1)                                # cls
+                        aux_emb = cls.squeeze(1)  # cls
             elif config.arch == "transformer" and getattr(config, "use_cls_token", False):
                 hs = getattr(out, "hidden_states", None)
                 if isinstance(hs, tuple):
                     hs = hs[-1]
                 if hs is not None:
-                    aux_emb = hs[:, 0, :]                                       # cls
+                    aux_emb = hs[:, 0, :]  # cls
 
             aux_metrics = None
             if aux_emb is not None:
                 with autocast() if scaler is not None else contextlib.nullcontext():
                     if aux_loss_type == "triplet":
                         aux_loss, aux_metrics = triplet_loss_batch_hard(
-                            aux_emb, genus_labels,
+                            aux_emb,
+                            genus_labels,
                             margin=getattr(config, "triplet_margin", 0.3),
                             mining=getattr(config, "triplet_mining", "batch_hard"),
                         )
                     elif aux_loss_type == "supcon":
                         aux_loss, aux_metrics = supcon_loss(
-                            aux_emb, genus_labels,
+                            aux_emb,
+                            genus_labels,
                             temperature=getattr(config, "supcon_temperature", 0.07),
                         )
                     elif aux_loss_type == "ce":
@@ -1852,8 +1885,11 @@ def train_one_epoch(
                     ).format(genus_loss_batch_val, genus_acc_batch_val, num_genus_pairs, num_same_pairs, num_diff_pairs)
                 if cls_taxonomy_loss is not None:
                     log_msg += " CLSLoss:{:7.4f} CLSAcc:{:5.1f}% CLSPairs:{}({}/{} same/diff)".format(
-                        cls_taxonomy_loss.item(), cls_taxonomy_acc.item() * 100.0,
-                        num_cls_taxonomy_pairs, num_cls_same_pairs, num_cls_diff_pairs,
+                        cls_taxonomy_loss.item(),
+                        cls_taxonomy_acc.item() * 100.0,
+                        num_cls_taxonomy_pairs,
+                        num_cls_same_pairs,
+                        num_cls_diff_pairs,
                     )
                 if aux_loss is not None:
                     _aux_w = getattr(config, "aux_loss_weight", 0.1)
@@ -1891,8 +1927,11 @@ def train_one_epoch(
                     ).format(genus_loss_batch_val, genus_acc_batch_val, num_genus_pairs, num_same_pairs, num_diff_pairs)
                 if cls_taxonomy_loss is not None:
                     log_msg += " CLSLoss:{:7.4f} CLSAcc:{:5.1f}% CLSPairs:{}({}/{} same/diff)".format(
-                        cls_taxonomy_loss.item(), cls_taxonomy_acc.item() * 100.0,
-                        num_cls_taxonomy_pairs, num_cls_same_pairs, num_cls_diff_pairs,
+                        cls_taxonomy_loss.item(),
+                        cls_taxonomy_acc.item() * 100.0,
+                        num_cls_taxonomy_pairs,
+                        num_cls_same_pairs,
+                        num_cls_diff_pairs,
                     )
                 if aux_loss is not None:
                     _aux_w = getattr(config, "aux_loss_weight", 0.1)
@@ -1928,16 +1967,26 @@ def train_one_epoch(
             print(f"[Resuming] saving checkpoint at global step {total_step}", flush=True)
             if config.arch == "maelm":
                 safe_save_model(
-                    save_dict, config.checkpoint_path, config=config,
-                    epoch=epoch, total_step=total_step, n_samples_seen=n_samples_seen,
-                    bert_config=bert_config.to_dict(), decoder_config=decoder_config.to_dict(),
+                    save_dict,
+                    config.checkpoint_path,
+                    config=config,
+                    epoch=epoch,
+                    total_step=total_step,
+                    n_samples_seen=n_samples_seen,
+                    bert_config=bert_config.to_dict(),
+                    decoder_config=decoder_config.to_dict(),
                     **best_stats,
                 )
             elif config.arch == "transformer":
                 safe_save_model(
-                    save_dict, config.checkpoint_path, config=config,
-                    epoch=epoch, total_step=total_step, n_samples_seen=n_samples_seen,
-                    bert_config=bert_config.to_dict(), **best_stats,
+                    save_dict,
+                    config.checkpoint_path,
+                    config=config,
+                    epoch=epoch,
+                    total_step=total_step,
+                    n_samples_seen=n_samples_seen,
+                    bert_config=bert_config.to_dict(),
+                    **best_stats,
                 )
 
         # Compute mask ratio actually used
@@ -2133,8 +2182,10 @@ def evaluate(
         config.enable_genus_classification if hasattr(config, "enable_genus_classification") else False
     )
     enable_cls_taxonomy = getattr(config, "enable_cls_taxonomy", False)
-    use_taxonomy_labels = enable_genus_classification or enable_cls_taxonomy or (
-        getattr(config, "k_classes", None) is not None and getattr(config, "m_per_class", None) is not None
+    use_taxonomy_labels = (
+        enable_genus_classification
+        or enable_cls_taxonomy
+        or (getattr(config, "k_classes", None) is not None and getattr(config, "m_per_class", None) is not None)
     )
 
     # Set the random seed to be stable for the evaluation
@@ -2765,7 +2816,7 @@ def get_parser():
         default="genus",
         choices=["phylum", "class", "order", "family", "genus", "species", "bin"],
         help="Taxonomic level for the auxiliary/binary classification task. "
-             "'bin' (Barcode Index Number) is only supported for BIOSCAN-5M. Default: %(default)s",
+        "'bin' (Barcode Index Number) is only supported for BIOSCAN-5M. Default: %(default)s",
     )
 
     group.add_argument(
@@ -2955,10 +3006,7 @@ def get_parser():
         dest="m_per_class",
         type=int,
         default=None,
-        help=(
-            "Number of samples per class per batch for k×m balanced sampling. "
-            "See --k-classes. Default: None."
-        ),
+        help="Number of samples per class per batch for k×m balanced sampling. See --k-classes. Default: None.",
     )
     group.add_argument(
         "--no-cover-full-dataset",
@@ -3040,8 +3088,8 @@ def get_parser():
         default=None,
         choices=["triplet", "supcon", "ce"],
         help="Auxiliary loss applied to CLS/jumbo/register embeddings. "
-             "triplet=batch-hard triplet, supcon=supervised contrastive, ce=cross-entropy. "
-             "Default: disabled",
+        "triplet=batch-hard triplet, supcon=supervised contrastive, ce=cross-entropy. "
+        "Default: disabled",
     )
     group.add_argument(
         "--aux-loss-weight",
@@ -3066,8 +3114,8 @@ def get_parser():
         default="batch_hard",
         choices=["batch_hard", "random"],
         help="Positive/negative mining strategy for triplet loss. "
-             "batch_hard=hardest pos/neg per anchor, random=uniform sampling. "
-             "Default: %(default)s",
+        "batch_hard=hardest pos/neg per anchor, random=uniform sampling. "
+        "Default: %(default)s",
     )
     group.add_argument(
         "--supcon-temperature",
@@ -3084,7 +3132,7 @@ def get_parser():
         default=0,
         type=int,
         help="Linearly ramp aux loss weight from 0 to --aux-loss-weight over this many epochs. "
-             "0 = no warmup (full weight from epoch 1). Default: %(default)s",
+        "0 = no warmup (full weight from epoch 1). Default: %(default)s",
     )
 
     # Epoch-wise KNN evaluation (overfitting monitor) --------------------------
@@ -3096,11 +3144,11 @@ def get_parser():
         default=0,
         type=int,
         help="Run the full KNN evaluation (same script/metrics as a post-hoc knn_probing.py / "
-             "knn_its.py run, over the WHOLE train+test data, not a subsample) after every N "
-             "epochs, using that epoch's freshly-saved checkpoint. Runs as a subprocess and is "
-             "non-fatal on failure. 0 disables it (default). Warning: this reruns a full KNN "
-             "pass every N epochs, which can add substantial wall-clock time — budget SLURM "
-             "--time accordingly. Default: %(default)s",
+        "knn_its.py run, over the WHOLE train+test data, not a subsample) after every N "
+        "epochs, using that epoch's freshly-saved checkpoint. Runs as a subprocess and is "
+        "non-fatal on failure. 0 disables it (default). Warning: this reruns a full KNN "
+        "pass every N epochs, which can add substantial wall-clock time — budget SLURM "
+        "--time accordingly. Default: %(default)s",
     )
     group.add_argument(
         "--knn-eval-taxon",
@@ -3109,7 +3157,7 @@ def get_parser():
         default="genus",
         type=str,
         help="Taxonomic level for the epoch-wise KNN probe (BIOSCAN-5M/CANADA-1.5M only; "
-             "ITS-5M is always evaluated at species level by knn_its.py). Default: %(default)s",
+        "ITS-5M is always evaluated at species level by knn_its.py). Default: %(default)s",
     )
     group.add_argument(
         "--knn-eval-representation-type",
@@ -3143,8 +3191,8 @@ def get_parser():
         default=None,
         type=str,
         help="File to append epoch-wise KNN results to. Defaults to "
-             "results_final/KNN_RESULTS_epochwise.txt (BIOSCAN-5M/CANADA-1.5M) or "
-             "results_final/KNN_ITS_RESULTS_epochwise.txt (ITS-5M).",
+        "results_final/KNN_RESULTS_epochwise.txt (BIOSCAN-5M/CANADA-1.5M) or "
+        "results_final/KNN_ITS_RESULTS_epochwise.txt (ITS-5M).",
     )
 
     return parser

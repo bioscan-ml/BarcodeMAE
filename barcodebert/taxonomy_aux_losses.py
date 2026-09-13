@@ -48,12 +48,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from barcodebert.datasets import representations_from_df  # noqa: F401  — re-exported for callers
-
+from barcodebert.datasets import (  # noqa: F401  — re-exported for callers
+    representations_from_df,
+)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 1. Triplet loss — batch-hard mining
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 def triplet_loss_batch_hard(
     embeddings: torch.Tensor,
@@ -103,14 +105,14 @@ def triplet_loss_batch_hard(
     # Pairwise distance matrix (N, N)
     if distance == "cosine":
         emb_norm = F.normalize(emb, dim=1)
-        dist = 1.0 - emb_norm @ emb_norm.t()          # cosine distance ∈ [0, 2]
+        dist = 1.0 - emb_norm @ emb_norm.t()  # cosine distance ∈ [0, 2]
     else:
         # Euclidean: ||a - b||^2 = ||a||^2 + ||b||^2 - 2 a·b
-        sq = (emb ** 2).sum(1, keepdim=True)
+        sq = (emb**2).sum(1, keepdim=True)
         dist = (sq + sq.t() - 2.0 * emb @ emb.t()).clamp(min=0).sqrt()
 
     # Boolean masks: same_mask[i, j] = True  ↔  lab[i] == lab[j]  (i ≠ j)
-    same_mask = (lab.unsqueeze(0) == lab.unsqueeze(1))
+    same_mask = lab.unsqueeze(0) == lab.unsqueeze(1)
     diff_mask = ~same_mask
     eye = torch.eye(n, dtype=torch.bool, device=emb.device)
     same_mask = same_mask & ~eye
@@ -126,12 +128,12 @@ def triplet_loss_batch_hard(
         # Hardest positive: max distance among same-label pairs
         # Replace invalid positions with -inf so max ignores them
         pos_dist_mat = dist.masked_fill(~same_mask, float("-inf"))
-        anchor_pos_dist = pos_dist_mat[valid_anchor].max(dim=1).values   # (A,)
+        anchor_pos_dist = pos_dist_mat[valid_anchor].max(dim=1).values  # (A,)
 
         # Hardest negative: min distance among different-label pairs
         # Replace invalid positions with +inf so min ignores them
         neg_dist_mat = dist.masked_fill(~diff_mask, float("inf"))
-        anchor_neg_dist = neg_dist_mat[valid_anchor].min(dim=1).values   # (A,)
+        anchor_neg_dist = neg_dist_mat[valid_anchor].min(dim=1).values  # (A,)
     else:
         # Uniform-random mining: for each anchor, pick one positive and one
         # negative uniformly at random from its valid candidates. Sampled via
@@ -142,10 +144,10 @@ def triplet_loss_batch_hard(
         pos_pick_score = gumbel_pos.masked_fill(~same_mask, float("-inf"))
         neg_pick_score = gumbel_neg.masked_fill(~diff_mask, float("-inf"))
 
-        pos_idx = pos_pick_score[valid_anchor].argmax(dim=1)   # (A,)
-        neg_idx = neg_pick_score[valid_anchor].argmax(dim=1)   # (A,)
+        pos_idx = pos_pick_score[valid_anchor].argmax(dim=1)  # (A,)
+        neg_idx = neg_pick_score[valid_anchor].argmax(dim=1)  # (A,)
 
-        anchor_dist = dist[valid_anchor]                        # (A, N)
+        anchor_dist = dist[valid_anchor]  # (A, N)
         anchor_pos_dist = anchor_dist.gather(1, pos_idx.unsqueeze(1)).squeeze(1)  # (A,)
         anchor_neg_dist = anchor_dist.gather(1, neg_idx.unsqueeze(1)).squeeze(1)  # (A,)
 
@@ -168,6 +170,7 @@ def triplet_loss_batch_hard(
 # ──────────────────────────────────────────────────────────────────────────────
 # 2. Supervised Contrastive loss (SupCon)
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 def supcon_loss(
     embeddings: torch.Tensor,
@@ -195,7 +198,7 @@ def supcon_loss(
     if valid.sum() < 2:
         return None, None
 
-    emb = F.normalize(embeddings[valid], dim=1)   # (N, D)
+    emb = F.normalize(embeddings[valid], dim=1)  # (N, D)
     lab = labels[valid]
     n = emb.size(0)
 
@@ -204,7 +207,7 @@ def supcon_loss(
         return None, None
 
     # Similarity matrix scaled by temperature
-    sim = emb @ emb.t() / temperature             # (N, N)
+    sim = emb @ emb.t() / temperature  # (N, N)
 
     # Mask out self-comparisons from both numerator and denominator
     eye = torch.eye(n, dtype=torch.bool, device=emb.device)
@@ -212,15 +215,15 @@ def supcon_loss(
 
     # For numerical stability: subtract row-wise max before exp
     sim_max, _ = sim.clone().masked_fill(eye, float("-inf")).max(dim=1, keepdim=True)
-    exp_sim = torch.exp(sim - sim_max.detach())   # (N, N)
+    exp_sim = torch.exp(sim - sim_max.detach())  # (N, N)
     exp_sim = exp_sim.masked_fill(eye, 0.0)
 
     # Denominator: sum over all non-self pairs
-    denom = exp_sim.sum(dim=1, keepdim=True)      # (N, 1)
+    denom = exp_sim.sum(dim=1, keepdim=True)  # (N, 1)
 
     # Positive mask: same label, not self
     pos_mask = (lab.unsqueeze(0) == lab.unsqueeze(1)) & ~eye  # (N, N)
-    n_positives = pos_mask.sum(dim=1).float()                  # (N,)
+    n_positives = pos_mask.sum(dim=1).float()  # (N,)
 
     # Anchors that have at least one positive in the batch
     has_pos = n_positives > 0
@@ -229,7 +232,7 @@ def supcon_loss(
 
     # Log-probability of each positive pair, averaged per anchor
     log_prob = sim - sim_max - torch.log(denom + 1e-8)  # (N, N) — subtract sim_max to invert stability trick
-    log_prob = log_prob.masked_fill(eye, 0.0)            # avoid 0 * (-inf) = nan at diagonal
+    log_prob = log_prob.masked_fill(eye, 0.0)  # avoid 0 * (-inf) = nan at diagonal
     mean_log_prob_pos = (pos_mask * log_prob).sum(dim=1) / n_positives.clamp(min=1)
 
     loss = -mean_log_prob_pos[has_pos].mean()
@@ -246,6 +249,7 @@ def supcon_loss(
 # ──────────────────────────────────────────────────────────────────────────────
 # 3. Cross-entropy over taxonomy labels
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 class TaxonomyClassificationHead(nn.Module):
     """
@@ -302,7 +306,7 @@ def crossentropy_taxonomy_loss(
     emb_valid = embeddings[valid]
     lab_valid = labels[valid]
 
-    logits = classifier(emb_valid)                # (N, num_classes)
+    logits = classifier(emb_valid)  # (N, num_classes)
     loss = F.cross_entropy(logits, lab_valid)
 
     with torch.no_grad():

@@ -95,8 +95,9 @@ def load_barcodemamba(repo_path, checkpoint_dir, checkpoint_name=None):
     else:
         ckpt_path = _find_first(checkpoint_dir, ["checkpoints/last.ckpt", "last.ckpt", "model.ckpt"])
         if ckpt_path is None:
-            matches = glob.glob(os.path.join(checkpoint_dir, "*.ckpt")) + \
-                glob.glob(os.path.join(checkpoint_dir, "checkpoints", "*.ckpt"))
+            matches = glob.glob(os.path.join(checkpoint_dir, "*.ckpt")) + glob.glob(
+                os.path.join(checkpoint_dir, "checkpoints", "*.ckpt")
+            )
             ckpt_path = matches[0] if matches else None
     if ckpt_path is None:
         raise FileNotFoundError(f"No .ckpt file found under {checkpoint_dir}")
@@ -106,8 +107,10 @@ def load_barcodemamba(repo_path, checkpoint_dir, checkpoint_name=None):
     state_dict = raw["state_dict"] if isinstance(raw, dict) and "state_dict" in raw else raw
     model_dict = {k.replace("model.", "", 1): v for k, v in state_dict.items() if k.startswith("model.")}
     missing, unexpected = model.load_state_dict(model_dict, strict=False)
-    print(f"  Loaded {ckpt_path}: {len(missing)} missing, {len(unexpected)} unexpected keys "
-          f"(expect 0 missing; unexpected is normal for pl trainer/metric bookkeeping keys)")
+    print(
+        f"  Loaded {ckpt_path}: {len(missing)} missing, {len(unexpected)} unexpected keys "
+        f"(expect 0 missing; unexpected is normal for pl trainer/metric bookkeeping keys)"
+    )
     return model, config
 
 
@@ -146,8 +149,8 @@ def embed_sequences(model, tokenizer, tokenizer_name, sequences, max_length=660)
       - k_mer: tokenizer(seq) -> (ids, attention_mask).
     """
     assert tokenizer_name in ("bpe", "char", "k_mer"), f"Unsupported tokenizer_name: {tokenizer_name!r}"
-    from tqdm import tqdm
     import numpy as np
+    from tqdm import tqdm
 
     embeddings = []
     with torch.no_grad():
@@ -157,8 +160,11 @@ def embed_sequences(model, tokenizer, tokenizer_name, sequences, max_length=660)
             elif tokenizer_name == "char":
                 tokenizer.pad_token = "N"
                 x = tokenizer(
-                    seq, add_special_tokens=False, padding="max_length",
-                    max_length=max_length, truncation=True,
+                    seq,
+                    add_special_tokens=False,
+                    padding="max_length",
+                    max_length=max_length,
+                    truncation=True,
                 )["input_ids"]
                 x = torch.tensor(x, dtype=torch.int64)
             else:  # k_mer

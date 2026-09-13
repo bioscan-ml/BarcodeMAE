@@ -51,8 +51,10 @@ def plot_panel(ax, data, uniform, default_t, title=None, show_legend=True):
         color = cmap(i / max(len(temps) - 1, 1))
         is_default = abs(T - default_t) < 1e-9
         ax.plot(
-            x, data[T],
-            marker="o", markersize=5,
+            x,
+            data[T],
+            marker="o",
+            markersize=5,
             linestyle="-" if is_default else "--",
             linewidth=3 if is_default else 1.6,
             color="#D62728" if is_default else color,
@@ -62,9 +64,12 @@ def plot_panel(ax, data, uniform, default_t, title=None, show_legend=True):
 
     if uniform is not None:
         ax.plot(
-            x, uniform,
-            marker="x", markersize=6,
-            linestyle=":", linewidth=2,
+            x,
+            uniform,
+            marker="x",
+            markersize=6,
+            linestyle=":",
+            linewidth=2,
             color="black",
             label="Uniform",
             zorder=9,
@@ -102,12 +107,19 @@ def plot_two_panel(data_yeast, uniform_yeast, data_fil, uniform_fil, out_path, d
 
 def get_parser():
     p = argparse.ArgumentParser(description="Plot softmax temperature ablation k-curves.")
-    p.add_argument("--results-csv", dest="results_csv",
-                    help="Single-panel mode: CSV with columns T,k1,k3,k5,k7,k10,k15,k20,k25,k50")
-    p.add_argument("--yeast-csv", dest="yeast_csv",
-                    help="Two-panel mode: Yeast CSV, same column format as --results-csv")
-    p.add_argument("--filamentous-csv", dest="filamentous_csv",
-                    help="Two-panel mode: Filamentous CSV, same column format as --results-csv")
+    p.add_argument(
+        "--results-csv",
+        dest="results_csv",
+        help="Single-panel mode: CSV with columns T,k1,k3,k5,k7,k10,k15,k20,k25,k50",
+    )
+    p.add_argument(
+        "--yeast-csv", dest="yeast_csv", help="Two-panel mode: Yeast CSV, same column format as --results-csv"
+    )
+    p.add_argument(
+        "--filamentous-csv",
+        dest="filamentous_csv",
+        help="Two-panel mode: Filamentous CSV, same column format as --results-csv",
+    )
     p.add_argument("--out", dest="out", required=True)
     p.add_argument("--default-t", dest="default_t", type=float, default=0.07)
     return p

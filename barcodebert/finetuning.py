@@ -21,7 +21,7 @@ from transformers.models.bert.modeling_bert import TokenClassifierOutput
 from barcodebert import utils
 from barcodebert.datasets import DNADataset
 from barcodebert.evaluation import evaluate
-from barcodebert.io import load_pretrained_encoder, load_pretrained_model, safe_save_model
+from barcodebert.io import load_pretrained_encoder, safe_save_model
 
 BASE_BATCH_SIZE = 64
 
@@ -29,23 +29,24 @@ BASE_BATCH_SIZE = 64
 def _validate_test_results(results, partition_name):
     """Sanity-check evaluation results; raises AssertionError if anything looks wrong."""
     assert results["count"] > 0, f"{partition_name}: sample count must be > 0, got {results['count']}"
-    assert 0.0 <= results["accuracy"] <= 100.0, (
-        f"{partition_name}: accuracy {results['accuracy']:.2f}% is out of [0, 100] range"
-    )
-    assert 0.0 <= results["accuracy-balanced"] <= 100.0, (
-        f"{partition_name}: balanced accuracy {results['accuracy-balanced']:.2f}% is out of [0, 100] range"
-    )
-    assert 0.0 <= results["f1-macro"] <= 100.0, (
-        f"{partition_name}: F1-macro {results['f1-macro']:.2f}% is out of [0, 100] range"
-    )
-    assert results["cross-entropy"] >= 0.0, (
-        f"{partition_name}: cross-entropy {results['cross-entropy']:.5f} must be non-negative"
-    )
+    assert (
+        0.0 <= results["accuracy"] <= 100.0
+    ), f"{partition_name}: accuracy {results['accuracy']:.2f}% is out of [0, 100] range"
+    assert (
+        0.0 <= results["accuracy-balanced"] <= 100.0
+    ), f"{partition_name}: balanced accuracy {results['accuracy-balanced']:.2f}% is out of [0, 100] range"
+    assert (
+        0.0 <= results["f1-macro"] <= 100.0
+    ), f"{partition_name}: F1-macro {results['f1-macro']:.2f}% is out of [0, 100] range"
+    assert (
+        results["cross-entropy"] >= 0.0
+    ), f"{partition_name}: cross-entropy {results['cross-entropy']:.5f} must be non-negative"
     print(f"  [OK] {partition_name} sanity checks passed.")
 
 
 def _save_test_results(all_results, output_path):
     """Save a dict of test results to a JSON file."""
+
     # Convert numpy types to plain Python so json.dump works
     def _to_python(obj):
         if hasattr(obj, "item"):
@@ -105,7 +106,9 @@ class ClassificationModel(nn.Module):
                 return outputs.jumbo_tokens.reshape(B, -1)
             if hasattr(outputs, "jumbo_representation"):
                 return outputs.jumbo_representation
-            raise ValueError("representation_type='jumbo' requires a Jumbo encoder with jumbo_tokens or jumbo_representation.")
+            raise ValueError(
+                "representation_type='jumbo' requires a Jumbo encoder with jumbo_tokens or jumbo_representation."
+            )
 
         if rtype == "jumbo_avg":
             if not (hasattr(outputs, "jumbo_tokens") and outputs.jumbo_tokens is not None):
@@ -138,7 +141,9 @@ class ClassificationModel(nn.Module):
             seq_mask = mask.clone()
             if use_cls_token:
                 seq_mask[:, 0] = 0
-            reg_mask = torch.ones(register_states.shape[0], register_states.shape[1], device=mask.device, dtype=mask.dtype)
+            reg_mask = torch.ones(
+                register_states.shape[0], register_states.shape[1], device=mask.device, dtype=mask.dtype
+            )
             combined = torch.cat([register_states, hidden_states], dim=1)
             combined_mask = torch.cat([reg_mask, seq_mask], dim=1)
             return (combined * combined_mask.unsqueeze(-1)).sum(1) / combined_mask.sum(1, keepdim=True)
@@ -148,7 +153,9 @@ class ClassificationModel(nn.Module):
                 raise ValueError("representation_type='all_with_registers' requires a model with register tokens.")
             register_states = outputs.register_hidden_states
             hidden_states = _last_hidden(outputs)
-            reg_mask = torch.ones(register_states.shape[0], register_states.shape[1], device=mask.device, dtype=mask.dtype)
+            reg_mask = torch.ones(
+                register_states.shape[0], register_states.shape[1], device=mask.device, dtype=mask.dtype
+            )
             combined = torch.cat([register_states, hidden_states], dim=1)
             combined_mask = torch.cat([reg_mask, mask], dim=1)
             return (combined * combined_mask.unsqueeze(-1)).sum(1) / combined_mask.sum(1, keepdim=True)
@@ -484,7 +491,12 @@ def run(config):
     # MODEL ===================================================================
 
     representation_type = getattr(config, "representation_type", "tokens")
-    model = ClassificationModel(pre_model, dataset_train.num_labels, representation_type=representation_type, use_cls_token=getattr(config, "use_cls_token", False))
+    model = ClassificationModel(
+        pre_model,
+        dataset_train.num_labels,
+        representation_type=representation_type,
+        use_cls_token=getattr(config, "use_cls_token", False),
+    )
     print(dataset_train.num_labels, "num labels")
     print(f"Using representation_type='{representation_type}' for classification head")
 
@@ -966,9 +978,7 @@ def run(config):
         print(f"Evaluating saved per-epoch checkpoints: {unique_save_epochs}")
         print("=" * 60, flush=True)
         for ep in unique_save_epochs:
-            ckpt_path_ep = os.path.join(
-                config.model_output_dir, f"epoch{ep}_finetune_{config.taxonomic_level}.pt"
-            )
+            ckpt_path_ep = os.path.join(config.model_output_dir, f"epoch{ep}_finetune_{config.taxonomic_level}.pt")
             if not os.path.isfile(ckpt_path_ep):
                 print(f"[skip] No checkpoint found for epoch {ep} at {ckpt_path_ep}")
                 continue

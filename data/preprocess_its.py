@@ -16,7 +16,6 @@ Usage:
 """
 
 import argparse
-import os
 
 import numpy as np
 import pandas as pd
@@ -27,6 +26,7 @@ TAX_LEVELS = ["phylum", "class", "order", "family", "genus", "species"]
 
 
 # ── I/O helpers ──────────────────────────────────────────────────────────────
+
 
 def read_fasta(path):
     """Return list of (header, sequence) tuples."""
@@ -54,6 +54,7 @@ def write_fasta(records, path):
 
 
 # ── Filtering steps ───────────────────────────────────────────────────────────
+
 
 def step1_remove_duplicates(sequences, labels_df):
     """Remove exact duplicate (sequence, full-label-tuple) pairs."""
@@ -131,6 +132,7 @@ def step4_filter_rare_classes(labels_df, min_samples=3):
 
 # ── Statistics printer ────────────────────────────────────────────────────────
 
+
 def print_stats(tag, sequences, labels_df):
     lengths = [len(s) for s in sequences]
     print(f"\n{'='*60}")
@@ -150,68 +152,68 @@ def print_stats(tag, sequences, labels_df):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+
 def main():
     parser = argparse.ArgumentParser(description="Preprocess ITS fungal dataset.")
-    parser.add_argument("--fasta",       default="trainset.fasta",        help="Input FASTA file")
-    parser.add_argument("--labels",      default="trainset_labels.csv",   help="Input labels CSV")
-    parser.add_argument("--out_fasta",   default="trainset_filtered.fasta",      help="Output FASTA")
-    parser.add_argument("--out_labels",  default="trainset_filtered_labels.csv", help="Output labels CSV")
-    parser.add_argument("--n_std",       type=float, default=4.0,   help="Std-dev multiplier for length filter")
-    parser.add_argument("--max_ambig",   type=float, default=0.05,  help="Max fraction of ambiguous bases")
-    parser.add_argument("--min_samples", type=int,   default=3,     help="Min samples per taxonomic class")
+    parser.add_argument("--fasta", default="trainset.fasta", help="Input FASTA file")
+    parser.add_argument("--labels", default="trainset_labels.csv", help="Input labels CSV")
+    parser.add_argument("--out_fasta", default="trainset_filtered.fasta", help="Output FASTA")
+    parser.add_argument("--out_labels", default="trainset_filtered_labels.csv", help="Output labels CSV")
+    parser.add_argument("--n_std", type=float, default=4.0, help="Std-dev multiplier for length filter")
+    parser.add_argument("--max_ambig", type=float, default=0.05, help="Max fraction of ambiguous bases")
+    parser.add_argument("--min_samples", type=int, default=3, help="Min samples per taxonomic class")
     args = parser.parse_args()
 
     # ── Load ──────────────────────────────────────────────────────────────────
     print(f"Loading FASTA  : {args.fasta}")
     records = read_fasta(args.fasta)
-    headers   = [h for h, _ in records]
+    headers = [h for h, _ in records]
     sequences = [s for _, s in records]
 
     print(f"Loading labels : {args.labels}")
     labels_df = pd.read_csv(args.labels)
 
     if len(sequences) != len(labels_df):
-        raise ValueError(
-            f"FASTA has {len(sequences)} sequences but labels CSV has {len(labels_df)} rows."
-        )
+        raise ValueError(f"FASTA has {len(sequences)} sequences but labels CSV has {len(labels_df)} rows.")
 
     print_stats("BEFORE FILTERING", sequences, labels_df)
 
     # ── Step 1: Remove duplicates ─────────────────────────────────────────────
     keep = step1_remove_duplicates(sequences, labels_df)
     n_removed = len(sequences) - len(keep)
-    sequences  = [sequences[i]  for i in keep]
-    headers    = [headers[i]    for i in keep]
-    labels_df  = labels_df.iloc[keep].reset_index(drop=True)
+    sequences = [sequences[i] for i in keep]
+    headers = [headers[i] for i in keep]
+    labels_df = labels_df.iloc[keep].reset_index(drop=True)
     print(f"\n[Step 1] Removed {n_removed:,} duplicate sequence-label pairs  →  {len(sequences):,} remain")
 
     # ── Step 2: Length filter ─────────────────────────────────────────────────
     keep, mean_l, std_l, lo, hi = step2_filter_length(sequences, args.n_std)
     n_removed = len(sequences) - len(keep)
-    sequences  = [sequences[i]  for i in keep]
-    headers    = [headers[i]    for i in keep]
-    labels_df  = labels_df.iloc[keep].reset_index(drop=True)
-    print(
-        f"[Step 2] Length filter  mean={mean_l:.1f}  std={std_l:.1f}  "
-        f"window=[{lo:.0f}, {hi:.0f}] bp"
-    )
+    sequences = [sequences[i] for i in keep]
+    headers = [headers[i] for i in keep]
+    labels_df = labels_df.iloc[keep].reset_index(drop=True)
+    print(f"[Step 2] Length filter  mean={mean_l:.1f}  std={std_l:.1f}  window=[{lo:.0f}, {hi:.0f}] bp")
     print(f"         Removed {n_removed:,} sequences  →  {len(sequences):,} remain")
 
     # ── Step 3: Ambiguous base filter ─────────────────────────────────────────
     keep = step3_filter_ambiguous(sequences, args.max_ambig)
     n_removed = len(sequences) - len(keep)
-    sequences  = [sequences[i]  for i in keep]
-    headers    = [headers[i]    for i in keep]
-    labels_df  = labels_df.iloc[keep].reset_index(drop=True)
-    print(f"[Step 3] Removed {n_removed:,} sequences with >{args.max_ambig*100:.0f}% ambiguous bases  →  {len(sequences):,} remain")
+    sequences = [sequences[i] for i in keep]
+    headers = [headers[i] for i in keep]
+    labels_df = labels_df.iloc[keep].reset_index(drop=True)
+    print(
+        f"[Step 3] Removed {n_removed:,} sequences with >{args.max_ambig*100:.0f}% ambiguous bases  →  {len(sequences):,} remain"
+    )
 
     # ── Step 4: Rare-class filter ─────────────────────────────────────────────
     keep = step4_filter_rare_classes(labels_df, args.min_samples)
     n_removed = len(sequences) - len(keep)
-    sequences  = [sequences[i]  for i in keep]
-    headers    = [headers[i]    for i in keep]
-    labels_df  = labels_df.iloc[keep].reset_index(drop=True)
-    print(f"[Step 4] Removed {n_removed:,} samples from classes with <{args.min_samples} representatives  →  {len(sequences):,} remain")
+    sequences = [sequences[i] for i in keep]
+    headers = [headers[i] for i in keep]
+    labels_df = labels_df.iloc[keep].reset_index(drop=True)
+    print(
+        f"[Step 4] Removed {n_removed:,} samples from classes with <{args.min_samples} representatives  →  {len(sequences):,} remain"
+    )
 
     # ── Final stats ───────────────────────────────────────────────────────────
     print_stats("AFTER FILTERING", sequences, labels_df)

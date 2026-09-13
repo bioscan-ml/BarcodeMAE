@@ -60,9 +60,6 @@ def run(config):
     """
     t_start = time.time()
 
-    if config.log_wandb:
-        import wandb
-
     if config.seed is not None:
         utils.set_rng_seeds_fixed(config.seed)
 
@@ -106,14 +103,25 @@ def run(config):
 
         # Inherit tokenizer settings from checkpoint
         keys_to_reuse = [
-            "k_mer", "stride", "max_len", "tokenizer", "bpe_path",
-            "tokenize_n_nucleotide", "predict_n_nucleotide",
-            "pretrain_levenshtein", "levenshtein_vectorized",
-            "n_layers", "n_heads", "dataset_name", "use_cls_token",
+            "k_mer",
+            "stride",
+            "max_len",
+            "tokenizer",
+            "bpe_path",
+            "tokenize_n_nucleotide",
+            "predict_n_nucleotide",
+            "pretrain_levenshtein",
+            "levenshtein_vectorized",
+            "n_layers",
+            "n_heads",
+            "dataset_name",
+            "use_cls_token",
         ]
-        default_kwargs = vars(get_parser().parse_args([
-            "--pretrained_checkpoint=dummy.pt", "--backbone=dummy", "--data-dir=.", "--dataset=BIOSCAN-5M"
-        ]))
+        default_kwargs = vars(
+            get_parser().parse_args(
+                ["--pretrained_checkpoint=dummy.pt", "--backbone=dummy", "--data-dir=.", "--dataset=BIOSCAN-5M"]
+            )
+        )
         for key in keys_to_reuse:
             ckpt_val = getattr(pre_checkpoint["config"], key, None)
             if ckpt_val is None:
@@ -144,11 +152,9 @@ def run(config):
 
         vocab = build_vocab(dict.fromkeys(kmers, 1), specials=specials)
         vocab.set_default_index(vocab["[UNK]"])
-        tokenizer = KmerTokenizer(config.k_mer, vocab, stride=config.stride,
-                                   padding=True, max_len=config.max_len)
+        tokenizer = KmerTokenizer(config.k_mer, vocab, stride=config.stride, padding=True, max_len=config.max_len)
     elif config.tokenizer == "bpe":
-        tokenizer = BPETokenizer(padding=True, max_tokenized_len=config.max_len,
-                                  bpe_path=config.bpe_path)
+        tokenizer = BPETokenizer(padding=True, max_tokenized_len=config.max_len, bpe_path=config.bpe_path)
     else:
         raise ValueError(f"Unknown tokenizer: {config.tokenizer}")
 
@@ -212,7 +218,8 @@ def run(config):
 
     # --- ZSC pipeline ---
     ami = 100.0 * zsc_pipeline(
-        X, y,
+        X,
+        y,
         metric=config.metric,
         n_neighbours=config.n_neighbors,
         n_clusters=getattr(config, "n_clusters", None),
@@ -226,6 +233,7 @@ def run(config):
 
     if config.log_wandb:
         import wandb
+
         wandb.init(
             project=config.wandb_project,
             entity=config.wandb_entity,
@@ -240,6 +248,7 @@ def run(config):
 
 def get_parser():
     import sys
+
     from barcodebert.pretraining import get_parser as get_pretraining_parser
 
     parser = get_pretraining_parser()
@@ -252,43 +261,65 @@ def get_parser():
 
     group = parser.add_argument_group("Model")
     group.add_argument(
-        "--pretrained-checkpoint", "--pretrained_checkpoint",
+        "--pretrained-checkpoint",
+        "--pretrained_checkpoint",
         dest="pretrained_checkpoint_path",
-        default="", type=str, metavar="PATH",
+        default="",
+        type=str,
+        metavar="PATH",
         help="Path to pretrained checkpoint (.pt). Required unless --external-model-id is given.",
     )
     group.add_argument(
-        "--external-model-id", "--external_model_id",
+        "--external-model-id",
+        "--external_model_id",
         dest="external_model_id",
-        default=None, type=str, metavar="HF_REPO_ID",
+        default=None,
+        type=str,
+        metavar="HF_REPO_ID",
         help="HuggingFace repo id of an off-the-shelf external DNA foundation model to evaluate"
         " zero-shot (e.g. zhihan1996/DNABERT-2-117M), instead of one of our own pretrained"
         " checkpoints. When set, --pretrained-checkpoint is ignored.",
     )
     group.add_argument(
-        "--external-model-cls", "--external_model_cls",
+        "--external-model-cls",
+        "--external_model_cls",
         dest="external_model_cls",
-        default="auto", type=str, choices=["auto", "masked-lm", "causal-lm"],
+        default="auto",
+        type=str,
+        choices=["auto", "masked-lm", "causal-lm"],
         help="Which HuggingFace auto-class to load --external-model-id with. Default: %(default)s",
     )
     group.add_argument(
-        "--external-max-length", "--external_max_length",
+        "--external-max-length",
+        "--external_max_length",
         dest="external_max_length",
-        default=660, type=int,
-        help="Fixed sequence length to pad/truncate to when --external-model-id is set."
-        " Default: %(default)s",
+        default=660,
+        type=int,
+        help="Fixed sequence length to pad/truncate to when --external-model-id is set. Default: %(default)s",
     )
     group.add_argument(
-        "--backbone", dest="backbone",
-        default="barcodebert", type=str,
+        "--backbone",
+        dest="backbone",
+        default="barcodebert",
+        type=str,
         help="Model name (used for logging only)",
     )
     group.add_argument(
-        "--representation-type", "--representation_type",
+        "--representation-type",
+        "--representation_type",
         dest="representation_type",
-        default="tokens", type=str,
-        choices=["tokens", "tokens_with_cls", "cls", "jumbo", "jumbo_avg",
-                 "all_tokens", "tokens_with_registers", "all_with_registers"],
+        default="tokens",
+        type=str,
+        choices=[
+            "tokens",
+            "tokens_with_cls",
+            "cls",
+            "jumbo",
+            "jumbo_avg",
+            "all_tokens",
+            "tokens_with_registers",
+            "all_with_registers",
+        ],
         help="How to extract the sequence embedding from the model",
     )
     group.add_argument(
@@ -301,16 +332,24 @@ def get_parser():
     )
 
     group = parser.add_argument_group("ZSC parameters")
-    group.add_argument("--taxon", type=str, default="bin_uri",
-                       help="Taxonomic level to evaluate. Default: %(default)s")
-    group.add_argument("--n-neighbors", "--n_neighbors", dest="n_neighbors",
-                       default=5, type=int,
-                       help="UMAP neighborhood size. Default: %(default)s")
-    group.add_argument("--metric", default="cosine", type=str,
-                       help="UMAP distance metric. Default: %(default)s")
-    group.add_argument("--n-clusters", "--n_clusters", dest="n_clusters",
-                       default=None, type=int,
-                       help="Number of clusters (auto-detected from data if not set)")
+    group.add_argument("--taxon", type=str, default="bin_uri", help="Taxonomic level to evaluate. Default: %(default)s")
+    group.add_argument(
+        "--n-neighbors",
+        "--n_neighbors",
+        dest="n_neighbors",
+        default=5,
+        type=int,
+        help="UMAP neighborhood size. Default: %(default)s",
+    )
+    group.add_argument("--metric", default="cosine", type=str, help="UMAP distance metric. Default: %(default)s")
+    group.add_argument(
+        "--n-clusters",
+        "--n_clusters",
+        dest="n_clusters",
+        default=None,
+        type=int,
+        help="Number of clusters (auto-detected from data if not set)",
+    )
 
     return parser
 

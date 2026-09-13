@@ -314,9 +314,11 @@ class DNADataset(Dataset):
             self.labels = mapped.tolist()
 
             n_unknown = int((~known_mask).sum())
-            print(f"[DNADataset][ITS-5M] {n_before} sequences total, "
-                  f"{n_unknown} with unknown '{taxonomic_level}' label (mapped to -1), "
-                  f"{self.num_labels} known classes.")
+            print(
+                f"[DNADataset][ITS-5M] {n_before} sequences total, "
+                f"{n_unknown} with unknown '{taxonomic_level}' label (mapped to -1), "
+                f"{self.num_labels} known classes."
+            )
 
             # Populate taxonomy_labels for jumbo taxonomy classification.
             # Uses the same column requested via return_taxonomy_level (typically "genus").
@@ -332,12 +334,13 @@ class DNADataset(Dataset):
                     _, tax_label_set = pd.factorize(known_tax_vals, sort=True)
                     tax_label2id = {lab: i for i, lab in enumerate(tax_label_set)}
                     self.taxonomy_labels = [
-                        tax_label2id.get(v, -1) if tax_known[i] else -1
-                        for i, v in enumerate(tax_col)
+                        tax_label2id.get(v, -1) if tax_known[i] else -1 for i, v in enumerate(tax_col)
                     ]
                 n_tax_known = sum(1 for t in self.taxonomy_labels if t >= 0)
-                print(f"[DNADataset][ITS-5M] Taxonomy labels ('{self.return_taxonomy_level}'): "
-                      f"{n_tax_known} known, {len(self.taxonomy_labels) - n_tax_known} unknown (-1).")
+                print(
+                    f"[DNADataset][ITS-5M] Taxonomy labels ('{self.return_taxonomy_level}'): "
+                    f"{n_tax_known} known, {len(self.taxonomy_labels) - n_tax_known} unknown (-1)."
+                )
             else:
                 self.taxonomy_labels = [0] * len(self.labels)
 
@@ -349,8 +352,10 @@ class DNADataset(Dataset):
                 self.barcodes = [self.barcodes[i] for i in valid]
                 self.labels = [self.labels[i] for i in valid]
                 self.taxonomy_labels = [self.taxonomy_labels[i] for i in valid]
-                print(f"[DNADataset][ITS-5M] filter_unknown_labels: kept {len(self.barcodes):,} / {n_before:,} "
-                      f"samples with known '{taxonomic_level}' label.")
+                print(
+                    f"[DNADataset][ITS-5M] filter_unknown_labels: kept {len(self.barcodes):,} / {n_before:,} "
+                    f"samples with known '{taxonomic_level}' label."
+                )
 
     def __len__(self):
         return len(self.barcodes)
@@ -418,7 +423,14 @@ def _extract_last_hidden_states(output):
 
 
 def representations_from_df(
-    df, target_level, model, tokenizer, dataset_name, mode=None, mask_rate=None, representation_type="tokens",
+    df,
+    target_level,
+    model,
+    tokenizer,
+    dataset_name,
+    mode=None,
+    mask_rate=None,
+    representation_type="tokens",
     use_cls_token=False,
 ):
     """
@@ -588,7 +600,7 @@ def representations_from_df(
                         "(RegisterBertModel). Use 'tokens' for a plain BertModel."
                     )
                 register_states = output.register_hidden_states  # (B, R, D)
-                hidden_states = output.last_hidden_state          # (B, seq_len, D)
+                hidden_states = output.last_hidden_state  # (B, seq_len, D)
 
                 # Exclude CLS (position 0) from sequence tokens
                 seq_mask = att_mask.clone()
@@ -597,11 +609,13 @@ def representations_from_df(
 
                 # Registers always attend (mask = 1)
                 reg_mask = torch.ones(
-                    register_states.shape[0], register_states.shape[1],
-                    device=att_mask.device, dtype=att_mask.dtype,
+                    register_states.shape[0],
+                    register_states.shape[1],
+                    device=att_mask.device,
+                    dtype=att_mask.dtype,
                 )
-                combined = torch.cat([register_states, hidden_states], dim=1)       # (B, R+seq, D)
-                combined_mask = torch.cat([reg_mask, seq_mask], dim=1)              # (B, R+seq)
+                combined = torch.cat([register_states, hidden_states], dim=1)  # (B, R+seq, D)
+                combined_mask = torch.cat([reg_mask, seq_mask], dim=1)  # (B, R+seq)
                 sum_embeddings = (combined * combined_mask.unsqueeze(-1)).sum(1)
                 sum_mask = combined_mask.sum(1, keepdim=True)
                 embedding = sum_embeddings / sum_mask
@@ -615,14 +629,16 @@ def representations_from_df(
                         "(RegisterBertModel). Use 'tokens_with_cls' for a plain BertModel."
                     )
                 register_states = output.register_hidden_states  # (B, R, D)
-                hidden_states = output.last_hidden_state          # (B, seq_len, D)
+                hidden_states = output.last_hidden_state  # (B, seq_len, D)
 
                 reg_mask = torch.ones(
-                    register_states.shape[0], register_states.shape[1],
-                    device=att_mask.device, dtype=att_mask.dtype,
+                    register_states.shape[0],
+                    register_states.shape[1],
+                    device=att_mask.device,
+                    dtype=att_mask.dtype,
                 )
-                combined = torch.cat([register_states, hidden_states], dim=1)       # (B, R+seq, D)
-                combined_mask = torch.cat([reg_mask, att_mask], dim=1)              # (B, R+seq)
+                combined = torch.cat([register_states, hidden_states], dim=1)  # (B, R+seq, D)
+                combined_mask = torch.cat([reg_mask, att_mask], dim=1)  # (B, R+seq)
                 sum_embeddings = (combined * combined_mask.unsqueeze(-1)).sum(1)
                 sum_mask = combined_mask.sum(1, keepdim=True)
                 embedding = sum_embeddings / sum_mask

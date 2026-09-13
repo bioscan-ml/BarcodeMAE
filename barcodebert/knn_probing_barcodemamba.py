@@ -33,16 +33,17 @@ import pandas as pd
 import sklearn.metrics
 from sklearn.neighbors import KNeighborsClassifier
 
-from barcodebert.barcodemamba_common import embed_sequences, load_barcodemamba, load_bpe_tokenizer
+from barcodebert.barcodemamba_common import (
+    embed_sequences,
+    load_barcodemamba,
+    load_bpe_tokenizer,
+)
 from barcodebert.evaluation import knn_results_path, knn_vote
 
 
 def run(config):
     if config.knn_weights == "softmax" and config.metric != "cosine":
-        raise ValueError(
-            "--knn-weights=softmax requires --metric=cosine, got --metric="
-            f"{config.metric!r}"
-        )
+        raise ValueError(f"--knn-weights=softmax requires --metric=cosine, got --metric={config.metric!r}")
 
     t_start = time.time()
 
@@ -54,9 +55,11 @@ def run(config):
         tokenizer = load_bpe_tokenizer(config.bpe_tokenizer_path)
     else:
         import sys
+
         if config.barcodemamba_repo not in sys.path:
             sys.path.insert(0, config.barcodemamba_repo)
         from utils.ssm_dataset import get_tokenizer
+
         tokenizer = get_tokenizer(tokenizer_name, bm_config.tokenizer)
 
     model.cuda()
@@ -92,7 +95,8 @@ def run(config):
         neigh_dist[partition_name], neigh_ind[partition_name] = clf.kneighbors(X_part, n_neighbors=max_k)
 
     sweep_temperatures = (
-        config.temperature_sweep if (config.knn_weights == "softmax" and config.temperature_sweep)
+        config.temperature_sweep
+        if (config.knn_weights == "softmax" and config.temperature_sweep)
         else [config.temperature]
     )
     best_combo = None  # (accuracy, temperature, k)
@@ -101,7 +105,7 @@ def run(config):
     for k in n_neighbors_list:
         for temperature in sweep_temperatures:
             results = {}
-            for partition_name, X_part, y_part in partitions:
+            for partition_name, _X_part, y_part in partitions:
                 ind_k = neigh_ind[partition_name][:, :k]
                 dist_k = neigh_dist[partition_name][:, :k]
                 neighbor_labels = clf._y[ind_k]
@@ -123,7 +127,9 @@ def run(config):
             # generalizing poorly.
             if len(sweep_temperatures) > 1:
                 sweep_results.append((temperature, k, unseen_acc))
-                print(f"  T={temperature:<6} k={k:<3} Train accuracy={train_acc:.4f}%  Unseen accuracy={unseen_acc:.4f}%")
+                print(
+                    f"  T={temperature:<6} k={k:<3} Train accuracy={train_acc:.4f}%  Unseen accuracy={unseen_acc:.4f}%"
+                )
             else:
                 print(f"  k={k:<3} Train accuracy={train_acc:.4f}%  Unseen accuracy={unseen_acc:.4f}%")
             if best_combo is None or unseen_acc > best_combo[0]:
@@ -148,33 +154,73 @@ def run(config):
 
 
 def get_parser():
-    p = argparse.ArgumentParser(description="KNN evaluation for BIOSCAN-5M using a BarcodeMamba/BarcodeMamba+ checkpoint.")
-    p.add_argument("--barcodemamba-repo", "--barcodemamba_repo", dest="barcodemamba_repo", required=True,
-                    help="Path to a local clone of bioscan-ml/BarcodeMamba-dev "
-                    "(branch GTCtech-BarcodeMambaPlus-release), so utils.probing_utils/utils.ssm_dataset can be imported.")
-    p.add_argument("--checkpoint-dir", "--checkpoint_dir", dest="checkpoint_dir", required=True,
-                    help="Folder containing a config (.hydra/config.yaml or config.yaml) and a"
-                    " .ckpt file (checkpoints/last.ckpt, last.ckpt, or model.ckpt).")
-    p.add_argument("--checkpoint-name", "--checkpoint_name", dest="checkpoint_name", default=None,
-                    help="Checkpoint filename within checkpoint-dir/checkpoints/. Default: last.ckpt")
-    p.add_argument("--bpe-tokenizer-path", "--bpe_tokenizer_path", dest="bpe_tokenizer_path", default=None,
-                    help="Path to bpe_tokenizer.pkl, required when the checkpoint's tokenizer.name is 'bpe'.")
-    p.add_argument("--data-dir", "--data_dir", dest="data_dir", required=True,
-                    help="BIOSCAN-5M data directory (supervised_train.csv, unseen.csv).")
+    p = argparse.ArgumentParser(
+        description="KNN evaluation for BIOSCAN-5M using a BarcodeMamba/BarcodeMamba+ checkpoint."
+    )
+    p.add_argument(
+        "--barcodemamba-repo",
+        "--barcodemamba_repo",
+        dest="barcodemamba_repo",
+        required=True,
+        help="Path to a local clone of bioscan-ml/BarcodeMamba-dev "
+        "(branch GTCtech-BarcodeMambaPlus-release), so utils.probing_utils/utils.ssm_dataset can be imported.",
+    )
+    p.add_argument(
+        "--checkpoint-dir",
+        "--checkpoint_dir",
+        dest="checkpoint_dir",
+        required=True,
+        help="Folder containing a config (.hydra/config.yaml or config.yaml) and a"
+        " .ckpt file (checkpoints/last.ckpt, last.ckpt, or model.ckpt).",
+    )
+    p.add_argument(
+        "--checkpoint-name",
+        "--checkpoint_name",
+        dest="checkpoint_name",
+        default=None,
+        help="Checkpoint filename within checkpoint-dir/checkpoints/. Default: last.ckpt",
+    )
+    p.add_argument(
+        "--bpe-tokenizer-path",
+        "--bpe_tokenizer_path",
+        dest="bpe_tokenizer_path",
+        default=None,
+        help="Path to bpe_tokenizer.pkl, required when the checkpoint's tokenizer.name is 'bpe'.",
+    )
+    p.add_argument(
+        "--data-dir",
+        "--data_dir",
+        dest="data_dir",
+        required=True,
+        help="BIOSCAN-5M data directory (supervised_train.csv, unseen.csv).",
+    )
     p.add_argument("--query-file", "--query_file", dest="query_file", default="unseen.csv")
     p.add_argument("--taxon", default="genus")
     p.add_argument("--max-length", "--max_length", dest="max_length", type=int, default=660)
-    p.add_argument("--n-neighbors", "--n_neighbors", dest="n_neighbors",
-                    default=[1, 3, 5, 7, 10, 15, 20, 25, 50], type=int, nargs="+")
+    p.add_argument(
+        "--n-neighbors",
+        "--n_neighbors",
+        dest="n_neighbors",
+        default=[1, 3, 5, 7, 10, 15, 20, 25, 50],
+        type=int,
+        nargs="+",
+    )
     p.add_argument("--metric", default="cosine")
-    p.add_argument("--knn-weights", "--knn_weights", dest="knn_weights", default="uniform",
-                    choices=["uniform", "distance", "softmax"])
+    p.add_argument(
+        "--knn-weights",
+        "--knn_weights",
+        dest="knn_weights",
+        default="uniform",
+        choices=["uniform", "distance", "softmax"],
+    )
     p.add_argument("--temperature", type=float, default=0.07)
-    p.add_argument("--temperature-sweep", "--temperature_sweep", dest="temperature_sweep",
-                    default=None, type=float, nargs="+")
+    p.add_argument(
+        "--temperature-sweep", "--temperature_sweep", dest="temperature_sweep", default=None, type=float, nargs="+"
+    )
     p.add_argument("--run-name", "--run_name", dest="run_name", default="knn_external_barcodemamba")
-    p.add_argument("--results-file", "--results_file", dest="results_file",
-                    default="results_final/KNN_external_RESULTS.txt")
+    p.add_argument(
+        "--results-file", "--results_file", dest="results_file", default="results_final/KNN_external_RESULTS.txt"
+    )
     return p
 
 

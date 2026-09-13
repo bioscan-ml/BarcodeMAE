@@ -107,7 +107,9 @@ import torch
 from barcodebert.io import load_pretrained_model
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
-model, ckpt = load_pretrained_model("model_checkpoints/bioscan5m_best.pt", device=device)
+model, ckpt = load_pretrained_model(
+    "model_checkpoints/bioscan5m_best.pt", device=device
+)
 ```
 
 This prints the checkpoint's architecture and training diagnostics (encoder-decoder vs. encoder-only, CLS/Jumbo config, epochs trained) and returns the ready-to-use encoder plus the raw checkpoint dict.

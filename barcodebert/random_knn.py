@@ -27,11 +27,9 @@ Usage:
 
 
 import os
-import resource
 import time
 from itertools import product
 
-import numpy as np
 import pandas as pd
 import sklearn.metrics
 import torch
@@ -104,9 +102,7 @@ def run(config):
     kmer_dict = dict.fromkeys(kmers, 1)
     vocab = build_vocab_from_dict(kmer_dict, specials=specials)
     vocab.set_default_index(vocab["[UNK]"])
-    tokenizer = KmerTokenizer(
-        config.k_mer, vocab, stride=config.stride, padding=True, max_len=config.max_len
-    )
+    tokenizer = KmerTokenizer(config.k_mer, vocab, stride=config.stride, padding=True, max_len=config.max_len)
 
     vocab_size = len(vocab)
     # max_position_embeddings must cover the full tokenized sequence length
@@ -187,7 +183,7 @@ def run(config):
     for k in config.n_neighbors:
         print(f"\n{'='*50}\nk = {k}\n{'='*50}")
         all_results[k] = {}
-        for name, X_part, y_part in partitions:
+        for name, _X_part, y_part in partitions:
             ind_k = neigh_ind[name][:, :k]
             dist_k = neigh_dist[name][:, :k]
             neighbor_labels = clf._y[ind_k]
@@ -222,9 +218,7 @@ def run(config):
 def get_parser():
     import argparse
 
-    p = argparse.ArgumentParser(
-        description="KNN evaluation with a randomly initialized (untrained) encoder."
-    )
+    p = argparse.ArgumentParser(description="KNN evaluation with a randomly initialized (untrained) encoder.")
     # Dataset
     p.add_argument("--dataset", default="BIOSCAN-5M", choices=["BIOSCAN-5M", "CANADA-1.5M"])
     p.add_argument("--data-dir", "--data_dir", dest="data_dir", required=True)
@@ -236,31 +230,35 @@ def get_parser():
         default="maelm",
         choices=["maelm", "transformer"],
         help="maelm=plain BertModel (MAELM encoder), transformer=encoder-only "
-             "BertForTokenClassification with head stripped. Default: %(default)s",
+        "BertForTokenClassification with head stripped. Default: %(default)s",
     )
     p.add_argument("--k-mer", "--k_mer", dest="k_mer", type=int, default=6)
     p.add_argument("--stride", type=int, default=1)
     p.add_argument("--max-len", "--max_len", dest="max_len", type=int, default=660)
     p.add_argument("--n-layers", "--n_layers", dest="n_layers", type=int, default=6)
     p.add_argument("--n-heads", "--n_heads", dest="n_heads", type=int, default=6)
-    p.add_argument(
-        "--encoder-embed-dim", "--encoder_embed_dim", dest="encoder_embed_dim", type=int, default=768
-    )
+    p.add_argument("--encoder-embed-dim", "--encoder_embed_dim", dest="encoder_embed_dim", type=int, default=768)
     p.add_argument("--use-cls-token", "--use_cls_token", dest="use_cls_token", action="store_true")
 
     # KNN
     p.add_argument("--n-neighbors", "--n_neighbors", dest="n_neighbors", type=int, nargs="+", default=[1])
     p.add_argument("--metric", default="cosine")
     p.add_argument(
-        "--knn-weights", "--knn_weights", dest="knn_weights",
-        default="uniform", choices=["uniform", "distance", "softmax"],
+        "--knn-weights",
+        "--knn_weights",
+        dest="knn_weights",
+        default="uniform",
+        choices=["uniform", "distance", "softmax"],
         help="Vote weighting for kNN label assignment. 'uniform': every neighbor gets one vote"
         " (plain majority vote). 'distance': neighbors weighted by 1/distance ('soft' kNN)."
         " 'softmax': neighbors weighted by softmax(similarity / --temperature), matching"
         " DINOv2's kNN eval; requires --metric=cosine. Default: %(default)s",
     )
     p.add_argument(
-        "--temperature", dest="temperature", type=float, default=0.07,
+        "--temperature",
+        dest="temperature",
+        type=float,
+        default=0.07,
         help="Temperature for --knn-weights=softmax (ignored otherwise). Lower is more"
         " winner-take-all, higher is closer to uniform voting. Default: %(default)s",
     )
@@ -272,11 +270,17 @@ def get_parser():
         choices=["tokens", "tokens_with_cls", "cls", "all_tokens"],
     )
     p.add_argument(
-        "--run-name", "--run_name", dest="run_name", default="random_knn",
+        "--run-name",
+        "--run_name",
+        dest="run_name",
+        default="random_knn",
         help="Run name prefix for results file. Default: %(default)s",
     )
     p.add_argument(
-        "--results-file", "--results_file", dest="results_file", default="RANDOM_KNN_RESULTS.txt",
+        "--results-file",
+        "--results_file",
+        dest="results_file",
+        default="RANDOM_KNN_RESULTS.txt",
         help="File to append KNN accuracy results to. Default: %(default)s",
     )
 

@@ -9,8 +9,8 @@ Usage:
 import argparse
 import os
 
-import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
@@ -19,18 +19,26 @@ COL = "species"
 
 # Fixed phylum colour palette (matches reference figure)
 PHYLUM_COLORS = {
-    "Basidiomycota":     "#5472d3",
-    "Ascomycota":        "#c0392b",
+    "Basidiomycota": "#5472d3",
+    "Ascomycota": "#c0392b",
     "Mortierellomycota": "#27ae60",
-    "Mucoromycota":      "#8e44ad",
-    "Chytridiomycota":   "#f39c12",
-    "Rozellomycota":     "#e91e8c",
-    "Zoopagomycota":     "#8bc34a",
-    "?":                 "#e67e22",
+    "Mucoromycota": "#8e44ad",
+    "Chytridiomycota": "#f39c12",
+    "Rozellomycota": "#e91e8c",
+    "Zoopagomycota": "#8bc34a",
+    "?": "#e67e22",
 }
 _FALLBACK_COLORS = [
-    "#1abc9c", "#3498db", "#9b59b6", "#e74c3c", "#f1c40f",
-    "#2ecc71", "#e67e22", "#95a5a6", "#34495e", "#d35400",
+    "#1abc9c",
+    "#3498db",
+    "#9b59b6",
+    "#e74c3c",
+    "#f1c40f",
+    "#2ecc71",
+    "#e67e22",
+    "#95a5a6",
+    "#34495e",
+    "#d35400",
 ]
 
 
@@ -68,7 +76,7 @@ def plot_train_vs_test(ref_counts, test_counts_dict, out_path):
 
     ref_prob = ref_counts / ref_counts.sum()
 
-    cmap = plt.cm.RdBu              # blue = more in train, red = more in test
+    cmap = plt.cm.RdBu  # blue = more in train, red = more in test
     norm = mcolors.TwoSlopeNorm(vmin=-4, vcenter=0, vmax=4)
 
     for ax, (name, tc) in zip(axes, test_counts_dict.items()):
@@ -81,12 +89,11 @@ def plot_train_vs_test(ref_counts, test_counts_dict, out_path):
             ax.set_title(f"{name}\n(no shared species)")
             continue
 
-        x = np.array([ref_prob[s]  for s in shared])
+        x = np.array([ref_prob[s] for s in shared])
         y = np.array([test_prob[s] for s in shared])
-        log_ratio = np.log2(x / y)   # positive = more in train; negative = more in test
+        log_ratio = np.log2(x / y)  # positive = more in train; negative = more in test
 
-        sc = ax.scatter(x, y, c=log_ratio, cmap=cmap, norm=norm,
-                        alpha=0.7, s=18, linewidths=0)
+        sc = ax.scatter(x, y, c=log_ratio, cmap=cmap, norm=norm, alpha=0.7, s=18, linewidths=0)
 
         # diagonal reference line
         lo = min(x.min(), y.min()) * 0.8
@@ -98,12 +105,11 @@ def plot_train_vs_test(ref_counts, test_counts_dict, out_path):
         ax.set_xlabel("Normalised frequency in train+valid (log)", fontsize=9)
         ax.set_ylabel(f"Normalised frequency in {name} (log)", fontsize=9)
 
-        n_shared  = len(shared)
-        n_unseen  = len(unseen_in_train)
-        n_total   = len(test_prob)
+        n_shared = len(shared)
+        n_unseen = len(unseen_in_train)
+        n_total = len(test_prob)
         ax.set_title(
-            f"{name}\n"
-            f"{n_shared}/{n_total} species shared with train  |  {n_unseen} unseen",
+            f"{name}\n{n_shared}/{n_total} species shared with train  |  {n_unseen} unseen",
             fontsize=9,
         )
 
@@ -118,14 +124,33 @@ def plot_train_vs_test(ref_counts, test_counts_dict, out_path):
         # n_above: log_ratio < -1 → test >> train → low x, high y → top-left
         n_below = int((log_ratio > 1).sum())
         n_above = int((log_ratio < -1).sum())
-        ax.text(0.97, 0.02, f"over-represented\nin train: {n_below}",
-                transform=ax.transAxes, fontsize=7, ha="right", va="bottom", color="#2166ac")
-        ax.text(0.02, 0.97, f"over-represented\nin test: {n_above}",
-                transform=ax.transAxes, fontsize=7, ha="left", va="top", color="#d6604d")
+        ax.text(
+            0.97,
+            0.02,
+            f"over-represented\nin train: {n_below}",
+            transform=ax.transAxes,
+            fontsize=7,
+            ha="right",
+            va="bottom",
+            color="#2166ac",
+        )
+        ax.text(
+            0.02,
+            0.97,
+            f"over-represented\nin test: {n_above}",
+            transform=ax.transAxes,
+            fontsize=7,
+            ha="left",
+            va="top",
+            color="#d6604d",
+        )
 
-    plt.suptitle("Train+Valid vs Test — species frequency comparison\n"
-                 "(shared species only; points below diagonal = over-represented in train)",
-                 fontsize=10, y=1.02)
+    plt.suptitle(
+        "Train+Valid vs Test — species frequency comparison\n"
+        "(shared species only; points below diagonal = over-represented in train)",
+        fontsize=10,
+        y=1.02,
+    )
     plt.tight_layout()
     plt.savefig(out_path, dpi=150, bbox_inches="tight")
     print(f"Scatter plot saved → {out_path}")
@@ -153,7 +178,7 @@ def plot_sorted_histogram(ref_counts, test_counts_dict, out_path):
         test_y[test_y == 0] = np.nan  # gaps where the test set has no samples
 
         ax.plot(x, train_y, color="black", linewidth=1.2, label="train+valid", zorder=3)
-        ax.plot(x, test_y,  color=color,   linewidth=1.0, alpha=0.85, label=name)
+        ax.plot(x, test_y, color=color, linewidth=1.0, alpha=0.85, label=name)
 
         ax.set_yscale("log")
         ax.set_xlabel("Species rank (most common → rarest in train)", fontsize=9)
@@ -162,8 +187,11 @@ def plot_sorted_histogram(ref_counts, test_counts_dict, out_path):
         ax.legend(fontsize=8)
         ax.grid(axis="y", linewidth=0.4, alpha=0.4)
 
-    plt.suptitle("Sorted species frequency — x-axis ordered by train rank\n"
-                 "gaps = species absent from that test set", fontsize=10, y=1.02)
+    plt.suptitle(
+        "Sorted species frequency — x-axis ordered by train rank\ngaps = species absent from that test set",
+        fontsize=10,
+        y=1.02,
+    )
     plt.tight_layout()
     plt.savefig(out_path, dpi=150, bbox_inches="tight")
     print(f"Sorted histogram saved → {out_path}")
@@ -185,8 +213,9 @@ def plot_frequency_ratio(ref_counts, test_counts_dict, out_path):
     for ax, (name, tc) in zip(axes, test_counts_dict.items()):
         test_freq = tc / tc.sum()
 
-        shared = sorted(set(ref_freq.index) & set(test_freq.index),
-                        key=lambda s: -ref_freq[s])  # sort by train frequency
+        shared = sorted(
+            set(ref_freq.index) & set(test_freq.index), key=lambda s: -ref_freq[s]
+        )  # sort by train frequency
 
         ratios = np.array([test_freq[s] / ref_freq[s] for s in shared])
         x = np.arange(len(shared))
@@ -201,8 +230,7 @@ def plot_frequency_ratio(ref_counts, test_counts_dict, out_path):
         ax.set_yscale("log")
         ax.set_xlabel("Species (sorted by train frequency, most common → rarest)", fontsize=8)
         ax.set_ylabel("test freq / train freq  (log)", fontsize=8)
-        ax.set_title(f"{name}  —  {len(shared)} shared species\n"
-                     f"red = more in test, blue = more in train", fontsize=9)
+        ax.set_title(f"{name}  —  {len(shared)} shared species\nred = more in test, blue = more in train", fontsize=9)
         ax.set_xticks([])
         ax.legend(fontsize=8)
         ax.axhline(2.0, color="#d6604d", linewidth=0.6, linestyle=":", alpha=0.6)
@@ -257,8 +285,7 @@ def _sunburst_trace_data(df, levels, color_map):
             parents.append(parent_id)
             vals.append(int(cnt))
             colors.append(c)
-            recurse(sub[sub[lev] == val_raw], lvl_idx + 1, node_id,
-                    c if lvl_idx == 0 else phylum_color)
+            recurse(sub[sub[lev] == val_raw], lvl_idx + 1, node_id, c if lvl_idx == 0 else phylum_color)
 
     recurse(df, 0, "", "")
     return ids, labels, parents, vals, colors
@@ -277,8 +304,8 @@ def plot_sunburst(dfs, levels, out_path):
     """
     try:
         import plotly.graph_objects as go
-        from plotly.subplots import make_subplots
         import plotly.io as pio
+        from plotly.subplots import make_subplots
     except ImportError:
         print("Plotly not installed — run: pip install plotly")
         return
@@ -302,7 +329,7 @@ def plot_sunburst(dfs, levels, out_path):
     specs = [[{"type": "domain"} for _ in range(ncols)] for _ in range(nrows)]
     fig = make_subplots(rows=nrows, cols=ncols, specs=specs, subplot_titles=titles)
 
-    for idx, (name, df) in enumerate(dfs.items()):
+    for idx, (_name, df) in enumerate(dfs.items()):
         row = idx // ncols + 1
         col = idx % ncols + 1
 
@@ -323,18 +350,15 @@ def plot_sunburst(dfs, levels, out_path):
                 labels=lbls,
                 parents=par,
                 values=vals,
-                marker=dict(colors=clrs, line=dict(color="white", width=0.5)),
+                marker={"colors": clrs, "line": {"color": "white", "width": 0.5}},
                 branchvalues="total",
                 textinfo="label",
                 insidetextorientation="radial",
                 maxdepth=len(levels),
-                hovertemplate=(
-                    "<b>%{label}</b><br>"
-                    "Count: %{value:,}<br>"
-                    "%{percentRoot:.1%} of total<extra></extra>"
-                ),
+                hovertemplate=("<b>%{label}</b><br>Count: %{value:,}<br>%{percentRoot:.1%} of total<extra></extra>"),
             ),
-            row=row, col=col,
+            row=row,
+            col=col,
         )
 
     # Shared phylum legend (invisible scatter markers)
@@ -347,9 +371,10 @@ def plot_sunburst(dfs, levels, out_path):
             continue
         fig.add_trace(
             go.Scatter(
-                x=[None], y=[None],
+                x=[None],
+                y=[None],
                 mode="markers",
-                marker=dict(size=12, color=color_map.get(phylum, "#888888"), symbol="square"),
+                marker={"size": 12, "color": color_map.get(phylum, "#888888"), "symbol": "square"},
                 name=phylum,
                 showlegend=True,
             )
@@ -357,26 +382,24 @@ def plot_sunburst(dfs, levels, out_path):
 
     cell_px = 560
     fig.update_layout(
-        title=dict(
-            text=(
-                "Taxonomic Distribution  ·  "
-                + "  →  ".join(levels)
-            ),
-            x=0.5,
-            font=dict(size=16),
-        ),
+        title={
+            "text": "Taxonomic Distribution  ·  " + "  →  ".join(levels),
+            "x": 0.5,
+            "font": {"size": 16},
+        },
         height=cell_px * nrows + 80,
         width=cell_px * ncols + 220,
-        legend=dict(
-            title=dict(text=phylum_col.title(), font=dict(size=13)),
-            x=1.01, y=0.5,
-            xanchor="left",
-            yanchor="middle",
-            bgcolor="rgba(255,255,255,0.9)",
-            bordercolor="#cccccc",
-            borderwidth=1,
-            itemsizing="constant",
-        ),
+        legend={
+            "title": {"text": phylum_col.title(), "font": {"size": 13}},
+            "x": 1.01,
+            "y": 0.5,
+            "xanchor": "left",
+            "yanchor": "middle",
+            "bgcolor": "rgba(255,255,255,0.9)",
+            "bordercolor": "#cccccc",
+            "borderwidth": 1,
+            "itemsizing": "constant",
+        },
         paper_bgcolor="white",
         plot_bgcolor="white",
     )
@@ -396,10 +419,13 @@ def plot_sunburst(dfs, levels, out_path):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir", default=".", help="Path to ITS-5M data folder")
-    parser.add_argument("--sunburst-levels", default="phylum,class,order,family,genus",
-                        help="Comma-separated taxonomic levels for sunburst rings (inside → out). "
-                             "First level sets the colour palette. "
-                             "(default: phylum,class,order,family,genus)")
+    parser.add_argument(
+        "--sunburst-levels",
+        default="phylum,class,order,family,genus",
+        help="Comma-separated taxonomic levels for sunburst rings (inside → out). "
+        "First level sets the colour palette. "
+        "(default: phylum,class,order,family,genus)",
+    )
     args = parser.parse_args()
 
     d = args.data_dir
@@ -419,11 +445,7 @@ def main():
     if "valid" in dfs:
         ref_counts = ref_counts.add(dfs["valid"][COL].value_counts(), fill_value=0).astype(int)
 
-    test_counts = {
-        name: dfs[name][COL].value_counts()
-        for name in dfs
-        if name not in ("train", "valid")
-    }
+    test_counts = {name: dfs[name][COL].value_counts() for name in dfs if name not in ("train", "valid")}
 
     if not test_counts:
         print("No test files found.")
@@ -439,12 +461,9 @@ def main():
         print(f"{name:<10} {len(tc):>10} {shared:>17} {unseen:>10} {100*shared/len(tc):>9.1f}%")
     print("-" * 60)
 
-    plot_train_vs_test(ref_counts, test_counts,
-                       os.path.join(d, "species_train_vs_test.png"))
-    plot_sorted_histogram(ref_counts, test_counts,
-                          os.path.join(d, "species_sorted_histogram.png"))
-    plot_frequency_ratio(ref_counts, test_counts,
-                         os.path.join(d, "species_frequency_ratio.png"))
+    plot_train_vs_test(ref_counts, test_counts, os.path.join(d, "species_train_vs_test.png"))
+    plot_sorted_histogram(ref_counts, test_counts, os.path.join(d, "species_sorted_histogram.png"))
+    plot_frequency_ratio(ref_counts, test_counts, os.path.join(d, "species_frequency_ratio.png"))
 
     levels = [s.strip() for s in args.sunburst_levels.split(",")]
     sunburst_stem = "_".join(levels)

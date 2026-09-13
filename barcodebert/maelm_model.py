@@ -154,8 +154,10 @@ class MAELMModel(nn.Module):
 
             # Build attention mask for R+N' tokens
             reg_mask = torch.ones(
-                batch_size, self.n_registers,
-                device=input_ids.device, dtype=padded_encoder_attention_mask.dtype,
+                batch_size,
+                self.n_registers,
+                device=input_ids.device,
+                dtype=padded_encoder_attention_mask.dtype,
             )
             combined_mask = torch.cat([reg_mask, padded_encoder_attention_mask], dim=1)  # (B, R+N')
             extended_mask = self.encoder.get_extended_attention_mask(
@@ -239,13 +241,9 @@ class MAELMModel(nn.Module):
         # Prepend register tokens to decoder input (mutually exclusive with jumbo)
         if register_outputs is not None:
             decoder_input_embeddings = torch.cat([register_outputs, decoder_input_embeddings], dim=1)
-            reg_mask = torch.ones(
-                batch_size, self.n_registers, device=input_ids.device, dtype=attention_mask.dtype
-            )
+            reg_mask = torch.ones(batch_size, self.n_registers, device=input_ids.device, dtype=attention_mask.dtype)
             decoder_attention_mask = torch.cat([reg_mask, decoder_attention_mask], dim=1)
-            reg_pos = torch.zeros(
-                batch_size, self.n_registers, device=input_ids.device, dtype=position_ids.dtype
-            )
+            reg_pos = torch.zeros(batch_size, self.n_registers, device=input_ids.device, dtype=position_ids.dtype)
             decoder_position_ids = torch.cat([reg_pos, position_ids], dim=1)
 
         # Pass through the decoder (standard BertForTokenClassification)

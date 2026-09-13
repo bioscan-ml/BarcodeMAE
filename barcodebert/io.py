@@ -14,6 +14,7 @@ from barcodebert.jumbo_transformer import create_jumbo_transformer_model
 from barcodebert.jumbo_transformer_with_taxonomy import (
     create_jumbo_transformer_with_taxonomy,
 )
+
 from .utils import remove_extra_pre_fix
 
 PACKAGE_DIR = os.path.dirname(os.path.abspath(getsourcefile(lambda: 0)))
@@ -55,7 +56,7 @@ class RegisterBertModel(nn.Module):
         all_hidden = encoder_out.last_hidden_state  # (B, n_registers + seq_len, D)
 
         # Strip register positions, matching MAELMModel line 172
-        seq_hidden = all_hidden[:, self.n_registers:, :]  # (B, seq_len, D)
+        seq_hidden = all_hidden[:, self.n_registers :, :]  # (B, seq_len, D)
 
         output = BaseModelOutputWithPoolingAndCrossAttentions(
             last_hidden_state=seq_hidden,
@@ -138,7 +139,7 @@ def load_pretrained_model(checkpoint_path, device=None):
     # it was originally saved.
     ckpt = torch.load(checkpoint_path, map_location="cpu")
     bert_config = BertConfig(**ckpt["bert_config"])
-    #print(bert_config)
+    # print(bert_config)
 
     # Check if this is a jumbo transformer model
     if hasattr(ckpt["config"], "jumbo") and ckpt["config"].jumbo:
@@ -204,9 +205,13 @@ def load_pretrained_model(checkpoint_path, device=None):
         epochs_trained = "N/A"
 
     n_params = sum(p.numel() for p in model.parameters())
-    pretraining_arch = "encoder-decoder (MAE-LM)" if getattr(cfg, "arch", None) == "maelm" else "encoder-only (Transformer)"
+    pretraining_arch = (
+        "encoder-decoder (MAE-LM)" if getattr(cfg, "arch", None) == "maelm" else "encoder-only (Transformer)"
+    )
 
-    print("\n--- Model Architecture (loaded encoder only -- the decoder, if any, is pretraining-only and discarded here) ---")
+    print(
+        "\n--- Model Architecture (loaded encoder only -- the decoder, if any, is pretraining-only and discarded here) ---"
+    )
     print(f"  Pretraining architecture:  {pretraining_arch}")
     print(f"  Encoder layers:            {bert_config.num_hidden_layers}")
     print(f"  Encoder attention heads:   {bert_config.num_attention_heads}")
@@ -307,7 +312,7 @@ def load_pretrained_encoder(checkpoint_path, device=None):
     register_tokens = None
     if cfg.arch == "maelm" and "decoder_config" in ckpt:
         register_tokens = state_dict.get("register_tokens", None)
-        state_dict = {k[len("encoder."):]: v for k, v in state_dict.items() if k.startswith("encoder.")}
+        state_dict = {k[len("encoder.") :]: v for k, v in state_dict.items() if k.startswith("encoder.")}
 
     # Drop any head-only keys that aren't part of the encoder architecture
     target_keys = set(model.state_dict().keys())
@@ -326,8 +331,10 @@ def load_pretrained_encoder(checkpoint_path, device=None):
 
     missing = target_keys - set(filtered.keys())
     if missing:
-        print(f"Warning: {len(missing)} target-model params have no checkpoint value "
-              f"(will stay at init): {sorted(list(missing))[:10]}...")
+        print(
+            f"Warning: {len(missing)} target-model params have no checkpoint value "
+            f"(will stay at init): {sorted(missing)[:10]}..."
+        )
 
     model.load_state_dict(filtered, strict=False)
 

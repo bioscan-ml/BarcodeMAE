@@ -57,12 +57,36 @@ def load_temp_row(csv_path, T):
 
 def plot_panel(ax, uniform_vals, softmax_vals, random_vals, softmax_t, title=None, show_legend=False):
     x = range(len(K_VALUES))
-    ax.plot(x, uniform_vals, marker="o", linestyle="--", color=UNIFORM_COLOR,
-             label="Uniform (hard vote)", linewidth=2, markersize=7)
-    ax.plot(x, softmax_vals, marker="s", linestyle="-", color=SOFTMAX_COLOR,
-             label=f"Softmax (T={softmax_t:g})", linewidth=2.5, markersize=7)
-    ax.plot(x, random_vals, marker="D", linestyle=":", color=RANDOM_COLOR,
-             label="Random init (untrained, softmax)", linewidth=1.5, markersize=6)
+    ax.plot(
+        x,
+        uniform_vals,
+        marker="o",
+        linestyle="--",
+        color=UNIFORM_COLOR,
+        label="Uniform (hard vote)",
+        linewidth=2,
+        markersize=7,
+    )
+    ax.plot(
+        x,
+        softmax_vals,
+        marker="s",
+        linestyle="-",
+        color=SOFTMAX_COLOR,
+        label=f"Softmax (T={softmax_t:g})",
+        linewidth=2.5,
+        markersize=7,
+    )
+    ax.plot(
+        x,
+        random_vals,
+        marker="D",
+        linestyle=":",
+        color=RANDOM_COLOR,
+        label="Random init (untrained, softmax)",
+        linewidth=1.5,
+        markersize=6,
+    )
 
     ax.set_xticks(list(x))
     ax.set_xticklabels([str(k) for k in K_VALUES])
@@ -96,13 +120,16 @@ def run_its5m(csv_path, yeast_temp_csv, filamentous_temp_csv, softmax_t, out_dir
     temp_csvs = {"Yeast": yeast_temp_csv, "Filamentous": filamentous_temp_csv}
     fig, axes = plt.subplots(1, 2, figsize=(11, 4.5))
     for ax, test_name, title in zip(axes, ["Yeast", "Filamentous"], ["Yeast", "Filamentous"]):
-        row = load_row(csv_path, lambda r: r[:4] == ["enc-dec", "+CLS+Binary", "CLS", test_name])
+        row = load_row(csv_path, lambda r, test_name=test_name: r[:4] == ["enc-dec", "+CLS+Binary", "CLS", test_name])
         uniform_vals = [float(v) for v in row[4:13]]
         softmax_vals = load_temp_row(temp_csvs[test_name], softmax_t)
-        random_row = load_row(csv_path, lambda r: r[:4] == ["RANDOM", "Random init", "CLS", test_name])
+        random_row = load_row(
+            csv_path, lambda r, test_name=test_name: r[:4] == ["RANDOM", "Random init", "CLS", test_name]
+        )
         random_vals = [float(v) for v in random_row[13:22]]
-        plot_panel(ax, uniform_vals, softmax_vals, random_vals, softmax_t, title=title,
-                   show_legend=(test_name == "Yeast"))
+        plot_panel(
+            ax, uniform_vals, softmax_vals, random_vals, softmax_t, title=title, show_legend=(test_name == "Yeast")
+        )
     fig.tight_layout()
     out_path = os.path.join(out_dir, "its_kcurve_uniform_vs_softmax.pdf")
     fig.savefig(out_path)
@@ -113,12 +140,21 @@ def get_parser():
     p = argparse.ArgumentParser(description="Regenerate the k-curve uniform-vs-softmax figures.")
     p.add_argument("--bioscan5m-csv", dest="bioscan5m_csv", required=True)
     p.add_argument("--its5m-csv", dest="its5m_csv", required=True)
-    p.add_argument("--bioscan5m-temp-csv", dest="bioscan5m_temp_csv", required=True,
-                    help="temperature_ablation_bioscan5m.csv")
-    p.add_argument("--its5m-yeast-temp-csv", dest="its5m_yeast_temp_csv", required=True,
-                    help="temperature_ablation_its5m_yeast.csv")
-    p.add_argument("--its5m-filamentous-temp-csv", dest="its5m_filamentous_temp_csv", required=True,
-                    help="temperature_ablation_its5m_filamentous.csv")
+    p.add_argument(
+        "--bioscan5m-temp-csv", dest="bioscan5m_temp_csv", required=True, help="temperature_ablation_bioscan5m.csv"
+    )
+    p.add_argument(
+        "--its5m-yeast-temp-csv",
+        dest="its5m_yeast_temp_csv",
+        required=True,
+        help="temperature_ablation_its5m_yeast.csv",
+    )
+    p.add_argument(
+        "--its5m-filamentous-temp-csv",
+        dest="its5m_filamentous_temp_csv",
+        required=True,
+        help="temperature_ablation_its5m_filamentous.csv",
+    )
     p.add_argument("--softmax-t", dest="softmax_t", type=float, default=0.02)
     p.add_argument("--out-dir", dest="out_dir", default=".")
     return p
@@ -128,8 +164,7 @@ def cli():
     args = get_parser().parse_args()
     os.makedirs(args.out_dir, exist_ok=True)
     run_bioscan5m(args.bioscan5m_csv, args.bioscan5m_temp_csv, args.softmax_t, args.out_dir)
-    run_its5m(args.its5m_csv, args.its5m_yeast_temp_csv, args.its5m_filamentous_temp_csv,
-              args.softmax_t, args.out_dir)
+    run_its5m(args.its5m_csv, args.its5m_yeast_temp_csv, args.its5m_filamentous_temp_csv, args.softmax_t, args.out_dir)
 
 
 if __name__ == "__main__":

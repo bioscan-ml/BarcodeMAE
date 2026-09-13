@@ -5,11 +5,24 @@ botocore==1.31.57
 cmake
 einops==0.6
 matplotlib
+# Fungal ITS / UNITE+INSD support (knn_its_clean.py, knn_its_mycoai.py,
+# analyze_its_overlap.py) -- provides the UNITE-header FASTA parser. On
+# clusters whose default pip index is a custom wheelhouse without this
+# package (e.g. Compute Canada), install with:
+#   pip install mycoai-its==0.0.5 --index-url https://pypi.org/simple/
+mycoai-its==0.0.5
 numpy==1.25.2
 omegaconf==2.3
 opt-einsum==3.3
 pandas==2.1
 peft==0.5
+# wandb depends on pydantic>=2.6,<3 with no further pin, so an unconstrained
+# install resolves to the newest pydantic -> pydantic-core, which may not ship
+# a prebuilt wheel for your platform and needs a Rust toolchain newer than
+# most clusters have (e.g. Compute Canada's rustc is older than pydantic-core
+# 2.46+ requires) to build from source. Pin to an older pydantic that has
+# prebuilt wheels everywhere, so it's never compiled locally.
+pydantic<2.10
 scikit-learn==1.3
 scipy==1.12
 seaborn
@@ -18,17 +31,4 @@ torchdata==0.7.1
 torchtext==0.16.1
 transformers==4.29.2
 umap-learn==0.5.6
-# Fungal ITS / UNITE+INSD support (knn_its_clean.py, knn_its_mycoai.py,
-# analyze_its_overlap.py) -- provides the UNITE-header FASTA parser. On
-# clusters whose default pip index is a custom wheelhouse without this
-# package (e.g. Compute Canada), install with:
-#   pip install mycoai-its==0.0.5 --index-url https://pypi.org/simple/
-mycoai-its==0.0.5
 wandb
-# wandb depends on pydantic>=2.6,<3 with no further pin, so an unconstrained
-# install resolves to the newest pydantic -> pydantic-core, which may not ship
-# a prebuilt wheel for your platform and needs a Rust toolchain newer than
-# most clusters have (e.g. Compute Canada's rustc is older than pydantic-core
-# 2.46+ requires) to build from source. Pin to an older pydantic that has
-# prebuilt wheels everywhere, so it's never compiled locally.
-pydantic<2.10

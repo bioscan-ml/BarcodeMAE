@@ -5,10 +5,10 @@ Data samplers.
 import math
 
 import numpy as np
+import pandas as pd
 import torch
 import torch.distributed as dist
 from torch.utils.data import Sampler
-
 
 __all__ = [
     "BalancedSampler",
@@ -413,13 +413,9 @@ class KClassMSampleSampler(Sampler):
         Fixed random seed.  If None a fresh seed is drawn on each __iter__.
     """
 
-    def __init__(
-        self, labels, k, m, batch_size, num_batches=None, cover_full_dataset=True, shuffle=True, seed=None
-    ):
+    def __init__(self, labels, k, m, batch_size, num_batches=None, cover_full_dataset=True, shuffle=True, seed=None):
         if k * m > batch_size:
-            raise ValueError(
-                f"k * m = {k} * {m} = {k * m} must be <= batch_size={batch_size}."
-            )
+            raise ValueError(f"k * m = {k} * {m} = {k * m} must be <= batch_size={batch_size}.")
         self.k = k
         self.m = m
         self.batch_size = batch_size
@@ -599,9 +595,7 @@ class DistributedKClassMSampleSampler(KClassMSampleSampler):
         Forwarded to KClassMSampleSampler (num_batches, shuffle, etc.).
     """
 
-    def __init__(
-        self, labels, k, m, batch_size, num_replicas=None, rank=None, seed=0, drop_last=False, **kwargs
-    ):
+    def __init__(self, labels, k, m, batch_size, num_replicas=None, rank=None, seed=0, drop_last=False, **kwargs):
         if num_replicas is None:
             if not dist.is_available():
                 raise RuntimeError("Requires the distributed package to be available.")
@@ -672,7 +666,7 @@ class DistributedKClassMSampleSampler(KClassMSampleSampler):
                 take = min(remaining, self.N)
                 fill_parts.append(perm[:take])
                 remaining -= take
-            global_fill = torch.cat(fill_parts)           # (total_fill,)
+            global_fill = torch.cat(fill_parts)  # (total_fill,)
             # Each rank takes its interleaved slice
             rank_fill = global_fill[self.rank :: self.num_replicas]  # (num_batches * n_random,)
         else:
@@ -697,9 +691,7 @@ class DistributedKClassMSampleSampler(KClassMSampleSampler):
                     perm = torch.randperm(n, generator=g_labeled)[: self.m] if self.shuffle else torch.arange(self.m)
                     labeled_part.append(idx[perm])
                 else:
-                    rep = (
-                        torch.randint(n, (self.m,), generator=g_labeled) if self.shuffle else torch.arange(self.m) % n
-                    )
+                    rep = torch.randint(n, (self.m,), generator=g_labeled) if self.shuffle else torch.arange(self.m) % n
                     labeled_part.append(idx[rep])
 
             if rank_fill is not None:

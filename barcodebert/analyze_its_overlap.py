@@ -121,9 +121,7 @@ def compute_overlap(train_df, train_known_df, train_species, train_genera, train
     n_barcode_overlap = int(is_barcode_dup.sum())
 
     test_species_col = list(zip(test_df["genus"], test_df["species"]))
-    is_shared_species = pd.Series(
-        [k in species_overlap for k in test_species_col], index=test_df.index
-    )
+    is_shared_species = pd.Series([k in species_overlap for k in test_species_col], index=test_df.index)
     is_known_species = test_df["species"] != mycoai_utils.UNKNOWN_STR
 
     n_shared_species_specimens = int(is_shared_species.sum())
@@ -145,7 +143,8 @@ def compute_overlap(train_df, train_known_df, train_species, train_genera, train
     n_shared_species_novel_barcode_unique_species = len(set(zip(candidates["genus"], candidates["species"])))
     shared_species_novel_barcode_avg_per_species = (
         len(candidates) / n_shared_species_novel_barcode_unique_species
-        if n_shared_species_novel_barcode_unique_species else float("nan")
+        if n_shared_species_novel_barcode_unique_species
+        else float("nan")
     )
 
     # Fully clean: known species, not an exact duplicate, not a substring
@@ -178,8 +177,7 @@ def compute_overlap(train_df, train_known_df, train_species, train_genera, train
     clean_seen_df = test_df[is_clean_species_seen]
     task_species_level_unique_species = len(set(zip(clean_seen_df["genus"], clean_seen_df["species"])))
     task_species_level_avg_per_species = (
-        task_species_level_n / task_species_level_unique_species
-        if task_species_level_unique_species else float("nan")
+        task_species_level_n / task_species_level_unique_species if task_species_level_unique_species else float("nan")
     )
 
     # Task B (genus-level KNN on unseen species): clean specimens whose SPECIES
@@ -189,7 +187,6 @@ def compute_overlap(train_df, train_known_df, train_species, train_genera, train
     is_genus_in_train = test_df["genus"].isin(train_genera)
     is_clean_species_novel = is_clean & ~is_shared_species
     is_clean_species_novel_genus_seen = is_clean_species_novel & is_known_genus & is_genus_in_train
-    task_genus_level_n = int(is_clean_species_novel_genus_seen.sum())
 
     # include_leaked=True also broadens genus_level to EVERY clean, known-genus
     # specimen (species-shared included), not just the species-novel subset --
@@ -200,8 +197,7 @@ def compute_overlap(train_df, train_known_df, train_species, train_genera, train
     # see export_task_csv()/genus_eligible below, which emits genus_level as
     # extra (possibly duplicate-id) rows rather than overwriting task_series.
     genus_eligible = (
-        (is_clean & is_known_genus & is_genus_in_train) if include_leaked
-        else is_clean_species_novel_genus_seen
+        (is_clean & is_known_genus & is_genus_in_train) if include_leaked else is_clean_species_novel_genus_seen
     )
 
     # Specimens where even genus is novel — unusable at species OR genus level.
@@ -216,17 +212,21 @@ def compute_overlap(train_df, train_known_df, train_species, train_genera, train
     task_series[is_known_species] = "_uncategorized_bug"
     task_series[is_known_species & is_barcode_dup] = "exact_duplicate"
     task_series[is_known_species & ~is_barcode_dup & is_substring_dup] = "substring_duplicate"
-    task_series[is_clean_species_seen] = "species_level"          # Task A
+    task_series[is_clean_species_seen] = "species_level"  # Task A
     task_series[is_clean_species_novel_genus_seen] = "genus_level"  # Task B
     task_series[is_clean_unusable] = "unusable"
 
     return {
         "species_total": len(unique_test_species),
         "species_overlap_n": len(species_overlap),
-        "species_overlap_pct": 100.0 * len(species_overlap) / len(unique_test_species) if unique_test_species else float("nan"),
+        "species_overlap_pct": (
+            100.0 * len(species_overlap) / len(unique_test_species) if unique_test_species else float("nan")
+        ),
         "genus_total": len(unique_test_genera),
         "genus_overlap_n": len(genus_overlap),
-        "genus_overlap_pct": 100.0 * len(genus_overlap) / len(unique_test_genera) if unique_test_genera else float("nan"),
+        "genus_overlap_pct": (
+            100.0 * len(genus_overlap) / len(unique_test_genera) if unique_test_genera else float("nan")
+        ),
         "barcode_total": len(test_df),
         "barcode_overlap_n": n_barcode_overlap,
         "barcode_overlap_pct": 100.0 * n_barcode_overlap / len(test_df) if len(test_df) else float("nan"),
@@ -240,8 +240,9 @@ def compute_overlap(train_df, train_known_df, train_species, train_genera, train
         "clean_total": len(clean_df),
         "clean_species_total": len(clean_unique_species),
         "clean_species_overlap_n": len(clean_species_overlap),
-        "clean_species_overlap_pct": (100.0 * len(clean_species_overlap) / len(clean_unique_species)
-                                       if clean_unique_species else float("nan")),
+        "clean_species_overlap_pct": (
+            100.0 * len(clean_species_overlap) / len(clean_unique_species) if clean_unique_species else float("nan")
+        ),
         "task_species_level_n": task_species_level_n,
         "task_species_level_unique_species": task_species_level_unique_species,
         "task_species_level_avg_per_species": task_species_level_avg_per_species,
@@ -264,9 +265,7 @@ def sample_novel_barcode_examples(train_df, test_df, n=10, seed=0):
     train_repr = train_known_df.groupby(["genus", "species"])["sequence"].first()
 
     test_species_col = list(zip(test_df["genus"], test_df["species"]))
-    is_shared_species = pd.Series(
-        [k in train_species for k in test_species_col], index=test_df.index
-    )
+    is_shared_species = pd.Series([k in train_species for k in test_species_col], index=test_df.index)
     is_barcode_dup = test_df["sequence"].isin(train_seqs)
     candidates = test_df[is_shared_species & ~is_barcode_dup]
 
@@ -279,14 +278,21 @@ def sample_novel_barcode_examples(train_df, test_df, n=10, seed=0):
         same_len = len(train_seq) == len(test_seq)
         pct_identity = (
             100.0 * sum(a == b for a, b in zip(train_seq, test_seq)) / len(test_seq)
-            if same_len and len(test_seq) > 0 else None
+            if same_len and len(test_seq) > 0
+            else None
         )
-        examples.append({
-            "genus": row["genus"], "species": row["species"],
-            "test_id": row["id"], "test_seq": test_seq, "test_len": len(test_seq),
-            "train_seq": train_seq, "train_len": len(train_seq),
-            "pct_identity": pct_identity,
-        })
+        examples.append(
+            {
+                "genus": row["genus"],
+                "species": row["species"],
+                "test_id": row["id"],
+                "test_seq": test_seq,
+                "test_len": len(test_seq),
+                "train_seq": train_seq,
+                "train_len": len(train_seq),
+                "pct_identity": pct_identity,
+            }
+        )
     return examples
 
 
@@ -299,7 +305,9 @@ def print_examples(examples, name):
         if ex["pct_identity"] is not None:
             print(f"    same length — {ex['pct_identity']:.1f}% identical position-by-position")
         else:
-            print(f"    different lengths ({ex['test_len']} vs {ex['train_len']} bp) — not directly comparable position-by-position")
+            print(
+                f"    different lengths ({ex['test_len']} vs {ex['train_len']} bp) — not directly comparable position-by-position"
+            )
         print()
 
 
@@ -316,23 +324,27 @@ def export_task_csv(test_df, stats, out_path):
     primary task_series label, since downstream code reads species_level and
     genus_level ids as two independent sets via boolean filtering, not
     assuming one row per id."""
-    out_df = pd.DataFrame({
-        "id": test_df["id"],
-        "genus": test_df["genus"],
-        "species": test_df["species"],
-        "task": stats["task_series"],
-    })
+    out_df = pd.DataFrame(
+        {
+            "id": test_df["id"],
+            "genus": test_df["genus"],
+            "species": test_df["species"],
+            "task": stats["task_series"],
+        }
+    )
     genus_eligible = stats.get("genus_eligible")
     if genus_eligible is not None:
         already_genus = stats["task_series"] == "genus_level"
         extra_mask = genus_eligible & ~already_genus
         if extra_mask.any():
-            extra_df = pd.DataFrame({
-                "id": test_df.loc[extra_mask, "id"],
-                "genus": test_df.loc[extra_mask, "genus"],
-                "species": test_df.loc[extra_mask, "species"],
-                "task": "genus_level",
-            })
+            extra_df = pd.DataFrame(
+                {
+                    "id": test_df.loc[extra_mask, "id"],
+                    "genus": test_df.loc[extra_mask, "genus"],
+                    "species": test_df.loc[extra_mask, "species"],
+                    "task": "genus_level",
+                }
+            )
             out_df = pd.concat([out_df, extra_df], ignore_index=True)
     out_df.to_csv(out_path, index=False)
     print(f"  Wrote {len(out_df)} rows -> {out_path}")
@@ -348,16 +360,19 @@ def run(data_dir, show_examples=0, export_dir=None, include_leaked=False):
     _, train_genus_keys = genus_key(train_df)
     train_genera = set(train_genus_keys)
     train_seqs = set(train_df["sequence"])
-    print(f"  {len(train_df)} train specimens, {len(train_species)} known (genus, species) taxa, "
-          f"{len(train_genera)} known genera\n")
+    print(
+        f"  {len(train_df)} train specimens, {len(train_species)} known (genus, species) taxa, "
+        f"{len(train_genera)} known genera\n"
+    )
 
     rows = []
     for name, fname in TEST_SETS:
         fpath = os.path.join(data_dir, fname)
         print(f"Loading {name}: {fpath}")
         test_df = load_split(fpath)
-        stats = compute_overlap(train_df, train_known_df, train_species, train_genera, train_seqs, test_df,
-                                 include_leaked=include_leaked)
+        stats = compute_overlap(
+            train_df, train_known_df, train_species, train_genera, train_seqs, test_df, include_leaked=include_leaked
+        )
         rows.append((name, stats))
 
         if export_dir:
@@ -365,23 +380,37 @@ def run(data_dir, show_examples=0, export_dir=None, include_leaked=False):
             tag = fname.replace(".fasta", "")
             export_task_csv(test_df, stats, os.path.join(export_dir, f"{tag}_tasks.csv"))
 
-        print(f"  Species overlap:  {stats['species_overlap_n']:>6d} / {stats['species_total']:<6d} "
-              f"({stats['species_overlap_pct']:6.2f}%)")
-        print(f"  Genus overlap:    {stats['genus_overlap_n']:>6d} / {stats['genus_total']:<6d} "
-              f"({stats['genus_overlap_pct']:6.2f}%)")
-        print(f"  Barcode overlap:  {stats['barcode_overlap_n']:>6d} / {stats['barcode_total']:<6d} "
-              f"({stats['barcode_overlap_pct']:6.2f}%)")
+        print(
+            f"  Species overlap:  {stats['species_overlap_n']:>6d} / {stats['species_total']:<6d} "
+            f"({stats['species_overlap_pct']:6.2f}%)"
+        )
+        print(
+            f"  Genus overlap:    {stats['genus_overlap_n']:>6d} / {stats['genus_total']:<6d} "
+            f"({stats['genus_overlap_pct']:6.2f}%)"
+        )
+        print(
+            f"  Barcode overlap:  {stats['barcode_overlap_n']:>6d} / {stats['barcode_total']:<6d} "
+            f"({stats['barcode_overlap_pct']:6.2f}%)"
+        )
         print(f"  Of the {stats['shared_species_specimens']} test specimens whose species IS in training:")
         print(f"    - {stats['shared_species_dup_barcode']} are EXACT duplicate barcodes (leakage)")
-        print(f"    - {stats['shared_species_novel_barcode']} are a DIFFERENT individual of the same species "
-              f"(same species, different barcode)")
-        print(f"      - across {stats['shared_species_novel_barcode_unique_species']} unique species "
-              f"(avg {stats['shared_species_novel_barcode_avg_per_species']:.2f} barcodes/species)")
-        print(f"      - of which {stats['substring_dup_n']} are SUBSTRING duplicates (same read, different "
-              f"trim — soft leakage, not a real different individual)")
-        print(f"    -> after also removing substring duplicates: {stats['task_species_level_n']} left, "
-              f"across {stats['task_species_level_unique_species']} unique species "
-              f"(avg {stats['task_species_level_avg_per_species']:.2f} barcodes/species)")
+        print(
+            f"    - {stats['shared_species_novel_barcode']} are a DIFFERENT individual of the same species "
+            f"(same species, different barcode)"
+        )
+        print(
+            f"      - across {stats['shared_species_novel_barcode_unique_species']} unique species "
+            f"(avg {stats['shared_species_novel_barcode_avg_per_species']:.2f} barcodes/species)"
+        )
+        print(
+            f"      - of which {stats['substring_dup_n']} are SUBSTRING duplicates (same read, different "
+            f"trim — soft leakage, not a real different individual)"
+        )
+        print(
+            f"    -> after also removing substring duplicates: {stats['task_species_level_n']} left, "
+            f"across {stats['task_species_level_unique_species']} unique species "
+            f"(avg {stats['task_species_level_avg_per_species']:.2f} barcodes/species)"
+        )
         print()
 
         if show_examples > 0:
@@ -391,24 +420,32 @@ def run(data_dir, show_examples=0, export_dir=None, include_leaked=False):
     print("=" * 130)
     print("CLEAN COMPLETE TABLE — exact duplicates, substring duplicates, and unknown-species specimens all removed")
     print("=" * 130)
-    header = (f"{'Test Set':<22}{'Total':>8}{'ExactDup':>10}{'SubstrDup':>11}{'UnkSpecies':>12}"
-              f"{'Clean':>8}{'Clean SpOverlap':>18}")
+    header = (
+        f"{'Test Set':<22}{'Total':>8}{'ExactDup':>10}{'SubstrDup':>11}{'UnkSpecies':>12}"
+        f"{'Clean':>8}{'Clean SpOverlap':>18}"
+    )
     print(header)
     for name, stats in rows:
-        print(f"{name:<22}{stats['barcode_total']:>8d}{stats['barcode_overlap_n']:>10d}"
-              f"{stats['substring_dup_n']:>11d}{stats['unknown_species_n']:>12d}"
-              f"{stats['clean_total']:>8d}"
-              f"{stats['clean_species_overlap_n']:>10d}/{stats['clean_species_total']:<6d}")
+        print(
+            f"{name:<22}{stats['barcode_total']:>8d}{stats['barcode_overlap_n']:>10d}"
+            f"{stats['substring_dup_n']:>11d}{stats['unknown_species_n']:>12d}"
+            f"{stats['clean_total']:>8d}"
+            f"{stats['clean_species_overlap_n']:>10d}/{stats['clean_species_total']:<6d}"
+        )
     print("=" * 130)
     print("Clean = barcode not seen in training AND species is resolved AND not a substring/trim duplicate.")
-    print("'Clean SpOverlap' = of the clean specimens' unique species, how many are still in the training vocabulary.\n")
+    print(
+        "'Clean SpOverlap' = of the clean specimens' unique species, how many are still in the training vocabulary.\n"
+    )
 
     print("=" * 130)
     print("GENUS-LEVEL OVERLAP (train vs each full test set, mirrors the species-overlap table)")
     print("=" * 130)
     print(f"{'Test Set':<22}{'GenusOverlap':>16}{'GenusPct':>12}")
     for name, stats in rows:
-        print(f"{name:<22}{stats['genus_overlap_n']:>10d}/{stats['genus_total']:<5d}{stats['genus_overlap_pct']:>11.2f}%")
+        print(
+            f"{name:<22}{stats['genus_overlap_n']:>10d}/{stats['genus_total']:<5d}{stats['genus_overlap_pct']:>11.2f}%"
+        )
     print("=" * 130 + "\n")
 
     print("=" * 130)
@@ -417,9 +454,10 @@ def run(data_dir, show_examples=0, export_dir=None, include_leaked=False):
     print("=" * 130)
     print(f"{'Test Set':<22}{'A: species-level':>18}{'B: genus-level':>16}{'Unusable':>10}")
     for name, stats in rows:
-        print(f"{name:<22}{stats['task_species_level_n']:>18d}{stats['task_genus_level_n']:>16d}{stats['task_unusable_n']:>10d}")
-    print("(A = species-in-train specimens; B = species-novel-but-genus-in-train specimens; "
-          "Unusable = both novel)")
+        print(
+            f"{name:<22}{stats['task_species_level_n']:>18d}{stats['task_genus_level_n']:>16d}{stats['task_unusable_n']:>10d}"
+        )
+    print("(A = species-in-train specimens; B = species-novel-but-genus-in-train specimens; Unusable = both novel)")
     print("=" * 130)
     print("A: same species, genuinely different barcode — tests whether two individuals of the same species land")
     print("   close together in embedding space (realistic 'ID a new specimen of a known species' scenario).")
@@ -431,22 +469,43 @@ def run(data_dir, show_examples=0, export_dir=None, include_leaked=False):
 
 def get_parser():
     p = argparse.ArgumentParser(description="Verify ITS-5M train/test overlap numbers (Table 6).")
-    p.add_argument("--data-dir", "--data_dir", dest="data_dir", required=True,
-                    help="Path to ITS-5M data directory (containing trainset.fasta, test1-3.fasta).")
-    p.add_argument("--show-examples", "--show_examples", dest="show_examples", type=int, default=0,
-                    help="For each test set, print this many sampled 'same species, different barcode' "
-                         "examples (test sequence + one same-species train sequence) so you can eyeball "
-                         "whether they're really different. 0 = don't show (default).")
-    p.add_argument("--export-dir", "--export_dir", dest="export_dir", default=None,
-                    help="If set, write <test>_tasks.csv per test set here: id, genus, species, task "
-                         "(task in {species_level, genus_level, unusable, exact_duplicate, "
-                         "substring_duplicate, unknown_species}). Feed species_level/genus_level rows "
-                         "into knn_its_clean.py for the leakage-free evaluation.")
-    p.add_argument("--include-leaked", "--include_leaked", dest="include_leaked", action="store_true",
-                    help="Do not exclude exact-duplicate/substring-duplicate specimens from the "
-                         "species_level/genus_level task pools -- produces the leakage-INCLUDED counterpart "
-                         "of the same task definitions, using the exact same downstream eval "
-                         "(knn_its_clean.py) via --tasks-dir pointed at a separate --export-dir.")
+    p.add_argument(
+        "--data-dir",
+        "--data_dir",
+        dest="data_dir",
+        required=True,
+        help="Path to ITS-5M data directory (containing trainset.fasta, test1-3.fasta).",
+    )
+    p.add_argument(
+        "--show-examples",
+        "--show_examples",
+        dest="show_examples",
+        type=int,
+        default=0,
+        help="For each test set, print this many sampled 'same species, different barcode' "
+        "examples (test sequence + one same-species train sequence) so you can eyeball "
+        "whether they're really different. 0 = don't show (default).",
+    )
+    p.add_argument(
+        "--export-dir",
+        "--export_dir",
+        dest="export_dir",
+        default=None,
+        help="If set, write <test>_tasks.csv per test set here: id, genus, species, task "
+        "(task in {species_level, genus_level, unusable, exact_duplicate, "
+        "substring_duplicate, unknown_species}). Feed species_level/genus_level rows "
+        "into knn_its_clean.py for the leakage-free evaluation.",
+    )
+    p.add_argument(
+        "--include-leaked",
+        "--include_leaked",
+        dest="include_leaked",
+        action="store_true",
+        help="Do not exclude exact-duplicate/substring-duplicate specimens from the "
+        "species_level/genus_level task pools -- produces the leakage-INCLUDED counterpart "
+        "of the same task definitions, using the exact same downstream eval "
+        "(knn_its_clean.py) via --tasks-dir pointed at a separate --export-dir.",
+    )
     return p
 
 

@@ -33,7 +33,11 @@ import sklearn.metrics
 from mycoai.data import Data
 from sklearn.neighbors import KNeighborsClassifier
 
-from barcodebert.barcodemamba_common import embed_sequences, load_barcodemamba, load_bpe_tokenizer
+from barcodebert.barcodemamba_common import (
+    embed_sequences,
+    load_barcodemamba,
+    load_bpe_tokenizer,
+)
 from barcodebert.evaluation import knn_results_path, knn_vote
 
 TEST_SETS = [
@@ -53,8 +57,9 @@ def fit_knn(X_all, labels_col, max_k, metric):
     return clf
 
 
-def evaluate_task(clf, X_all, labels_col, task_mask, n_neighbors_list, weights="uniform", temperature=0.07,
-                   temperature_sweep=None):
+def evaluate_task(
+    clf, X_all, labels_col, task_mask, n_neighbors_list, weights="uniform", temperature=0.07, temperature_sweep=None
+):
     mask = task_mask.to_numpy() & (labels_col != UNKNOWN_STR).to_numpy()
     X_query = X_all[mask]
     y_query = labels_col[mask].to_numpy()
@@ -66,9 +71,11 @@ def evaluate_task(clf, X_all, labels_col, task_mask, n_neighbors_list, weights="
     test_labels = set(np.unique(y_query).tolist())
     label_overlap = test_labels & gallery_labels
     overlap_pct = 100.0 * len(label_overlap) / len(test_labels) if test_labels else float("nan")
-    print(f"    gallery: {gallery_n} samples, {len(gallery_labels)} unique labels | "
-          f"query: {len(y_query)} samples, {len(test_labels)} unique labels | "
-          f"label overlap: {len(label_overlap)}/{len(test_labels)} ({overlap_pct:.1f}%)")
+    print(
+        f"    gallery: {gallery_n} samples, {len(gallery_labels)} unique labels | "
+        f"query: {len(y_query)} samples, {len(test_labels)} unique labels | "
+        f"label overlap: {len(label_overlap)}/{len(test_labels)} ({overlap_pct:.1f}%)"
+    )
 
     max_k = max(n_neighbors_list)
     neigh_dist, neigh_ind = clf.kneighbors(X_query, n_neighbors=max_k)
@@ -100,10 +107,7 @@ def evaluate_task(clf, X_all, labels_col, task_mask, n_neighbors_list, weights="
 
 def run(config):
     if config.knn_weights == "softmax" and config.metric != "cosine":
-        raise ValueError(
-            "--knn-weights=softmax requires --metric=cosine, got --metric="
-            f"{config.metric!r}"
-        )
+        raise ValueError(f"--knn-weights=softmax requires --metric=cosine, got --metric={config.metric!r}")
 
     t_start = time.time()
 
@@ -115,9 +119,11 @@ def run(config):
         tokenizer = load_bpe_tokenizer(config.bpe_tokenizer_path)
     else:
         import sys
+
         if config.barcodemamba_repo not in sys.path:
             sys.path.insert(0, config.barcodemamba_repo)
         from utils.ssm_dataset import get_tokenizer
+
         tokenizer = get_tokenizer(tokenizer_name, bm_config.tokenizer)
 
     model.cuda()
@@ -129,23 +135,26 @@ def run(config):
     train_fasta = os.path.join(config.data_dir, "trainset.fasta")
     print("\nLoading gallery (trainset)...")
     gallery_df_raw = Data(train_fasta, allow_duplicates=True).data
-    needed_label_cols = [c for task, c in (("species_level", "species"), ("genus_level", "genus"))
-                          if task in config.tasks]
+    needed_label_cols = [
+        c for task, c in (("species_level", "species"), ("genus_level", "genus")) if task in config.tasks
+    ]
     is_usable = pd.concat([gallery_df_raw[c] != UNKNOWN_STR for c in needed_label_cols], axis=1).any(axis=1)
     gallery_df = gallery_df_raw[is_usable].reset_index(drop=True)
-    print(f"  {len(gallery_df_raw)} raw specimens -> {len(gallery_df)} with a resolved label for "
-          f"{'/'.join(needed_label_cols)} ({len(gallery_df_raw) - len(gallery_df)} dropped, "
-          f"useless for --tasks {config.tasks})")
+    print(
+        f"  {len(gallery_df_raw)} raw specimens -> {len(gallery_df)} with a resolved label for "
+        f"{'/'.join(needed_label_cols)} ({len(gallery_df_raw) - len(gallery_df)} dropped, "
+        f"useless for --tasks {config.tasks})"
+    )
 
     print(f"Extracting gallery embeddings ({len(gallery_df)} specimens)...")
     X_gallery = embed_sequences(model, tokenizer, tokenizer_name, gallery_df["sequence"], config.max_length)
     print(f"  representation shape: {X_gallery.shape}")
 
     max_k = max(config.n_neighbors)
-    clf_species = (fit_knn(X_gallery, gallery_df["species"], max_k, config.metric)
-                   if "species_level" in config.tasks else None)
-    clf_genus = (fit_knn(X_gallery, gallery_df["genus"], max_k, config.metric)
-                 if "genus_level" in config.tasks else None)
+    clf_species = (
+        fit_knn(X_gallery, gallery_df["species"], max_k, config.metric) if "species_level" in config.tasks else None
+    )
+    clf_genus = fit_knn(X_gallery, gallery_df["genus"], max_k, config.metric) if "genus_level" in config.tasks else None
     if clf_species is not None:
         print(f"  species gallery: {len(clf_species._y)} specimens, {len(clf_species.classes_)} classes")
     if clf_genus is not None:
@@ -176,9 +185,11 @@ def run(config):
         if "genus_level" in config.tasks:
             relevant_mask |= test_df["is_genus_level"]
         relevant = test_df[relevant_mask].reset_index(drop=True)
-        print(f"\n{name}: {len(relevant)} query specimens across {config.tasks} "
-              f"({relevant['is_species_level'].sum()} species_level, "
-              f"{relevant['is_genus_level'].sum()} genus_level)")
+        print(
+            f"\n{name}: {len(relevant)} query specimens across {config.tasks} "
+            f"({relevant['is_species_level'].sum()} species_level, "
+            f"{relevant['is_genus_level'].sum()} genus_level)"
+        )
         if len(relevant) == 0:
             continue
 
@@ -190,9 +201,16 @@ def run(config):
             clf = clf_species if task == "species_level" else clf_genus
             label_col = relevant["species"] if task == "species_level" else relevant["genus"]
             task_mask = relevant["is_species_level"] if task == "species_level" else relevant["is_genus_level"]
-            eval_out = evaluate_task(clf, X_query, label_col, task_mask, config.n_neighbors,
-                                      weights=config.knn_weights, temperature=config.temperature,
-                                      temperature_sweep=getattr(config, "temperature_sweep", None))
+            eval_out = evaluate_task(
+                clf,
+                X_query,
+                label_col,
+                task_mask,
+                config.n_neighbors,
+                weights=config.knn_weights,
+                temperature=config.temperature,
+                temperature_sweep=getattr(config, "temperature_sweep", None),
+            )
             sweeping = config.knn_weights == "softmax" and getattr(config, "temperature_sweep", None)
             res_by_k, best_combo = eval_out if sweeping else (eval_out, None)
 
@@ -201,17 +219,23 @@ def run(config):
                     if sweeping:
                         for t, m in res.items():
                             all_results.setdefault(task, {}).setdefault(k, {}).setdefault(name, {})[t] = m
-                            f.write(f"\n{config.run_name}_{task}_{model_name}_{tag_lower}_T{t}_k{k}\t{m['accuracy']:.4f}")
+                            f.write(
+                                f"\n{config.run_name}_{task}_{model_name}_{tag_lower}_T{t}_k{k}\t{m['accuracy']:.4f}"
+                            )
                     else:
                         all_results.setdefault(task, {}).setdefault(k, {})[name] = res
-                        print(f"  [{task}] k={k}: accuracy={res['accuracy']:.2f}% "
-                              f"balanced={res['accuracy-balanced']:.2f}% f1-macro={res['f1-macro']:.2f}% "
-                              f"(n={res['count']})")
+                        print(
+                            f"  [{task}] k={k}: accuracy={res['accuracy']:.2f}% "
+                            f"balanced={res['accuracy-balanced']:.2f}% f1-macro={res['f1-macro']:.2f}% "
+                            f"(n={res['count']})"
+                        )
                         f.write(f"\n{config.run_name}_{task}_{model_name}_{tag_lower}_k{k}\t{res['accuracy']:.4f}")
                 if sweeping:
                     best_acc, best_t, best_k = best_combo
                     print(f"  [{task}] BEST: T={best_t}, k={best_k}, accuracy={best_acc:.4f}%")
-                    f.write(f"\n{config.run_name}_{task}_{model_name}_{tag_lower}_BEST_T{best_t}_k{best_k}\t{best_acc:.4f}")
+                    f.write(
+                        f"\n{config.run_name}_{task}_{model_name}_{tag_lower}_BEST_T{best_t}_k{best_k}\t{best_acc:.4f}"
+                    )
         print(f"  -> saved {name} results to {results_file}")
 
     dt_total = time.time() - t_start
@@ -220,33 +244,71 @@ def run(config):
 
 def get_parser():
     p = argparse.ArgumentParser(description="KNN evaluation for ITS-5M using a BarcodeMamba+ (UNITE) checkpoint.")
-    p.add_argument("--barcodemamba-repo", "--barcodemamba_repo", dest="barcodemamba_repo", required=True,
-                    help="Path to a local clone of bioscan-ml/BarcodeMamba-dev "
-                    "(branch GTCtech-BarcodeMambaPlus-release), needed for utils.barcode_mamba.BarcodeMamba.")
-    p.add_argument("--checkpoint-dir", "--checkpoint_dir", dest="checkpoint_dir", required=True,
-                    help="Folder containing a config (.hydra/config.yaml or config.yaml) and a"
-                    " .ckpt file (checkpoints/last.ckpt, last.ckpt, or model.ckpt) -- e.g."
-                    " models_release/BarcodeMamba-plus-layer2-dim384 or -layer4-dim768.")
+    p.add_argument(
+        "--barcodemamba-repo",
+        "--barcodemamba_repo",
+        dest="barcodemamba_repo",
+        required=True,
+        help="Path to a local clone of bioscan-ml/BarcodeMamba-dev "
+        "(branch GTCtech-BarcodeMambaPlus-release), needed for utils.barcode_mamba.BarcodeMamba.",
+    )
+    p.add_argument(
+        "--checkpoint-dir",
+        "--checkpoint_dir",
+        dest="checkpoint_dir",
+        required=True,
+        help="Folder containing a config (.hydra/config.yaml or config.yaml) and a"
+        " .ckpt file (checkpoints/last.ckpt, last.ckpt, or model.ckpt) -- e.g."
+        " models_release/BarcodeMamba-plus-layer2-dim384 or -layer4-dim768.",
+    )
     p.add_argument("--checkpoint-name", "--checkpoint_name", dest="checkpoint_name", default=None)
-    p.add_argument("--bpe-tokenizer-path", "--bpe_tokenizer_path", dest="bpe_tokenizer_path", default=None,
-                    help="Path to bpe_tokenizer.pkl (release-level asset, shared by both size variants).")
-    p.add_argument("--data-dir", "--data_dir", dest="data_dir", required=True,
-                    help="ITS-5M data directory (trainset.fasta, test1-2.fasta).")
-    p.add_argument("--tasks-dir", "--tasks_dir", dest="tasks_dir", required=True,
-                    help="Directory containing test{1,2}_tasks.csv from analyze_its_overlap.py --export-dir.")
+    p.add_argument(
+        "--bpe-tokenizer-path",
+        "--bpe_tokenizer_path",
+        dest="bpe_tokenizer_path",
+        default=None,
+        help="Path to bpe_tokenizer.pkl (release-level asset, shared by both size variants).",
+    )
+    p.add_argument(
+        "--data-dir",
+        "--data_dir",
+        dest="data_dir",
+        required=True,
+        help="ITS-5M data directory (trainset.fasta, test1-2.fasta).",
+    )
+    p.add_argument(
+        "--tasks-dir",
+        "--tasks_dir",
+        dest="tasks_dir",
+        required=True,
+        help="Directory containing test{1,2}_tasks.csv from analyze_its_overlap.py --export-dir.",
+    )
     p.add_argument("--max-length", "--max_length", dest="max_length", type=int, default=660)
-    p.add_argument("--n-neighbors", "--n_neighbors", dest="n_neighbors",
-                    default=[1, 3, 5, 7, 10, 15, 20, 25, 50], type=int, nargs="+")
+    p.add_argument(
+        "--n-neighbors",
+        "--n_neighbors",
+        dest="n_neighbors",
+        default=[1, 3, 5, 7, 10, 15, 20, 25, 50],
+        type=int,
+        nargs="+",
+    )
     p.add_argument("--metric", default="cosine")
-    p.add_argument("--knn-weights", "--knn_weights", dest="knn_weights", default="uniform",
-                    choices=["uniform", "distance", "softmax"])
+    p.add_argument(
+        "--knn-weights",
+        "--knn_weights",
+        dest="knn_weights",
+        default="uniform",
+        choices=["uniform", "distance", "softmax"],
+    )
     p.add_argument("--temperature", dest="temperature", type=float, default=0.07)
-    p.add_argument("--temperature-sweep", "--temperature_sweep", dest="temperature_sweep",
-                    default=None, type=float, nargs="+")
+    p.add_argument(
+        "--temperature-sweep", "--temperature_sweep", dest="temperature_sweep", default=None, type=float, nargs="+"
+    )
     p.add_argument("--tasks", dest="tasks", default=list(ALL_TASKS), nargs="+", choices=ALL_TASKS)
     p.add_argument("--run-name", "--run_name", dest="run_name", default="knn_its_barcodemamba")
-    p.add_argument("--results-file", "--results_file", dest="results_file",
-                    default="results_final/KNN_ITS_external_RESULTS.txt")
+    p.add_argument(
+        "--results-file", "--results_file", dest="results_file", default="results_final/KNN_ITS_external_RESULTS.txt"
+    )
     return p
 
 
